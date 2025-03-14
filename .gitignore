@@ -23,3 +23,12 @@ go.work.sum
 
 # env file
 .env
+*.mp4
+*.mp4.status
+*.jpg
+*.jpg.status
+*.mpd
+*.m3u8
+
+*~
+videoencoder
