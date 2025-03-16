@@ -29,6 +29,10 @@ go.work.sum
 *.jpg.status
 *.mpd
 *.m3u8
+*.txt
+*.mov
+
+typescript
 
 *~
 videoencoder
