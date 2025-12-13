@@ -1,2 +1,2 @@
-github.com/zelenin/go-mediainfo v1.0.0 h1:P0rKGyrSwKBCj37Ul7TLkrhf5OVBPlh3fFe9ZqjiaKQ=
-github.com/zelenin/go-mediainfo v1.0.0/go.mod h1:6jxR5y1gDozFdCD7NYq/kUjCo5nqeogYCal6wpv81nY=
+gopkg.in/vansante/go-ffprobe.v2 v2.2.1 h1:sFV08OT1eZ1yroLCZVClIVd9YySgCh9eGjBWO0oRayI=
+gopkg.in/vansante/go-ffprobe.v2 v2.2.1/go.mod h1:qF0AlAjk7Nqzqf3y333Ly+KxN3cKF2JqA3JT5ZheUGE=
