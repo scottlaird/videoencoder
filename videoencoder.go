@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -28,9 +29,119 @@ type VideoEncodingTarget struct {
 
 type VideoEncodingTargets []*VideoEncodingTarget
 
+type FFMPEGPartialCommand struct {
+	BaseCommands []string
+	FileCommands []string
+	InFile       string
+	OutFile      string
+}
+
+func (f *FFMPEGPartialCommand) IsEncodeNeeded() (bool, error) {
+	cmdline := f.EncodeCommand()
+	statusfile := f.StatusFileName()
+	build := false
+
+	status, err := os.ReadFile(statusfile)
+	if err != nil {
+		slog.Info("Building because status file is missing", "outfile", f.OutFile)
+		build = true
+	} else if string(status) != cmdline {
+		fmt.Printf("Status is %q, new line is %q\n", string(status), cmdline)
+		slog.Info("Building because command line doesn't match status file", "outfile", f.OutFile)
+		build = true
+	} else {
+		in, err := os.Stat(f.InFile)
+		if err != nil {
+			return true, fmt.Errorf("Unable to stat input file %q: %v", f.InFile, err)
+		}
+		out, err := os.Stat(f.OutFile)
+		if err != nil {
+			slog.Info("Building because stat of output file failed", "outfile", f.OutFile)
+			build = true
+		}
+		if in.ModTime().After(out.ModTime()) {
+			slog.Info("Building because input file is newer than output file", "outfile", f.OutFile)
+			build = true
+		}
+	}
+
+	return build, nil
+}
+
+func (f *FFMPEGPartialCommand) UpdateStatusFile() error {
+	cmdline := f.EncodeCommand()
+	statusfile := f.StatusFileName()
+
+	return os.WriteFile(statusfile, []byte(cmdline), 0644)
+}
+
+func (f *FFMPEGPartialCommand) EncodeCommand() string {
+	cmdline := strings.Join(f.BaseCommands, " ")
+	cmdline += " " + strings.Join(f.FileCommands, " ")
+
+	return cmdline
+}
+
+func (f *FFMPEGPartialCommand) StatusFileName() string {
+	return f.OutFile + ".status"
+}
+
+type FFMPEGCommands struct {
+	PartialCommands []*FFMPEGPartialCommand
+}
+
+func (c *FFMPEGCommands) Add(f *FFMPEGPartialCommand) error {
+	c.PartialCommands = append(c.PartialCommands, f)
+	return nil
+}
+
+func (c *FFMPEGCommands) AddIfNeeded(f *FFMPEGPartialCommand) error {
+	needed, err := f.IsEncodeNeeded()
+
+	if err != nil {
+		return err
+	}
+
+	if needed {
+		c.Add(f)
+	}
+	return nil
+}
+
+func (c *FFMPEGCommands) Execute() error {
+	var cmd []string
+
+	if len(c.PartialCommands) == 0 {
+		// nothing to do
+		return nil
+	}
+
+	// Verify that the base command for each encode is the same
+	cmd = append(cmd, c.PartialCommands[0].BaseCommands...)
+	for _, p := range c.PartialCommands {
+		if !slices.Equal(cmd, p.BaseCommands) {
+			return fmt.Errorf("base encoding command for file %q differs for encoding command for file %q", p.InFile, c.PartialCommands[0].InFile)
+		}
+	}
+
+	for _, p := range c.PartialCommands {
+		for _, c := range p.FileCommands {
+			cmd = append(cmd, c)
+		}
+	}
+
+	fmt.Printf("*** generated command is: %#v\n", cmd)
+
+	e := exec.Command(cmd[0], cmd[1:len(cmd)]...)
+	e.Stderr = os.Stderr
+
+	return e.Run()
+}
+
 var (
-	h264Flag   = flag.String("h264", "on", "on/off/nvenc")
-	outdirFlag = flag.String("outdir", "output", "output directory")
+	h264Flag      = flag.String("h264", "on", "on/off/nvenc")
+	outdirFlag    = flag.String("outdir", "transcodes", "output directory for transcodes")
+	streamdirFlag = flag.String("streamdir", "stream", "output directory for streaming video")
 )
 
 func MaybeExecute(cmd []string, infile, outfile string) error {
@@ -185,58 +296,69 @@ func (targets VideoEncodingTargets) FilterTargets(vd VideoData) VideoEncodingTar
 	return filteredTargets
 }
 
-func (target VideoEncodingTarget) GenerateVideoWithFFMPEG(infile, outpath string) (string, error) {
-	outfile := fmt.Sprintf("video_%s_%dx%d_%d.mp4", target.Codec, target.Width, target.Height, target.Bitrate)
-	outfile = filepath.Join(outpath, outfile)
+func (target VideoEncodingTarget) GenerateFFMPEGPartialCommand(infile, outpath string) *FFMPEGPartialCommand {
+	cmd := FFMPEGPartialCommand{}
+	cmd.OutFile = filepath.Join(outpath, fmt.Sprintf("video_%s_%dx%d_%d.mp4", target.Codec, target.Width, target.Height, target.Bitrate))
+	cmd.InFile = infile
 
 	codecOptions := []string{}
 
 	switch target.Codec {
 	case "av1":
 		codecOptions = []string{
+			"-s", fmt.Sprintf("%dx%d", target.Width, target.Height), // resolution
 			"-c:v", "libsvtav1",
 			"-crf", fmt.Sprintf("%d", target.CodecQuality), // Quality
+			"-b:v", fmt.Sprintf("%d", target.Bitrate),
+			//			"-preset", "6",
+			//"-svtav1-params", "keyint=10s;enable-overlays=1;scd=1;scm=0", //fmt.Sprintf("tbr=%d", target.Bitrate/1000), // Set bitrate
+			"-svtav1-params", fmt.Sprintf("rc=1:tbr=%d", target.Bitrate/1000),
+			"-bufsize", fmt.Sprintf("%d", target.Bitrate*3/2), // Set buffer to max rate
+			"-an", // No audio
 		}
 	case "h264":
 		codecOptions = []string{
+			"-s", fmt.Sprintf("%dx%d", target.Width, target.Height), // resolution
 			"-c:v", "libx264",
 			"-preset", "faster",
 			"-crf", fmt.Sprintf("%d", target.CodecQuality), // Quality
 			"-b:v", fmt.Sprintf("%d", target.Bitrate), // Set bitrate
 			"-maxrate", fmt.Sprintf("%d", target.Bitrate*3/2), // Allow bursting a bit higher,
+			"-bufsize", fmt.Sprintf("%d", target.Bitrate*3/2), // Set buffer to max rate
+			"-an", // No audio
 		}
 	case "h265":
 		codecOptions = []string{
+			"-s", fmt.Sprintf("%dx%d", target.Width, target.Height), // resolution
 			"-c:v", "libx265",
+			//			"-pix_fmt", "yuv420p", // macos doesn't want to play the default?
 			"-preset", "faster",
+			"-profile:v", "main422-10", // needed for macos playback
+			"-tag:v", "hvc1", // needed for macos playback
 			"-crf", fmt.Sprintf("%d", target.CodecQuality), // Quality
 			"-b:v", fmt.Sprintf("%d", target.Bitrate), // Set bitrate
 			"-maxrate", fmt.Sprintf("%d", target.Bitrate*3/2), // Allow bursting a bit higher,
+			"-bufsize", fmt.Sprintf("%d", target.Bitrate*3/2), // Set buffer to max rate
+			"-an", // No audio
 		}
 	}
 
-	cmd := []string{
+	cmd.BaseCommands = []string{
 		"ffmpeg",
 		"-loglevel", "warning", "-stats",
 		"-y",
 		"-i", infile,
-		"-s", fmt.Sprintf("%dx%d", target.Width, target.Height), // resolution
 	}
 
-	cmd = append(cmd, codecOptions...)
-	cmd = append(cmd,
-		"-an",                                             // No audio
-		"-bufsize", fmt.Sprintf("%d", target.Bitrate*3/2), // Set buffer to max rate
-		outfile,
+	cmd.FileCommands = append(codecOptions,
+		cmd.OutFile,
 	)
 
-	MaybeExecute(cmd, infile, outfile)
-
-	return outfile, nil
+	return &cmd
 }
 
 func GenerateAudioWithFFMPEG(infile, outpath string) (string, error) {
-	outfile := fmt.Sprintf("audio.mp4")
+	outfile := "audio.mp4"
 	outfile = filepath.Join(outpath, outfile)
 
 	cmd := []string{
@@ -254,7 +376,7 @@ func GenerateAudioWithFFMPEG(infile, outpath string) (string, error) {
 }
 
 func GenerateThumbnailWithFFMPEG(infile, outpath string) (string, error) {
-	outfile := fmt.Sprintf("thumbnail.jpg")
+	outfile := "thumbnail.jpg"
 	outfile = filepath.Join(outpath, outfile)
 
 	cmd := []string{
@@ -409,14 +531,29 @@ func main() {
 	}
 
 	videofiles := []string{}
+	cmds := FFMPEGCommands{}
 	for _, t := range ft {
-		v, err := t.GenerateVideoWithFFMPEG(filename, *outdirFlag)
+		cmd := t.GenerateFFMPEGPartialCommand(filename, *outdirFlag)
+		err = cmds.AddIfNeeded(cmd)
 		if err != nil {
 			panic(err)
 		}
 
-		videofiles = append(videofiles, v)
+		videofiles = append(videofiles, cmd.OutFile)
+
 	}
+
+	err = cmds.Execute()
+	if err != nil {
+		panic(err)
+	}
+	for _, p := range cmds.PartialCommands {
+		err = p.UpdateStatusFile()
+		if err != nil {
+			panic(err)
+		}
+	}
+
 	audiofile, err := GenerateAudioWithFFMPEG(filename, *outdirFlag)
 	if err != nil {
 		panic(err)
@@ -427,7 +564,7 @@ func main() {
 		panic(err)
 	}
 
-	mpdfile, err := RunShakaPackager(filepath.Join(*outdirFlag, "stream"), videofiles, audiofile)
+	mpdfile, err := RunShakaPackager(*streamdirFlag, videofiles, audiofile)
 	if err != nil {
 		panic(err)
 	}
