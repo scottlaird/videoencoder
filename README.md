@@ -6,13 +6,16 @@ This will be a tool for turning a single video file into a directory
 full of streamable video content, including DASH and HLS manifests, to
 allow streaming video over HTTP.
 
+Requirements:
 
+- ffmpeg + ffprobe
+- [Shaka Packager](https://github.com/shaka-project/shaka-packager), installed in the path as `packager`.
 
 ## Notes
 
 
 - Render a thumbnail: `ffmpeg -i input.mp4 -ss 00:00:01.000 -vframes 1 thumbnail.jpg`
-- Use `*_nvenv` where possible.
+- Use `*_nvenv` where possible.  **Or not, it's terrible for H.265**
 - Keep original frame rate.
 - Render at an assortment of resolutions and bitrates up to the
   original resolution.
