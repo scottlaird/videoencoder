@@ -309,11 +309,11 @@ func (target VideoEncodingTarget) GenerateFFMPEGPartialCommand(infile, outpath s
 			"-s", fmt.Sprintf("%dx%d", target.Width, target.Height), // resolution
 			"-c:v", "libsvtav1",
 			"-crf", fmt.Sprintf("%d", target.CodecQuality), // Quality
-			"-b:v", fmt.Sprintf("%d", target.Bitrate),
-			//			"-preset", "6",
+			"-preset", "6",
+			//"-b:v", fmt.Sprintf("%d", target.Bitrate),
 			//"-svtav1-params", "keyint=10s;enable-overlays=1;scd=1;scm=0", //fmt.Sprintf("tbr=%d", target.Bitrate/1000), // Set bitrate
-			"-svtav1-params", fmt.Sprintf("rc=1:tbr=%d", target.Bitrate/1000),
-			"-bufsize", fmt.Sprintf("%d", target.Bitrate*3/2), // Set buffer to max rate
+			//			"-svtav1-params", fmt.Sprintf("rc=1:tbr=%d", target.Bitrate/1000),
+			//"-bufsize", fmt.Sprintf("%d", target.Bitrate*3/2), // Set buffer to max rate
 			"-an", // No audio
 		}
 	case "h264":
@@ -496,31 +496,37 @@ func main() {
 			Height:       720,
 			Codec:        "av1",
 			Bitrate:      1000000,
-			CodecQuality: 25,
+			CodecQuality: 39,
 		},
 		{
 			Height:       1080,
 			Codec:        "av1",
 			Bitrate:      2000000,
-			CodecQuality: 25,
+			CodecQuality: 40,
 		},
 		{
 			Height:       1440,
 			Codec:        "av1",
 			Bitrate:      3000000,
-			CodecQuality: 25,
+			CodecQuality: 41,
 		},
 		{
 			Height:       2160,
 			Codec:        "av1",
 			Bitrate:      4000000,
-			CodecQuality: 25,
+			CodecQuality: 41,
+		},
+		{
+			Height:       3240,
+			Codec:        "av1",
+			Bitrate:      5000000,
+			CodecQuality: 41,
 		},
 		{
 			Height:       4320,
 			Codec:        "av1",
 			Bitrate:      8000000,
-			CodecQuality: 25,
+			CodecQuality: 41,
 		},
 	}
 

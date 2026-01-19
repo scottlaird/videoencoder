@@ -11,6 +11,29 @@ Requirements:
 - ffmpeg + ffprobe
 - [Shaka Packager](https://github.com/shaka-project/shaka-packager), installed in the path as `packager`.
 
+## Usage
+
+- Compile via `go build`.
+- Make sure that `ffmpeg`, `ffprobe`, and `packager` are installed.
+- Run `video-encoder file.mov` to encode.
+
+By default, intermediate transcoded videos are stored in
+`./transcodes`, and the output lives in `./stream`, but these can be
+changed via `--outdir` and `--streamdir`.
+
+`video-encoder` will recognize when source files, destination files,
+or transcoding settings change, and will rebuild/re-transcode as few
+files as possible.
+
+By default, `video-encoder` will transcode to H.264 up to 1080p, H.265
+up to 4k, and AVC1 up to 8k.
+
+## TODO
+
+- Add a configuration file for storing transcoding settings and flags.
+  Right now, this requires re-compiling `video-encoder`.
+- Optimize the default transcoding settings.
+
 ## Notes
 
 
