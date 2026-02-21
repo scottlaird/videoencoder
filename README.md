@@ -26,7 +26,16 @@ or transcoding settings change, and will rebuild/re-transcode as few
 files as possible.
 
 By default, `video-encoder` will transcode to H.264 up to 1080p, H.265
-up to 4k, and AVC1 up to 8k.
+up to 4k, and AVC1 up to 8k.  This is currently configued via source
+code; a config file will follow at some point.
+
+`video-encoder` can handle both SDR and HDR videos with no additional
+flags.  It can also combine SDR and HDR versions of the same source
+into a single SDR+HDR stream, where the client can choose which flavor
+to stream.  To do this, run `video-encoder hdr.mov sdr.mov`.  The two
+videos should be the same length and ideally the same resolution.
+They will be individually transcoded and then bundled into the same
+DASH and HLS manifests for streaming.
 
 ## TODO
 
