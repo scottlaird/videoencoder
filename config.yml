@@ -1,0 +1,22 @@
+encoders:
+- name: h264
+  command: ffmpeg
+  codec: h264
+  args:
+  - foo
+  - bar
+  - bitrate={{ .Bitrate }}
+  
+  bitrate: 1000
+  cq: 30
+
+resolutions:
+- height: 480
+  encoder: h264
+  params:
+    foo: bar
+    bitrate: 2000
+- height: 720
+  encoder: h264
+  params:
+    bitrate: 3000

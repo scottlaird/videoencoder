@@ -1,5 +1,5 @@
 module github.com/scottlaird/videoencoder
 
-go 1.22.2
+go 1.26.0
 
-require gopkg.in/vansante/go-ffprobe.v2 v2.2.1
+require gopkg.in/vansante/go-ffprobe.v2 v2.3.0

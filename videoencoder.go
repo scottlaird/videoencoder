@@ -16,8 +16,10 @@ import (
 )
 
 type VideoData struct {
-	Width, Height uint64
-	FPS           float64
+	Width, Height  uint64
+	FPS            float64
+	ColorTransfer  string
+	ColorPrimaries string
 }
 
 type VideoEncodingTarget struct {
@@ -139,9 +141,9 @@ func (c *FFMPEGCommands) Execute() error {
 }
 
 var (
-	h264Flag      = flag.String("h264", "on", "on/off/nvenc")
 	outdirFlag    = flag.String("outdir", "transcodes", "output directory for transcodes")
 	streamdirFlag = flag.String("streamdir", "stream", "output directory for streaming video")
+	thumbnails    = flag.Bool("thumbnails", false, "Generate seekable thumbnails") // can generate, but shaka-packager has issues.
 )
 
 func MaybeExecute(cmd []string, infile, outfile string) error {
@@ -205,6 +207,25 @@ func MaybeExecute(cmd []string, infile, outfile string) error {
 	return nil
 }
 
+// CopyFile copies a small-ish file by reading it entirely into RAM.
+// Don't use this on large files (such as encoded videos), but it's
+// fine for copying thumbnails, etc.
+func CopyFile(source, dest string) error {
+	b, err := os.ReadFile(source)
+	if err != nil {
+		return err
+	}
+
+	err = os.WriteFile(dest, b, 0644)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Copied %d bytes of thumbnail from %q to %q with error=%v\n", len(b), source, dest, err)
+
+	return err
+}
+
 func GetVideoData(filename string) (VideoData, error) {
 	vd := VideoData{}
 
@@ -219,7 +240,7 @@ func GetVideoData(filename string) (VideoData, error) {
 	}
 
 	var width, height uint64
-	var fps string
+	var fps, transfer, primaries string
 
 	for _, stream := range data.Streams {
 		if stream.Width > 0 {
@@ -230,6 +251,12 @@ func GetVideoData(filename string) (VideoData, error) {
 		}
 		if stream.RFrameRate != "" && stream.RFrameRate != "0/0" {
 			fps = stream.RFrameRate
+		}
+		if stream.ColorTransfer != "" {
+			transfer = stream.ColorTransfer
+		}
+		if stream.ColorPrimaries != "" {
+			primaries = stream.ColorPrimaries
 		}
 	}
 
@@ -251,6 +278,8 @@ func GetVideoData(filename string) (VideoData, error) {
 
 	vd.Width = width
 	vd.Height = height
+	vd.ColorPrimaries = primaries
+	vd.ColorTransfer = transfer
 
 	return vd, nil
 }
@@ -296,9 +325,9 @@ func (targets VideoEncodingTargets) FilterTargets(vd VideoData) VideoEncodingTar
 	return filteredTargets
 }
 
-func (target VideoEncodingTarget) GenerateFFMPEGPartialCommand(infile, outpath string) *FFMPEGPartialCommand {
+func (target VideoEncodingTarget) GenerateFFMPEGPartialCommand(infile, outpath string, seq int) *FFMPEGPartialCommand {
 	cmd := FFMPEGPartialCommand{}
-	cmd.OutFile = filepath.Join(outpath, fmt.Sprintf("video_%s_%dx%d_%d.mp4", target.Codec, target.Width, target.Height, target.Bitrate))
+	cmd.OutFile = filepath.Join(outpath, fmt.Sprintf("video_%d_%s_%dx%d_%d.mp4", seq, target.Codec, target.Width, target.Height, target.Bitrate))
 	cmd.InFile = infile
 
 	codecOptions := []string{}
@@ -309,7 +338,7 @@ func (target VideoEncodingTarget) GenerateFFMPEGPartialCommand(infile, outpath s
 			"-s", fmt.Sprintf("%dx%d", target.Width, target.Height), // resolution
 			"-c:v", "libsvtav1",
 			"-crf", fmt.Sprintf("%d", target.CodecQuality), // Quality
-			"-preset", "6",
+			"-preset", "5",
 			//"-b:v", fmt.Sprintf("%d", target.Bitrate),
 			//"-svtav1-params", "keyint=10s;enable-overlays=1;scd=1;scm=0", //fmt.Sprintf("tbr=%d", target.Bitrate/1000), // Set bitrate
 			//			"-svtav1-params", fmt.Sprintf("rc=1:tbr=%d", target.Bitrate/1000),
@@ -341,6 +370,13 @@ func (target VideoEncodingTarget) GenerateFFMPEGPartialCommand(infile, outpath s
 			"-bufsize", fmt.Sprintf("%d", target.Bitrate*3/2), // Set buffer to max rate
 			"-an", // No audio
 		}
+	case "jpg":
+		codecOptions = []string{
+			"-s", fmt.Sprintf("%dx%d", target.Width, target.Height), // resolution
+			"-r", "1", // frame rate, 1 fps for thumbnails
+			"-f", "image2",
+		}
+		cmd.OutFile = filepath.Join(outpath, "thumbnail-%d.jpg")
 	}
 
 	cmd.BaseCommands = []string{
@@ -405,8 +441,22 @@ func RunShakaPackager(streampath string, videofiles []string, audiofile string) 
 	}
 
 	for _, videofile := range videofiles {
+		vd, err := GetVideoData(videofile)
+		if err != nil {
+			panic(err)
+		}
+
+		fmt.Printf("Video %q: %q / %q\n", videofile, vd.ColorPrimaries, vd.ColorTransfer)
+		label := "Unknown"
+		switch vd.ColorTransfer {
+		case "smpte2084":
+			label = "HDR"
+		case "bt709":
+			label = "SDR"
+		}
+
 		basename := filepath.Base(videofile)
-		cmd = append(cmd, fmt.Sprintf("in=%s,stream=video,output=%s/%s", videofile, streampath, basename))
+		cmd = append(cmd, fmt.Sprintf("in=%s,stream=video,output=%s/%s,dash_label=%s", videofile, streampath, basename, label))
 	}
 
 	cmd = append(cmd,
@@ -418,6 +468,15 @@ func RunShakaPackager(streampath string, videofiles []string, audiofile string) 
 		"--allow_approximate_segment_timeline",
 		"--default_language=en",
 	)
+
+	if *thumbnails {
+		cmd = append(cmd,
+			"--add_thumbnail_adaptation_set",
+			fmt.Sprintf("mimeType=image/jpg:bandwidth=10000,height=180,media=%s/thumbnails-$Number$.jpg,timescale=1,duration=1", streampath),
+		)
+	}
+
+	fmt.Printf("Running: %v\n", cmd)
 
 	c := exec.Command(cmd[0], cmd[1:len(cmd)]...)
 	c.Stderr = os.Stderr
@@ -436,6 +495,7 @@ func main() {
 	flag.Parse()
 
 	filename := flag.Arg(0)
+	allFiles := flag.Args()
 
 	if filename == "" {
 		usage()
@@ -469,6 +529,12 @@ func main() {
 			CodecQuality: 18,
 		},
 		{
+			Height:       480,
+			Codec:        "h265",
+			Bitrate:      800000,
+			CodecQuality: 20,
+		},
+		{
 			Height:       720,
 			Codec:        "h265",
 			Bitrate:      1000000,
@@ -493,41 +559,56 @@ func main() {
 			CodecQuality: 20,
 		},
 		{
+			Height:       480,
+			Codec:        "av1",
+			Bitrate:      700000,
+			CodecQuality: 28,
+		},
+		{
 			Height:       720,
 			Codec:        "av1",
 			Bitrate:      1000000,
-			CodecQuality: 39,
+			CodecQuality: 30,
 		},
 		{
 			Height:       1080,
 			Codec:        "av1",
 			Bitrate:      2000000,
-			CodecQuality: 40,
+			CodecQuality: 31,
 		},
 		{
 			Height:       1440,
 			Codec:        "av1",
 			Bitrate:      3000000,
-			CodecQuality: 41,
+			CodecQuality: 32,
 		},
 		{
 			Height:       2160,
 			Codec:        "av1",
 			Bitrate:      4000000,
-			CodecQuality: 41,
+			CodecQuality: 32,
 		},
 		{
 			Height:       3240,
 			Codec:        "av1",
 			Bitrate:      5000000,
-			CodecQuality: 41,
+			CodecQuality: 32,
 		},
 		{
 			Height:       4320,
 			Codec:        "av1",
 			Bitrate:      8000000,
-			CodecQuality: 41,
+			CodecQuality: 32,
 		},
+	}
+
+	if *thumbnails {
+		defaultTargets = append(defaultTargets,
+			&VideoEncodingTarget{
+				Height: 180,
+				Codec:  "jpg",
+			},
+		)
 	}
 
 	ft := defaultTargets.FilterTargets(vd)
@@ -537,27 +618,32 @@ func main() {
 	}
 
 	videofiles := []string{}
-	cmds := FFMPEGCommands{}
-	for _, t := range ft {
-		cmd := t.GenerateFFMPEGPartialCommand(filename, *outdirFlag)
-		err = cmds.AddIfNeeded(cmd)
+
+	// Compress all input files, not just the first one, so we can do HDR+SDR, etc.
+	for seq, f := range allFiles {
+		cmds := FFMPEGCommands{}
+		for _, t := range ft {
+			cmd := t.GenerateFFMPEGPartialCommand(f, *outdirFlag, seq)
+			err = cmds.AddIfNeeded(cmd)
+			if err != nil {
+				panic(err)
+			}
+
+			videofiles = append(videofiles, cmd.OutFile)
+
+		}
+
+		err = cmds.Execute()
 		if err != nil {
 			panic(err)
 		}
-
-		videofiles = append(videofiles, cmd.OutFile)
-
-	}
-
-	err = cmds.Execute()
-	if err != nil {
-		panic(err)
-	}
-	for _, p := range cmds.PartialCommands {
-		err = p.UpdateStatusFile()
-		if err != nil {
-			panic(err)
+		for _, p := range cmds.PartialCommands {
+			err = p.UpdateStatusFile()
+			if err != nil {
+				panic(err)
+			}
 		}
+
 	}
 
 	audiofile, err := GenerateAudioWithFFMPEG(filename, *outdirFlag)
@@ -571,6 +657,13 @@ func main() {
 	}
 
 	mpdfile, err := RunShakaPackager(*streamdirFlag, videofiles, audiofile)
+	if err != nil {
+		panic(err)
+	}
+
+	srcThumbnail := filepath.Join(*outdirFlag, "thumbnail.jpg")
+	dstThumbnail := filepath.Join(*streamdirFlag, "thumbnail.jpg")
+	err = CopyFile(srcThumbnail, dstThumbnail)
 	if err != nil {
 		panic(err)
 	}
