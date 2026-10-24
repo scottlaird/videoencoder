@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -42,7 +43,7 @@ func (r ExecRunner) Run(ctx context.Context, argv []string) error {
 	return nil
 }
 
-// Job produces one output file from one input.
+// Job produces one output from one input.
 type Job struct {
 	Input  string
 	Output string
@@ -51,47 +52,80 @@ type Job struct {
 	Base []string
 	// Args are the output options that precede Output on the command line.
 	Args []string
+
+	// Slot names what the output is for, such as "main/av1-2160"; Key
+	// identifies how it is built and is part of Output's name. Source
+	// identifies the input's content.
+	Slot, Key, Source string
 }
 
-// Cmdline is the command that identifies how Output is built. It names
-// the final output, not the partial file ffmpeg actually writes.
+// Cmdline is the job's command, naming the final output rather than
+// the partial file ffmpeg actually writes.
 func (j *Job) Cmdline() string {
 	return strings.Join(j.Base, " ") + " " + strings.Join(append(slices.Clone(j.Args), j.Output), " ")
 }
 
 // isPattern reports whether Output is an image2 sequence pattern such as
-// "thumb-%d.jpg", which can't be written atomically.
+// "thumbs.KEY/%d.jpg". Its directory is the unit of output.
 func (j *Job) isPattern() bool { return strings.Contains(filepath.Base(j.Output), "%") }
 
-// writePath is where ffmpeg writes the output until it is complete. It
-// keeps the extension so ffmpeg can still infer the container.
+// Result is the file or directory that appears when the job finishes.
+func (j *Job) Result() string {
+	if j.isPattern() {
+		return filepath.Dir(j.Output)
+	}
+	return j.Output
+}
+
+// partial is where result is written until it is complete. Files keep
+// their extension so ffmpeg can still infer the container.
+func (j *Job) partial() string {
+	r := j.Result()
+	if j.isPattern() {
+		return r + ".partial"
+	}
+	ext := filepath.Ext(r)
+	return strings.TrimSuffix(r, ext) + ".partial" + ext
+}
+
+// writePath is the output argument ffmpeg is given.
 func (j *Job) writePath() string {
 	if j.isPattern() {
-		return j.Output
+		return filepath.Join(j.partial(), filepath.Base(j.Output))
 	}
-	ext := filepath.Ext(j.Output)
-	return strings.TrimSuffix(j.Output, ext) + ".partial" + ext
+	return j.partial()
 }
 
-// Batch is a set of jobs run as a single ffmpeg process.
+// Batch is a set of jobs run as a single ffmpeg process, recording
+// what it builds in Manifest.
 type Batch struct {
-	Jobs []*Job
+	Manifest *state.Manifest
+	Jobs     []*Job
 }
 
-// AddIfNeeded adds j unless its output is up to date, and reports
+// AddIfNeeded adds j unless its output already exists, and reports
 // whether it did.
 func (b *Batch) AddIfNeeded(j *Job) (bool, error) {
-	reason, err := state.Needs(j.Input, j.Output, j.Cmdline())
-	if err != nil {
+	_, err := os.Stat(j.Result())
+	exists := err == nil
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return false, err
 	}
-	if reason == "" {
-		slog.Info("Up to date", "output", j.Output)
+	reason := b.Manifest.Explain(j.Slot, j.Key, j.Source, exists)
+	if reason == state.UpToDate {
+		slog.Info("Up to date", "slot", j.Slot, "output", filepath.Base(j.Result()))
 		return false, nil
 	}
-	slog.Info("Rebuilding", "output", j.Output, "reason", reason)
+	slog.Info("Building", "slot", j.Slot, "output", filepath.Base(j.Result()), "reason", reason)
 	b.Jobs = append(b.Jobs, j)
 	return true, nil
+}
+
+// Add adds j whether or not its output exists, replacing it.
+func (b *Batch) Add(j *Job) {
+	slog.Info("Building", "slot", j.Slot, "output", filepath.Base(j.Result()), "reason", "forced")
+	os.RemoveAll(j.Result())
+	b.Jobs = append(b.Jobs, j)
 }
 
 // Argv is the combined command line for every job in the batch.
@@ -112,19 +146,18 @@ func (b *Batch) Argv() ([]string, error) {
 }
 
 // Run builds every job in the batch. Outputs appear under their final
-// names, with status recorded, only if ffmpeg succeeds; on failure no
-// partial output is left behind looking finished.
+// names, and in the manifest, only if ffmpeg succeeds; on failure no
+// partial output is left behind. Each output replaces, and deletes, the
+// one previously built for its slot.
 func (b *Batch) Run(ctx context.Context, r Runner) error {
 	argv, err := b.Argv()
 	if err != nil || argv == nil {
 		return err
 	}
 	for _, j := range b.Jobs {
-		if err := os.MkdirAll(filepath.Dir(j.Output), 0o755); err != nil {
+		dir := filepath.Dir(j.writePath())
+		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("creating output directory: %w", err)
-		}
-		if err := state.Clear(j.Output); err != nil {
-			return err
 		}
 	}
 
@@ -134,31 +167,35 @@ func (b *Batch) Run(ctx context.Context, r Runner) error {
 		return err
 	}
 
+	var errs []error
 	for _, j := range b.Jobs {
-		if p := j.writePath(); p != j.Output {
-			if err := os.Rename(p, j.Output); err != nil {
-				return fmt.Errorf("finishing %q: %w", j.Output, err)
-			}
+		if err := os.Rename(j.partial(), j.Result()); err != nil {
+			errs = append(errs, fmt.Errorf("finishing %q: %w", j.Result(), err))
+			continue
 		}
-		if err := state.Record(j.Output, j.Cmdline()); err != nil {
-			return err
-		}
+		errs = append(errs, b.Manifest.Record(j.Slot, state.Entry{
+			Key:    j.Key,
+			Output: filepath.Base(j.Result()),
+			Source: j.Source,
+			Args:   j.Cmdline(),
+		}))
 	}
-	return nil
+	errs = append(errs, b.Manifest.Save())
+	return errors.Join(errs...)
 }
 
 func (b *Batch) removePartials() {
 	for _, j := range b.Jobs {
-		if p := j.writePath(); p != j.Output {
-			os.Remove(p)
-		}
+		os.RemoveAll(j.partial())
 	}
 }
 
-// RunIfNeeded builds j on its own if it is stale.
-func RunIfNeeded(ctx context.Context, r Runner, j *Job) error {
-	var b Batch
-	if _, err := b.AddIfNeeded(j); err != nil {
+// RunIfNeeded builds j on its own if it is stale, or if force is set.
+func RunIfNeeded(ctx context.Context, r Runner, m *state.Manifest, j *Job, force bool) error {
+	b := Batch{Manifest: m}
+	if force {
+		b.Add(j)
+	} else if _, err := b.AddIfNeeded(j); err != nil {
 		return err
 	}
 	return b.Run(ctx, r)

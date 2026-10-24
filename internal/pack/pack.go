@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/scottlaird/videoencoder/internal/ffmpeg"
 	"github.com/scottlaird/videoencoder/internal/probe"
@@ -24,24 +25,42 @@ type Packager struct {
 // Package writes dash.mpd, hls.m3u8 and the segmented media into
 // streamdir, and returns the path of the DASH manifest. Each video is
 // labelled HDR or SDR so players can offer the choice.
-func (p *Packager) Package(ctx context.Context, streamdir string, videos []string, audio string) (string, error) {
+//
+// Every media file and playlist is named after its input, so it also
+// returns the names of every file it wrote in streamdir.
+func (p *Packager) Package(ctx context.Context, streamdir string, videos []string, audio string) (string, []string, error) {
 	if err := os.MkdirAll(streamdir, 0o755); err != nil {
-		return "", fmt.Errorf("creating stream directory: %w", err)
+		return "", nil, fmt.Errorf("creating stream directory: %w", err)
 	}
 	argv, err := p.argv(ctx, streamdir, videos, audio)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if err := p.Runner.Run(ctx, argv); err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return filepath.Join(streamdir, "dash.mpd"), nil
+	return filepath.Join(streamdir, "dash.mpd"), streamFiles(append([]string{audio}, videos...)), nil
+}
+
+// streamFiles returns the names Package writes for inputs.
+func streamFiles(inputs []string) []string {
+	names := []string{"dash.mpd", "hls.m3u8"}
+	for _, in := range inputs {
+		base := filepath.Base(in)
+		names = append(names, base, playlistName(base))
+	}
+	return names
+}
+
+func playlistName(base string) string {
+	return strings.TrimSuffix(base, filepath.Ext(base)) + ".m3u8"
 }
 
 func (p *Packager) argv(ctx context.Context, streamdir string, videos []string, audio string) ([]string, error) {
+	abase := filepath.Base(audio)
 	argv := []string{
 		"packager",
-		fmt.Sprintf("in=%s,stream=audio,output=%s", audio, filepath.Join(streamdir, filepath.Base(audio))),
+		fmt.Sprintf("in=%s,stream=audio,output=%s,playlist_name=%s", audio, filepath.Join(streamdir, abase), playlistName(abase)),
 	}
 
 	for _, v := range videos {
@@ -49,8 +68,9 @@ func (p *Packager) argv(ctx context.Context, streamdir string, videos []string, 
 		if err != nil {
 			return nil, err
 		}
-		argv = append(argv, fmt.Sprintf("in=%s,stream=video,output=%s,dash_label=%s",
-			v, filepath.Join(streamdir, filepath.Base(v)), vd.Tone()))
+		base := filepath.Base(v)
+		argv = append(argv, fmt.Sprintf("in=%s,stream=video,output=%s,playlist_name=%s,dash_label=%s",
+			v, filepath.Join(streamdir, base), playlistName(base), vd.Tone()))
 	}
 
 	argv = append(argv,

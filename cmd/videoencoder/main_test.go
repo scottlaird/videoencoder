@@ -15,6 +15,27 @@ import (
 	"github.com/scottlaird/videoencoder/internal/probe"
 )
 
+func TestForced(t *testing.T) {
+	tests := []struct {
+		glob, slot string
+		want       bool
+	}{
+		{"", "main/av1-1080", false},
+		{"*", "main/av1-1080", true},
+		{"*", "audio", true},
+		{"av1-*", "hdr/av1-1080", true},
+		{"av1-*", "hdr/h264-1080", false},
+		{"sdr/*", "hdr/av1-1080", false},
+		{"sdr/*", "sdr/av1-1080", true},
+		{"poster", "poster", true},
+	}
+	for _, tt := range tests {
+		if got := forced(tt.glob, &ffmpeg.Job{Slot: tt.slot}); got != tt.want {
+			t.Errorf("forced(%q, %q) = %v, want %v", tt.glob, tt.slot, got, tt.want)
+		}
+	}
+}
+
 func TestParseArgs(t *testing.T) {
 	abs := func(p string) string { a, _ := filepath.Abs(p); return a }
 	tests := []struct {
@@ -126,9 +147,9 @@ func TestAdHocEndToEnd(t *testing.T) {
 	}
 	// Defaults put outputs beside the source, under the video's name.
 	streamdir := filepath.Join(dir, "stream", "src")
-	for _, name := range []string{"dash.mpd", "hls.m3u8", "thumbnail.jpg", "audio.mp4"} {
-		if _, err := os.Stat(filepath.Join(streamdir, name)); err != nil {
-			t.Errorf("stream output %s: %v", name, err)
+	for _, pattern := range []string{"dash.mpd", "hls.m3u8", "thumbnail.jpg", "audio.*.mp4", "audio.*.m3u8"} {
+		if m, _ := filepath.Glob(filepath.Join(streamdir, pattern)); len(m) != 1 {
+			t.Errorf("stream outputs matching %s: %q, want one", pattern, m)
 		}
 	}
 	mpd, err := os.ReadFile(filepath.Join(streamdir, "dash.mpd"))
@@ -148,7 +169,7 @@ func TestAdHocEndToEnd(t *testing.T) {
 	}
 
 	// Deleting one output (leaving its status file) rebuilds just that one.
-	matches, _ := filepath.Glob(filepath.Join(dir, "transcodes", "src", "video_0_av1_*.mp4"))
+	matches, _ := filepath.Glob(filepath.Join(dir, "transcodes", "src", "av1-*.0.*.mp4"))
 	if len(matches) != 1 {
 		t.Fatalf("found av1 outputs %q, want exactly one", matches)
 	}
@@ -208,10 +229,13 @@ videos:
 	if err := run(context.Background(), o, d); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
-	encoded, _ := filepath.Glob(filepath.Join(dir, "transcodes", "clip", "video_*.mp4"))
+	transcodes := filepath.Join(dir, "transcodes", "clip")
+	stream := filepath.Join(dir, "stream", "clip")
+	encoded, _ := filepath.Glob(filepath.Join(transcodes, "*.main.*.mp4"))
 	if len(encoded) != 2 {
 		t.Errorf("encoded %q, want an h264 and an av1 rendition", encoded)
 	}
+	oldAV1, _ := filepath.Glob(filepath.Join(transcodes, "av1-1080.main.*.mp4"))
 
 	writeFile("clip.video.yaml", "renditions: {av1-1080: {quality: 40}}\n")
 
@@ -225,8 +249,10 @@ videos:
 	for _, want := range []string{
 		"quality: 40 # " + filepath.Join(dir, "clip.video.yaml"),
 		"quality: 23 # " + filepath.Join(dir, "videoencoder.yaml"),
-		"video_0_av1_320x240_2000000.mp4: rebuild: command line doesn't match status file",
-		"video_0_h264_320x240_4000000.mp4: up to date",
+		"main/av1-1080 320x240 -> av1-1080.main.",
+		".mp4: build: settings changed",
+		"main/h264-1080 320x240 -> h264-1080.main.",
+		".mp4: up to date",
 	} {
 		if !strings.Contains(plan, want) {
 			t.Errorf("plan output lacks %q:\n%s", want, plan)
@@ -240,6 +266,39 @@ videos:
 	}
 	if got := runner.calls["ffmpeg"]; got != 1 {
 		t.Errorf("after changing one rendition: %d ffmpeg calls, want 1", got)
+	}
+	newAV1, _ := filepath.Glob(filepath.Join(transcodes, "av1-1080.main.*.mp4"))
+	if len(oldAV1) != 1 || len(newAV1) != 1 || oldAV1[0] == newAV1[0] {
+		t.Fatalf("av1 outputs before %q, after %q; want one each, differently named", oldAV1, newAV1)
+	}
+	if _, err := os.Stat(filepath.Join(stream, filepath.Base(oldAV1[0]))); err == nil {
+		t.Error("the replaced rendition is still in the stream directory")
+	}
+	if _, err := os.Stat(filepath.Join(stream, filepath.Base(newAV1[0]))); err != nil {
+		t.Errorf("the new rendition isn't in the stream directory: %v", err)
+	}
+
+	// --rebuild forces one rendition despite being up to date.
+	runner.calls = map[string]int{}
+	forced := o
+	forced.rebuild = "h264-*"
+	if err := run(context.Background(), forced, d); err != nil {
+		t.Fatalf("forced run: %v", err)
+	}
+	if got := runner.calls["ffmpeg"]; got != 1 {
+		t.Errorf("--rebuild 'h264-*': %d ffmpeg calls, want 1", got)
+	}
+
+	// Dropping a rendition deletes its files.
+	writeFile("clip.video.yaml", "renditions: {av1-1080: null}\n")
+	if err := run(context.Background(), o, d); err != nil {
+		t.Fatalf("third run: %v", err)
+	}
+	if left, _ := filepath.Glob(filepath.Join(transcodes, "av1-*")); len(left) != 0 {
+		t.Errorf("dropped rendition left %q", left)
+	}
+	if left, _ := filepath.Glob(filepath.Join(stream, "av1-*")); len(left) != 0 {
+		t.Errorf("dropped rendition left %q in the stream", left)
 	}
 }
 

@@ -2,12 +2,19 @@ package plan
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/scottlaird/videoencoder/internal/config"
+	"github.com/scottlaird/videoencoder/internal/ffmpeg"
 	"github.com/scottlaird/videoencoder/internal/probe"
 )
+
+type ffmpegJob = ffmpeg.Job
 
 func describe(ts Targets) []string {
 	var out []string
@@ -98,31 +105,112 @@ func TestFromConfig(t *testing.T) {
 }
 
 func TestJob(t *testing.T) {
+	src := Source{Label: "main", Path: "in.mov", ID: "id1"}
 	tests := []struct {
-		name   string
-		target Target
-		want   string
+		name     string
+		target   Target
+		wantArgs string
 	}{
 		{
 			name: "capped bitrate",
 			target: Target{
-				EncoderName: "h264", Width: 1280, Height: 720, Quality: 18, Bitrate: 2000000,
+				Name: "h264-720", EncoderName: "h264", Width: 1280, Height: 720, Quality: 18, Bitrate: 2000000,
 				Encoder: config.Encoder{Codec: "libx264", QualityFlag: "-crf", Args: []string{"-preset", "faster"}, CapBitrate: true},
 			},
-			want: "ffmpeg -loglevel warning -stats -y -i in.mov -s 1280x720 -c:v libx264 -preset faster -crf 18 -b:v 2000000 -maxrate 3000000 -bufsize 3000000 -an out/video_1_h264_1280x720_2000000.mp4",
+			wantArgs: "-s 1280x720 -c:v libx264 -preset faster -crf 18 -b:v 2000000 -maxrate 3000000 -bufsize 3000000 -an",
 		},
 		{
 			name: "uncapped, fractional quality, per-rendition args",
 			target: Target{
-				EncoderName: "av1", Width: 1920, Height: 1080, Quality: 30.5, Bitrate: 2000000, Args: []string{"-svtav1-params", "tune=0"},
+				Name: "av1-1080", EncoderName: "av1", Width: 1920, Height: 1080, Quality: 30.5, Bitrate: 2000000, Args: []string{"-svtav1-params", "tune=0"},
 				Encoder: config.Encoder{Codec: "libsvtav1", QualityFlag: "-crf", Args: []string{"-preset", "5"}},
 			},
-			want: "ffmpeg -loglevel warning -stats -y -i in.mov -s 1920x1080 -c:v libsvtav1 -preset 5 -crf 30.5 -svtav1-params tune=0 -an out/video_1_av1_1920x1080_2000000.mp4",
+			wantArgs: "-s 1920x1080 -c:v libsvtav1 -preset 5 -crf 30.5 -svtav1-params tune=0 -an",
 		},
 	}
 	for _, tt := range tests {
-		if got := tt.target.Job("in.mov", "out", 1).Cmdline(); got != tt.want {
-			t.Errorf("%s: Cmdline() =\n %q\nwant\n %q", tt.name, got, tt.want)
+		j := tt.target.Job(src, "out")
+		if got := strings.Join(j.Args, " "); got != tt.wantArgs {
+			t.Errorf("%s: args =\n %q\nwant\n %q", tt.name, got, tt.wantArgs)
+		}
+		if want := "out/" + tt.target.Name + ".main." + j.Key + ".mp4"; j.Output != want {
+			t.Errorf("%s: Output = %q, want %q", tt.name, j.Output, want)
+		}
+		if j.Slot != "main/"+tt.target.Name || j.Source != "id1" || len(j.Key) != keyLength {
+			t.Errorf("%s: slot %q source %q key %q", tt.name, j.Slot, j.Source, j.Key)
+		}
+	}
+}
+
+func TestJobKey(t *testing.T) {
+	target := func(q float64) *Target {
+		return &Target{Name: "av1-1080", Width: 1920, Height: 1080, Quality: q,
+			Encoder: config.Encoder{Codec: "libsvtav1", QualityFlag: "-crf"}}
+	}
+	src := Source{Label: "main", Path: "/a/in.mov", ID: "id1"}
+	base := target(30).Job(src, "out").Key
+
+	moved := src
+	moved.Path = "/b/in.mov"
+	edited := src
+	edited.ID = "id2"
+	tests := []struct {
+		name string
+		key  string
+		same bool
+	}{
+		{"same inputs", target(30).Job(src, "out").Key, true},
+		{"moved source", target(30).Job(moved, "out").Key, true},
+		{"other outdir", target(30).Job(src, "elsewhere").Key, true},
+		{"new quality", target(31).Job(src, "out").Key, false},
+		{"edited source", target(30).Job(edited, "out").Key, false},
+	}
+	for _, tt := range tests {
+		if (tt.key == base) != tt.same {
+			t.Errorf("%s: key %s vs %s, want same=%v", tt.name, tt.key, base, tt.same)
+		}
+	}
+}
+
+func TestNewSource(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "in.mov")
+	if err := os.WriteFile(path, []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a, err := NewSource("main", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := time.Now().Add(time.Hour)
+	if err := os.Chtimes(path, later, later); err != nil {
+		t.Fatal(err)
+	}
+	b, err := NewSource("main", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.ID == b.ID {
+		t.Error("touching the source didn't change its ID")
+	}
+	if _, err := NewSource("main", path+".missing"); err == nil {
+		t.Error("NewSource(missing) = nil error")
+	}
+}
+
+func TestAuxJobs(t *testing.T) {
+	src := Source{Label: "hdr", Path: "in.mov", ID: "id1"}
+	vd := probe.VideoData{Width: 3840, Height: 2160}
+	tests := []struct {
+		job        *ffmpegJob
+		slot, name string
+	}{
+		{AudioJob(src, "out"), "audio", "audio.%s.mp4"},
+		{PosterJob(src, "out"), "poster", "poster.%s.jpg"},
+		{SeekThumbnailJob(vd, src, "out"), "thumbs", "thumbs.%s/%%d.jpg"},
+	}
+	for _, tt := range tests {
+		if want := "out/" + fmt.Sprintf(tt.name, tt.job.Key); tt.job.Slot != tt.slot || tt.job.Output != want {
+			t.Errorf("%s: slot %q output %q, want %q", tt.slot, tt.job.Slot, tt.job.Output, want)
 		}
 	}
 }

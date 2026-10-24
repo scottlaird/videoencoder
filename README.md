@@ -21,9 +21,15 @@ Requirements:
 
 `videoencoder` will recognize when source files, destination files,
 or transcoding settings change, and will rebuild/re-transcode as few
-files as possible.  Outputs are written under a `.partial` name and
-renamed when ffmpeg finishes, so an interrupted run never leaves a
-truncated file that looks complete.
+files as possible.  Each output's name includes a hash of its source
+and settings (`av1-2160.hdr.7c3e1a09bd.mp4`), so changing one
+rendition's settings produces one new file and leaves every other
+file, and its name, alone.  Outputs are written under a `.partial`
+name and renamed when ffmpeg finishes, so an interrupted run never
+leaves a truncated file that looks complete.  Replaced and removed
+outputs are deleted once the new stream is complete.  `--rebuild GLOB`
+forces a rebuild (`'*'`, `'av1-*'`, `sdr/h264-1080`, `poster`), for
+example after upgrading ffmpeg.
 
 By default, `videoencoder` will transcode to H.264 up to 1080p, H.265
 up to 4k, and AV1 up to 8k, never above the source's resolution.

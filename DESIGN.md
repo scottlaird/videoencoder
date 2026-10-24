@@ -134,33 +134,54 @@ Credentials are never stored in config. S3 keys come from the usual
 
 ### Planning and incremental rebuilds
 
-`plan` turns (merged config, probe data) into a list of renditions.
-Each rendition has:
+`plan` turns (merged config, probe data) into a list of jobs. Each
+job has:
 
-- a **build key**: the SHA-256 of the canonical argument vector (with
-  paths made relative), plus the source file's identity (size,
-  mtime, and a hash of its first and last MiB), plus a
-  schema version;
-- an output name derived from the rendition name and a short key
-  prefix, e.g. `av1-2160.7c3e1a.mp4`.
+- a **slot**, saying what the output is for: `<source label>/<rendition>`
+  (e.g. `hdr/av1-2160`), `audio`, `poster` or `thumbs`;
+- a **build key**: SHA-256 over a schema version, the source's identity
+  and every ffmpeg argument except the input path, so moving a source
+  doesn't rebuild anything. Source identity is its size, a hash of its
+  first and last MiB (`internal/fileid`) and its mtime in seconds. The
+  mtime makes a re-export of identical size rebuild, which errs toward
+  rebuilding when in doubt;
+- an output named after the slot and the first 10 hex digits of the
+  key: `av1-2160.hdr.7c3e1a09bd.mp4`, `audio.<key>.mp4`,
+  `poster.<key>.jpg`, `thumbs.<key>/`.
 
 Putting the key in the filename means a changed setting produces a
-*new* object instead of overwriting the old one. That helps S3: an
-unchanged rendition keeps its name and ETag, so the sync skips it, and
-nothing that is already published is ever overwritten in place.
+*new* file instead of overwriting the old one. That helps S3: an
+unchanged rendition keeps its name and content, so the sync skips it,
+and nothing already published is ever overwritten in place.
 
-A single `state.Needs(key, path)` replaces both `MaybeExecute` and
-`IsEncodeNeeded`. It returns a rebuild reason whenever the output is
-missing, whatever the state file says, which fixes the crash on a
-`.status` file whose output is gone. State lives in one
-`state.json` per video work directory, not one `.status` file per
-output. Outputs are written to `name.partial` and renamed on success,
-so an interrupted ffmpeg run never looks finished. Every output
-directory is created with `MkdirAll` up front.
+Outputs are written to a `.partial` name (or a `.partial` directory
+for image sequences) and renamed when ffmpeg succeeds. So **an output
+is up to date exactly when the file with its key-name exists**, and
+there are no per-output status files: the old `MaybeExecute` and
+`IsEncodeNeeded` checks are gone, and with them the crash on a
+`.status` file whose output was missing.
+
+Each video keeps `<name>.state.json` in its outdir. It records, per
+slot, the key last built there, plus the list of files last written
+to the stream directory. That's used for two things:
+
+- explaining a rebuild in `plan`: *new*, *source changed*, *settings
+  changed* or *output file is missing*;
+- deleting exactly what a rebuild replaces: the previous file for a
+  rebuilt slot, the files of slots no longer in the config, and stream
+  files no longer produced. Only files this video's manifest recorded
+  are ever deleted, so videos can safely share an outdir or streamdir.
+  The deletions happen only after the new stream is complete.
+
+Packager writes each input to the stream directory under its own name,
+with an HLS playlist named to match (`playlist_name=`). So the stream's
+contents are known exactly, without guessing packager's
+`stream_N.m3u8` numbering.
 
 The ffmpeg version is deliberately **not** part of the key. A
-`brew upgrade` shouldn't re-render the whole library. `--rebuild` and
-`--rebuild=av1-*` force it.
+`brew upgrade` shouldn't re-render the whole library. `--rebuild` takes
+a glob over slots to force rebuilds: `*` for everything, `av1-*` for
+every source's AV1, `sdr/h264-1080`, or `poster`.
 
 The single-decode, multi-output ffmpeg invocation stays. Every stale
 rendition of one source is built in one ffmpeg process, because

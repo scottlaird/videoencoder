@@ -23,8 +23,11 @@ import (
 	"maps"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
+	"slices"
 	"strings"
+	"syscall"
 
 	"go.yaml.in/yaml/v4"
 
@@ -38,6 +41,7 @@ import (
 
 type options struct {
 	plan       bool
+	rebuild    string // glob over slots, such as "*/av1-*"
 	globalPath string
 	overrides  map[string]any
 	paths      []string
@@ -51,6 +55,7 @@ func parseArgs(args []string, stderr io.Writer) (options, error) {
 	fs := flag.NewFlagSet("videoencoder", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&o.globalPath, "config", config.DefaultGlobalPath(), "global config file")
+	fs.StringVar(&o.rebuild, "rebuild", "", `rebuild matching outputs even if up to date: "*" for all, "av1-*", "hdr/h264-1080", "audio", "poster"`)
 	outdir := fs.String("outdir", "", "override outdir: directory for intermediate renditions")
 	streamdir := fs.String("streamdir", "", "override streamdir: directory for the finished stream")
 	thumbnails := fs.Bool("thumbnails", false, "override thumbnails: generate seek thumbnails (not yet supported by shaka-packager)")
@@ -148,7 +153,7 @@ func run(ctx context.Context, o options, d deps) error {
 		if o.plan {
 			err = printPlan(ctx, r, d)
 		} else {
-			err = render(ctx, r, d)
+			err = render(ctx, r, d, o.rebuild)
 		}
 		if err != nil {
 			return fmt.Errorf("%s: %w", it.video.Name, err)
@@ -157,77 +162,139 @@ func run(ctx context.Context, o options, d deps) error {
 	return nil
 }
 
-// jobs returns the encode jobs for every source of r, by source, in
-// the same order as the targets they come from.
-func jobs(ctx context.Context, r *config.Resolved, d deps) (probe.VideoData, plan.Targets, [][]*ffmpeg.Job, error) {
-	labels := r.SourceLabels()
-	vd, err := d.prober.Probe(ctx, r.Sources[labels[0]])
-	if err != nil {
-		return vd, nil, nil, err
+// built is everything a video's outputs are made from.
+type built struct {
+	vd        probe.VideoData
+	sources   []plan.Source // in encoding order; the first supplies audio and poster
+	targets   plan.Targets
+	perSource [][]*ffmpeg.Job // rendition jobs, in target order
+	audio     *ffmpeg.Job
+	poster    *ffmpeg.Job
+	thumbs    *ffmpeg.Job // nil unless thumbnails are on
+	manifest  *state.Manifest
+	desc      map[*ffmpeg.Job]string // for plan output
+}
+
+// all returns every job, in a stable order.
+func (b *built) all() []*ffmpeg.Job {
+	var js []*ffmpeg.Job
+	for _, s := range b.perSource {
+		js = append(js, s...)
+	}
+	js = append(js, b.audio, b.poster)
+	if b.thumbs != nil {
+		js = append(js, b.thumbs)
+	}
+	return js
+}
+
+func prepare(ctx context.Context, r *config.Resolved, d deps) (*built, error) {
+	b := &built{desc: map[*ffmpeg.Job]string{}}
+	for _, label := range r.SourceLabels() {
+		src, err := plan.NewSource(label, r.Sources[label])
+		if err != nil {
+			return nil, err
+		}
+		b.sources = append(b.sources, src)
+	}
+	first := b.sources[0]
+	var err error
+	if b.vd, err = d.prober.Probe(ctx, first.Path); err != nil {
+		return nil, err
 	}
 	ladder, err := plan.FromConfig(&r.Config)
 	if err != nil {
-		return vd, nil, nil, err
+		return nil, err
 	}
-	targets := ladder.Filter(vd)
-
-	var all [][]*ffmpeg.Job
-	for seq, label := range labels {
-		src := r.Sources[label]
+	b.targets = ladder.Filter(b.vd)
+	for _, src := range b.sources {
 		var js []*ffmpeg.Job
-		for _, t := range targets {
-			js = append(js, t.Job(src, r.Outdir, seq))
+		for _, t := range b.targets {
+			j := t.Job(src, r.Outdir)
+			b.desc[j] = fmt.Sprintf("%s/%s %dx%d", src.Label, t.Name, t.Width, t.Height)
+			js = append(js, j)
 		}
-		all = append(all, js)
+		b.perSource = append(b.perSource, js)
 	}
-	return vd, targets, all, nil
+	b.audio = plan.AudioJob(first, r.Outdir)
+	b.poster = plan.PosterJob(first, r.Outdir)
+	if r.Thumbnails {
+		b.thumbs = plan.SeekThumbnailJob(b.vd, first, r.Outdir)
+	}
+	b.manifest, err = state.Load(r.Outdir, r.Name)
+	return b, err
 }
 
-func render(ctx context.Context, r *config.Resolved, d deps) error {
-	vd, _, perSource, err := jobs(ctx, r, d)
+// forced reports whether the --rebuild glob matches j's slot. A glob
+// without a "/" matches the part after the source label, so "av1-*"
+// covers every source's AV1 renditions and "*" covers everything.
+func forced(rebuild string, j *ffmpeg.Job) bool {
+	if rebuild == "" {
+		return false
+	}
+	name := j.Slot
+	if !strings.Contains(rebuild, "/") {
+		name = path.Base(name)
+	}
+	ok, _ := path.Match(rebuild, name)
+	return ok
+}
+
+func render(ctx context.Context, r *config.Resolved, d deps, rebuild string) error {
+	b, err := prepare(ctx, r, d)
 	if err != nil {
 		return err
 	}
-	labels := r.SourceLabels()
-	first := r.Sources[labels[0]]
-	slog.Info("Source", "video", r.Name, "file", first, "video", fmt.Sprintf("%+v", vd))
+	slog.Info("Source", "video", r.Name, "file", b.sources[0].Path, "video", fmt.Sprintf("%+v", b.vd))
 
 	var videos []string
-	for i, js := range perSource {
-		var batch ffmpeg.Batch
+	for i, js := range b.perSource {
+		batch := ffmpeg.Batch{Manifest: b.manifest}
+		if i == 0 && b.thumbs != nil {
+			js = append(slices.Clone(js), b.thumbs)
+		}
 		for _, j := range js {
-			if _, err := batch.AddIfNeeded(j); err != nil {
+			if forced(rebuild, j) {
+				batch.Add(j)
+			} else if _, err := batch.AddIfNeeded(j); err != nil {
 				return err
 			}
-			videos = append(videos, j.Output)
-		}
-		if r.Thumbnails && i == 0 {
-			if _, err := batch.AddIfNeeded(plan.SeekThumbnailJob(vd, first, r.Outdir)); err != nil {
-				return err
+			if j != b.thumbs {
+				videos = append(videos, j.Output)
 			}
 		}
 		if err := batch.Run(ctx, d.runner); err != nil {
-			return fmt.Errorf("encoding %q: %w", r.Sources[labels[i]], err)
+			return fmt.Errorf("encoding %q: %w", b.sources[i].Path, err)
 		}
 	}
-
-	audio := plan.AudioJob(first, r.Outdir)
-	if err := ffmpeg.RunIfNeeded(ctx, d.runner, audio); err != nil {
+	if err := ffmpeg.RunIfNeeded(ctx, d.runner, b.manifest, b.audio, forced(rebuild, b.audio)); err != nil {
 		return fmt.Errorf("extracting audio: %w", err)
 	}
-	poster := plan.PosterJob(first, r.Outdir)
-	if err := ffmpeg.RunIfNeeded(ctx, d.runner, poster); err != nil {
+	if err := ffmpeg.RunIfNeeded(ctx, d.runner, b.manifest, b.poster, forced(rebuild, b.poster)); err != nil {
 		return fmt.Errorf("making poster: %w", err)
 	}
 
 	p := &pack.Packager{Runner: d.runner, Prober: d.prober, Thumbnails: r.Thumbnails}
-	mpd, err := p.Package(ctx, r.Streamdir, videos, audio.Output)
+	mpd, files, err := p.Package(ctx, r.Streamdir, videos, b.audio.Output)
 	if err != nil {
 		return fmt.Errorf("packaging: %w", err)
 	}
+	streamPoster := filepath.Join(r.Streamdir, "thumbnail.jpg")
+	if err := copySmallFile(b.poster.Output, streamPoster); err != nil {
+		return err
+	}
+	files = append(files, filepath.Base(streamPoster))
 
-	streamPoster := filepath.Join(r.Streamdir, filepath.Base(poster.Output))
-	if err := copySmallFile(poster.Output, streamPoster); err != nil {
+	// Only now that the new stream is complete, drop what it replaced.
+	var slots []string
+	for _, j := range b.all() {
+		slots = append(slots, j.Slot)
+	}
+	if err := errors.Join(
+		b.manifest.SetStream(r.Streamdir, files),
+		b.manifest.Prune(slots),
+		b.manifest.Save(),
+	); err != nil {
 		return err
 	}
 	slog.Info("Done", "video", r.Name, "manifest", mpd, "poster", streamPoster)
@@ -243,26 +310,24 @@ func printPlan(ctx context.Context, r *config.Resolved, d deps) error {
 	}
 	w.Write(merged)
 
-	_, targets, perSource, err := jobs(ctx, r, d)
+	b, err := prepare(ctx, r, d)
 	if err != nil {
 		return err
 	}
-	labels := r.SourceLabels()
-	fmt.Fprintln(w, "# renditions:")
-	for i, js := range perSource {
-		for n, j := range js {
-			reason, err := state.Needs(j.Input, j.Output, j.Cmdline())
-			if err != nil {
-				return err
-			}
-			if reason == "" {
-				reason = "up to date"
-			} else {
-				reason = "rebuild: " + reason
-			}
-			t := targets[n]
-			fmt.Fprintf(w, "#   %s %s %dx%d -> %s: %s\n", labels[i], t.Name, t.Width, t.Height, filepath.Base(j.Output), reason)
+	fmt.Fprintln(w, "# outputs:")
+	for _, j := range b.all() {
+		desc, ok := b.desc[j]
+		if !ok {
+			desc = j.Slot
 		}
+		_, err := os.Stat(j.Result())
+		reason := b.manifest.Explain(j.Slot, j.Key, j.Source, err == nil)
+		if reason == state.UpToDate {
+			reason = "up to date"
+		} else {
+			reason = "build: " + reason
+		}
+		fmt.Fprintf(w, "#   %s -> %s: %s\n", desc, filepath.Base(j.Result()), reason)
 	}
 	fmt.Fprintln(w)
 	return nil
@@ -291,7 +356,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	d := deps{

@@ -3,12 +3,16 @@
 package plan
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 
 	"github.com/scottlaird/videoencoder/internal/config"
 	"github.com/scottlaird/videoencoder/internal/ffmpeg"
+	"github.com/scottlaird/videoencoder/internal/fileid"
 	"github.com/scottlaird/videoencoder/internal/probe"
 )
 
@@ -80,6 +84,28 @@ func scaledWidth(vd probe.VideoData, height uint64) uint64 {
 	return w &^ 1
 }
 
+// Source is one input file of a video.
+type Source struct {
+	Label string // from the config's sources map
+	Path  string
+	// ID identifies the file's content and modification time, so a
+	// replaced or re-exported source rebuilds everything made from it.
+	ID string
+}
+
+// NewSource identifies the file at path.
+func NewSource(label, path string) (Source, error) {
+	content, err := fileid.Content(path)
+	if err != nil {
+		return Source{}, fmt.Errorf("source %q: %w", label, err)
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		return Source{}, err
+	}
+	return Source{Label: label, Path: path, ID: fmt.Sprintf("%s-%d", content, st.ModTime().Unix())}, nil
+}
+
 func baseCommand(infile string) []string {
 	return []string{
 		"ffmpeg",
@@ -89,10 +115,37 @@ func baseCommand(infile string) []string {
 	}
 }
 
-// Job returns the ffmpeg job that encodes infile to t under outdir.
-// seq distinguishes the outputs of different sources (e.g. HDR and SDR
-// versions of one video).
-func (t *Target) Job(infile, outdir string, seq int) *ffmpeg.Job {
+// keyLength is how much of the build key goes in file names.
+const keyLength = 10
+
+// newJob makes a job whose output is named "<stem>.<key><ext>" in
+// outdir. The key covers the source's identity and every argument, with
+// the input path left out so moving the source doesn't rebuild.
+func newJob(src Source, outdir, slot, stem, ext string, args []string) *ffmpeg.Job {
+	base := baseCommand(src.Path)
+	h := sha256.New()
+	fmt.Fprintf(h, "build/v1\x00%s", src.ID)
+	for _, a := range base[:len(base)-1] {
+		fmt.Fprintf(h, "\x00%s", a)
+	}
+	for _, a := range args {
+		fmt.Fprintf(h, "\x00%s", a)
+	}
+	key := hex.EncodeToString(h.Sum(nil))[:keyLength]
+	return &ffmpeg.Job{
+		Input:  src.Path,
+		Output: filepath.Join(outdir, stem+"."+key+ext),
+		Base:   base,
+		Args:   args,
+		Slot:   slot,
+		Key:    key,
+		Source: src.ID,
+	}
+}
+
+// Job returns the ffmpeg job that encodes src to t under outdir, as
+// "<rendition>.<source label>.<key>.mp4".
+func (t *Target) Job(src Source, outdir string) *ffmpeg.Job {
 	args := []string{
 		"-s", fmt.Sprintf("%dx%d", t.Width, t.Height),
 		"-c:v", t.Encoder.Codec,
@@ -105,47 +158,32 @@ func (t *Target) Job(infile, outdir string, seq int) *ffmpeg.Job {
 	}
 	args = append(args, t.Args...)
 	args = append(args, "-an")
-
-	output := filepath.Join(outdir, fmt.Sprintf("video_%d_%s_%dx%d_%d.mp4", seq, t.EncoderName, t.Width, t.Height, t.Bitrate))
-	return &ffmpeg.Job{Input: infile, Output: output, Base: baseCommand(infile), Args: args}
+	return newJob(src, outdir, src.Label+"/"+t.Name, t.Name+"."+src.Label, ".mp4", args)
 }
 
-// SeekThumbnailJob writes one 180p JPEG per second of infile, for seek
-// thumbnails.
-func SeekThumbnailJob(vd probe.VideoData, infile, outdir string) *ffmpeg.Job {
+// SeekThumbnailJob writes one 180p JPEG per second of src into a
+// "thumbs.<key>" directory, for seek thumbnails.
+func SeekThumbnailJob(vd probe.VideoData, src Source, outdir string) *ffmpeg.Job {
 	const height = 180
-	return &ffmpeg.Job{
-		Input:  infile,
-		Output: filepath.Join(outdir, "thumbnail-%d.jpg"),
-		Base:   baseCommand(infile),
-		Args: []string{
-			"-s", fmt.Sprintf("%dx%d", scaledWidth(vd, height), height),
-			"-r", "1",
-			"-f", "image2",
-		},
-	}
+	j := newJob(src, outdir, "thumbs", "thumbs", "", []string{
+		"-s", fmt.Sprintf("%dx%d", scaledWidth(vd, height), height),
+		"-r", "1",
+		"-f", "image2",
+	})
+	j.Output = filepath.Join(j.Output, "%d.jpg")
+	return j
 }
 
-// AudioJob extracts the audio of infile into outdir/audio.mp4.
-func AudioJob(infile, outdir string) *ffmpeg.Job {
-	return &ffmpeg.Job{
-		Input:  infile,
-		Output: filepath.Join(outdir, "audio.mp4"),
-		Base:   baseCommand(infile),
-		Args:   []string{"-vn"},
-	}
+// AudioJob extracts the audio of src.
+func AudioJob(src Source, outdir string) *ffmpeg.Job {
+	return newJob(src, outdir, "audio", "audio", ".mp4", []string{"-vn"})
 }
 
-// PosterJob grabs the frame at 1s of infile into outdir/thumbnail.jpg.
-func PosterJob(infile, outdir string) *ffmpeg.Job {
-	return &ffmpeg.Job{
-		Input:  infile,
-		Output: filepath.Join(outdir, "thumbnail.jpg"),
-		Base:   baseCommand(infile),
-		Args: []string{
-			"-ss", "00:00:01.000",
-			"-vframes", "1",
-			"-update", "1",
-		},
-	}
+// PosterJob grabs the frame at 1s of src.
+func PosterJob(src Source, outdir string) *ffmpeg.Job {
+	return newJob(src, outdir, "poster", "poster", ".jpg", []string{
+		"-ss", "00:00:01.000",
+		"-vframes", "1",
+		"-update", "1",
+	})
 }
