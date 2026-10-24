@@ -183,6 +183,18 @@ The ffmpeg version is deliberately **not** part of the key. A
 a glob over slots to force rebuilds: `*` for everything, `av1-*` for
 every source's AV1, `sdr/h264-1080`, or `poster`.
 
+**Pixel formats and SDR-only encoders.** Renditions are always 4:2:0,
+with the pixel format stated in each encoder's arguments. Encoders
+otherwise keep the source's format, and from 4:2:2 ProRes that gave
+High 4:2:2 H.264 and 4:2:2 HEVC, which almost nothing plays. h264 is
+8-bit; h265 and AV1 are 10-bit.
+
+An encoder with `sdr_only: true` (the default for h264) never makes PQ.
+With an HDR+SDR pair, it encodes only the SDR source. With HDR only, it
+encodes the HDR source tone-mapped to BT.709 (the same `zscale` +
+`tonemap=hable` chain as posters), and its slot shows "tone-mapped" in
+`plan`. 8-bit PQ H.264 bands badly and few devices handle it.
+
 The single-decode, multi-output ffmpeg invocation stays. Every stale
 rendition of one source is built in one ffmpeg process, because
 decoding (especially 6K H.265) is a large share of the cost.

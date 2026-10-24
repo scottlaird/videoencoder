@@ -251,11 +251,24 @@ func prepare(ctx context.Context, r *config.Resolved, d deps) (*built, error) {
 		return nil, err
 	}
 	b.targets = ladder.Filter(b.vd)
-	for _, src := range b.sources {
+	sdr, _ := toneSources(b.vds)
+	hasSDR := b.vds[sdr].Tone() != probe.HDR
+	for i, src := range b.sources {
+		hdr := b.vds[i].Tone() == probe.HDR
 		var js []*ffmpeg.Job
 		for _, t := range b.targets {
-			j := t.Job(src, r.Outdir)
-			b.desc[j] = fmt.Sprintf("%s/%s %dx%d", src.Label, t.Name, t.Width, t.Height)
+			// SDR-only encoders skip HDR sources, unless there is no
+			// SDR source, in which case they tone-map it.
+			toneMap := t.Encoder.SDROnly && hdr
+			if toneMap && hasSDR {
+				continue
+			}
+			j := t.Job(src, r.Outdir, toneMap)
+			desc := fmt.Sprintf("%s/%s %dx%d", src.Label, t.Name, t.Width, t.Height)
+			if toneMap {
+				desc += " tone-mapped"
+			}
+			b.desc[j] = desc
 			js = append(js, j)
 		}
 		b.perSource = append(b.perSource, js)

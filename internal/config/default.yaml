@@ -50,6 +50,9 @@ encoders:
     # 8-bit 4:2:0 High profile: what browsers and hardware decode.
     args: [-preset, faster, -pix_fmt, yuv420p, -profile:v, high]
     cap_bitrate: true
+    # 8-bit PQ is all banding and few devices play it, so H.264 is made
+    # only from an SDR source, or tone-mapped from HDR if there is none.
+    sdr_only: true
   h265:
     codec: libx265
     quality_flag: -crf
