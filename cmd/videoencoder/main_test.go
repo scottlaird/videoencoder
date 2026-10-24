@@ -495,6 +495,35 @@ publish:
 	}
 }
 
+// TestSilentSource renders a video with no audio track.
+func TestSilentSource(t *testing.T) {
+	requireTools(t, "ffmpeg", "ffprobe", "packager")
+	dir := t.TempDir()
+	src := filepath.Join(dir, "timelapse.mov")
+	gen := exec.Command("ffmpeg", "-loglevel", "error", "-y",
+		"-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30:duration=2",
+		"-vf", "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709",
+		"-c:v", "libx264", "-pix_fmt", "yuv420p", src)
+	if out, err := gen.CombinedOutput(); err != nil {
+		t.Fatalf("generating clip: %v\n%s", err, out)
+	}
+	o, err := parseArgs([]string{"--config", "", src}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, _ := testDeps(io.Discard)
+	if err := run(context.Background(), o, d); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	stream := filepath.Join(dir, "stream", "timelapse")
+	if _, err := os.Stat(filepath.Join(stream, "dash.mpd")); err != nil {
+		t.Error(err)
+	}
+	if m, _ := filepath.Glob(filepath.Join(stream, "audio.*")); len(m) != 0 {
+		t.Errorf("silent video has audio outputs %q", m)
+	}
+}
+
 func TestRunMissingSource(t *testing.T) {
 	requireTools(t, "ffprobe")
 	dir := t.TempDir()

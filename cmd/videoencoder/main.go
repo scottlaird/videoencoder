@@ -191,7 +191,7 @@ type built struct {
 	vds       []probe.VideoData
 	targets   plan.Targets
 	perSource [][]*ffmpeg.Job // rendition jobs, in target order
-	audio     *ffmpeg.Job
+	audio     *ffmpeg.Job     // nil for a silent video
 	posters   []plan.Poster
 	gainmaps  []plan.GainMapPoster
 	thumbs    *ffmpeg.Job // nil unless thumbnails are on
@@ -205,7 +205,9 @@ func (b *built) all() []*ffmpeg.Job {
 	for _, s := range b.perSource {
 		js = append(js, s...)
 	}
-	js = append(js, b.audio)
+	if b.audio != nil {
+		js = append(js, b.audio)
+	}
 	for _, p := range b.posters {
 		js = append(js, p.Job)
 	}
@@ -249,7 +251,9 @@ func prepare(ctx context.Context, r *config.Resolved, d deps) (*built, error) {
 		}
 		b.perSource = append(b.perSource, js)
 	}
-	b.audio = plan.AudioJob(first, r.Outdir)
+	if b.vd.HasAudio {
+		b.audio = plan.AudioJob(first, r.Outdir)
+	}
 	b.posters, b.gainmaps = posters(r.Poster, b.sources, b.vds, r.Outdir)
 	if err := checkGainMapTools(b.gainmaps); err != nil {
 		return nil, err
@@ -306,8 +310,12 @@ func render(ctx context.Context, r *config.Resolved, d deps, rebuild string) err
 			return fmt.Errorf("encoding %q: %w", b.sources[i].Path, err)
 		}
 	}
-	if err := ffmpeg.RunIfNeeded(ctx, d.runner, b.manifest, b.audio, forced(rebuild, b.audio)); err != nil {
-		return fmt.Errorf("extracting audio: %w", err)
+	audio := ""
+	if b.audio != nil {
+		if err := ffmpeg.RunIfNeeded(ctx, d.runner, b.manifest, b.audio, forced(rebuild, b.audio)); err != nil {
+			return fmt.Errorf("extracting audio: %w", err)
+		}
+		audio = b.audio.Output
 	}
 	if err := runPosters(ctx, d, b, rebuild); err != nil {
 		return fmt.Errorf("making posters: %w", err)
@@ -317,7 +325,7 @@ func render(ctx context.Context, r *config.Resolved, d deps, rebuild string) err
 	}
 
 	p := &pack.Packager{Runner: d.runner, Prober: d.prober}
-	mpd, files, err := p.Package(ctx, r.Streamdir, videos, b.audio.Output)
+	mpd, files, err := p.Package(ctx, r.Streamdir, videos, audio)
 	if err != nil {
 		return fmt.Errorf("packaging: %w", err)
 	}

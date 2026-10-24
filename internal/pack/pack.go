@@ -22,7 +22,8 @@ type Packager struct {
 
 // Package writes dash.mpd, hls.m3u8 and the segmented media into
 // streamdir, and returns the path of the DASH manifest. Each video is
-// labelled HDR or SDR so players can offer the choice.
+// labelled HDR or SDR so players can offer the choice. audio may be ""
+// for a silent video.
 //
 // Every media file and playlist is named after its input, so it also
 // returns the names of every file it wrote in streamdir. Packager
@@ -39,7 +40,10 @@ func (p *Packager) Package(ctx context.Context, streamdir string, videos []strin
 	if err := p.Runner.Run(ctx, argv); err != nil {
 		return "", nil, err
 	}
-	inputs := append([]string{audio}, videos...)
+	inputs := videos
+	if audio != "" {
+		inputs = append([]string{audio}, videos...)
+	}
 	for _, in := range inputs {
 		if err := mp4.ZeroTimes(filepath.Join(streamdir, filepath.Base(in))); err != nil {
 			return "", nil, fmt.Errorf("normalizing %s: %w", filepath.Base(in), err)
@@ -63,10 +67,11 @@ func playlistName(base string) string {
 }
 
 func (p *Packager) argv(ctx context.Context, streamdir string, videos []string, audio string) ([]string, error) {
-	abase := filepath.Base(audio)
-	argv := []string{
-		"packager",
-		fmt.Sprintf("in=%s,stream=audio,output=%s,playlist_name=%s", audio, filepath.Join(streamdir, abase), playlistName(abase)),
+	argv := []string{"packager"}
+	if audio != "" {
+		abase := filepath.Base(audio)
+		argv = append(argv, fmt.Sprintf("in=%s,stream=audio,output=%s,playlist_name=%s",
+			audio, filepath.Join(streamdir, abase), playlistName(abase)))
 	}
 
 	for _, v := range videos {

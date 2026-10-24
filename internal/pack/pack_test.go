@@ -70,6 +70,21 @@ func TestPackage(t *testing.T) {
 	}
 }
 
+func TestPackageSilent(t *testing.T) {
+	r := &recorder{}
+	p := &Packager{Runner: r, Prober: fakeProber{"t/v.mp4": {ColorTransfer: "bt709"}}}
+	_, files, err := p.Package(context.Background(), t.TempDir(), []string{"t/v.mp4"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(r.argv, " "), "stream=audio") {
+		t.Errorf("silent video packaged with an audio stream: %q", r.argv)
+	}
+	if want := []string{"dash.mpd", "hls.m3u8", "v.mp4", "v.m3u8"}; !slices.Equal(files, want) {
+		t.Errorf("files = %q, want %q", files, want)
+	}
+}
+
 func TestPackageProbeError(t *testing.T) {
 	p := &Packager{Runner: &recorder{}, Prober: fakeProber{}}
 	if _, _, err := p.Package(context.Background(), t.TempDir(), []string{"missing.mp4"}, "a.mp4"); err == nil {
