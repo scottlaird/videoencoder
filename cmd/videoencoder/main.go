@@ -336,7 +336,8 @@ func render(ctx context.Context, r *config.Resolved, d deps, rebuild string) err
 		}
 		files = append(files, thumbFiles...)
 	}
-	posterFiles, err := publishPosters(r.Streamdir, r.Poster.Offset, b.posters, b.gainmaps)
+	sdr, _ := toneSources(b.vds)
+	posterFiles, err := publishPosters(r.Streamdir, r.Poster.Offset, b.vds[sdr].Width, b.posters, b.gainmaps)
 	if err != nil {
 		return fmt.Errorf("publishing posters: %w", err)
 	}

@@ -86,6 +86,8 @@ type Poster struct {
 	Widths         []uint64 `yaml:"widths"`
 	Formats        []string `yaml:"formats"`
 	GainMapFormats []string `yaml:"gainmap_formats"`
+	// HDR adds plain PQ AVIF posters for HDR sources.
+	HDR bool `yaml:"hdr"`
 }
 
 // PosterFormats are the image formats posters can be written in, and

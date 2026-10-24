@@ -155,6 +155,7 @@ func TestAdHocEndToEnd(t *testing.T) {
 	streamdir := filepath.Join(dir, "stream", "src")
 	for _, pattern := range []string{"dash.mpd", "hls.m3u8", "thumbnail.jpg", "poster.json",
 		"poster-sdr-320.*.avif", "poster-sdr-320.*.jpg", "audio.*.mp4", "audio.*.m3u8",
+		"poster-320.jpg", "poster-320.avif", "poster.jpg", "poster.avif",
 		"thumbnails.m3u8", "thumbnails.vtt", "thumbs.*/tile-1.jpg"} {
 		if m, _ := filepath.Glob(filepath.Join(streamdir, pattern)); len(m) != 1 {
 			t.Errorf("stream outputs matching %s: %q, want one", pattern, m)
@@ -357,7 +358,7 @@ func TestHDRAndSDRPosters(t *testing.T) {
 	makeClip(t, filepath.Join(dir, "trip-sdr.mov"))
 	if err := os.WriteFile(filepath.Join(dir, "trip.video.yaml"), []byte(`
 sources: {hdr: trip-hdr.mov, sdr: trip-sdr.mov}
-poster: {offset: "0.5", widths: [160, 320], formats: [avif, jpg, webp]}
+poster: {offset: "0.5", widths: [160], formats: [avif, jpg, webp], hdr: true}
 renditions: {h264-480: null, h264-720: null, h265-480: null, h265-720: null, h265-1080: null,
   h265-1440: null, h265-2160: null, av1-480: null, av1-720: null, av1-1080: null, av1-1440: null,
   av1-2160: null, av1-3240: null, av1-4320: null}
@@ -412,12 +413,31 @@ renditions: {h264-480: null, h264-720: null, h265-480: null, h265-720: null, h26
 		t.Errorf("HDR poster has transfer %q, want PQ", vd.ColorTransfer)
 	}
 
-	// The reference decoders recognise the gain-mapped posters.
-	gmJPEG, _ := filepath.Glob(filepath.Join(dir, "stream", "trip", "poster-gainmap-320.*.jpg"))
-	gmAVIF, _ := filepath.Glob(filepath.Join(dir, "stream", "trip", "poster-gainmap-320.*.avif"))
-	if len(gmJPEG) != 1 || len(gmAVIF) != 1 {
-		t.Fatalf("gain-mapped posters %q %q, want one of each", gmJPEG, gmAVIF)
+	// Fixed names point at the best poster: gain-mapped where there is
+	// one, SDR for WebP, never the plain HDR AVIF.
+	aliases := map[string]string{}
+	for _, im := range idx.Images {
+		for _, a := range im.Aliases {
+			aliases[a] = im.Tone + " " + im.Format
+		}
 	}
+	wantAliases := map[string]string{
+		"poster-160.jpg": "gainmap jpg", "poster-160.avif": "gainmap avif", "poster-160.webp": "SDR webp",
+		"poster-320.jpg": "gainmap jpg", "poster-320.avif": "gainmap avif", "poster-320.webp": "SDR webp",
+		"poster.jpg": "gainmap jpg", "poster.avif": "gainmap avif", "poster.webp": "SDR webp",
+	}
+	if !maps.Equal(aliases, wantAliases) {
+		t.Errorf("aliases = %v, want %v", aliases, wantAliases)
+	}
+	for a := range wantAliases {
+		if _, err := os.Stat(filepath.Join(dir, "stream", "trip", a)); err != nil {
+			t.Errorf("alias %s: %v", a, err)
+		}
+	}
+
+	// The reference decoders recognise the gain-mapped posters.
+	gmJPEG := []string{filepath.Join(dir, "stream", "trip", "poster.jpg")}
+	gmAVIF := []string{filepath.Join(dir, "stream", "trip", "poster.avif")}
 	if app, err := exec.LookPath("ultrahdr_app"); err == nil {
 		out, err := exec.Command(app, "-m", "1", "-P", "-j", gmJPEG[0]).CombinedOutput()
 		if err != nil || !strings.Contains(string(out), "Ultra HDR Image: Yes") {

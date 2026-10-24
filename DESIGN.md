@@ -209,8 +209,20 @@ poster:
   source is an error.
 - SDR posters come in every configured format. AVIF uses libaom with
   `-still-picture 1`.
-- HDR posters are AVIF only, 10-bit, tagged PQ/BT.2020; JPEG and WebP
-  can't carry HDR without gain maps.
+- Plain HDR posters are AVIF only, 10-bit, tagged PQ/BT.2020, and are
+  made only with `poster.hdr: true`. Gain-mapped posters (below)
+  replaced them: checked by eye on 2026-10-24, the gain-mapped and
+  plain HDR posters looked alike on an HDR display, but on an SDR
+  display the browser's own tone mapping made the plain HDR AVIF too
+  contrasty, while the gain-mapped ones matched the SDR poster.
+- The source's own width is always one of the widths, alongside the
+  configured ones that fit.
+- **Fixed names.** The best poster of each width and format,
+  gain-mapped where there is one and SDR otherwise, is also copied to
+  `poster-<width>.<format>`. The full-resolution one is copied to
+  `poster.<format>` as well. Pages can use these names without reading
+  `poster.json`, which records each alias against the image it copies.
+  They aren't key-named, so they're published with `no-cache`.
 - SDR comes from the first SDR source. If there's no SDR source, it's
   tone-mapped from the HDR one (`zscale` + `tonemap=hable`), so every
   video has an SDR poster.
