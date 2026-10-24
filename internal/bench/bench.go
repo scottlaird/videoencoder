@@ -272,7 +272,7 @@ func settled(c *Config, fs *Flagset, fkey string, s *sample, results *Results) b
 	q := fs.Quality
 	pass := map[int]bool{}
 	for _, r := range results.Rows {
-		if r.Sample == s.name && r.FlagsetKey == fkey {
+		if r.Sample == s.name && r.FlagsetKey == fkey && r.Scorer == scorer {
 			pass[q.qualityToIndex(r.Quality)] = c.margin(r.Metrics) >= 0
 		}
 	}
@@ -473,6 +473,7 @@ func (b *Bench) record(results *Results, p *pending) error {
 		SysS:          p.m.Sys.Seconds(),
 		MaxRSSKB:      p.m.MaxRSSKB,
 		Metrics:       m,
+		Scorer:        scorer,
 		FFmpegVersion: b.FFmpegVersion,
 		Host:          b.Host,
 		Time:          b.now(),
@@ -482,7 +483,7 @@ func (b *Bench) record(results *Results, p *pending) error {
 	}
 	margin := b.Cfg.margin(m)
 	slog.Info("Scored", "sample", t.sample.name, "flagset", t.name, "quality", p.quality,
-		"kbps", int(row.Kbps), "vmaf", m.VMAF, "ciede2000", m.CIEDE2000, "pass", margin >= 0)
+		"kbps", int(row.Kbps), "vmaf", m.VMAF, "ciede2000", m.CIEDE2000, "colour_shift", m.ColourShiftP99, "pass", margin >= 0)
 	t.search.Observe(p.i, margin >= 0, margin)
 	return nil
 }

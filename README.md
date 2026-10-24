@@ -142,7 +142,7 @@ samples: samples        # directory of ~30s clips
 workdir: work
 scales: [1080]          # test at 1080p; taller samples are downscaled once
 target_vmaf: 95
-min_ciede2000: 0        # set to catch colour casts, which VMAF can't see
+max_colour_shift: 3.9   # fail local colour casts, which VMAF can't see
 flagsets:
   x265-slow:
     args: [-c:v, libx265, -preset, slow]

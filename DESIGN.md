@@ -554,6 +554,25 @@ log and reuses whatever it finds. So:
   4:2:0, for about 1/24 the cost. A colour cast is broad and
   persistent, so sampling doesn't miss it. Chroma PSNR is nearly free
   and stays on every frame.
+- **Local colour shift.** Frame averages miss a colour cast confined
+  to part of the picture. On Pyramid Creek, every SVT-AV1 encode shifted
+  the whitewater toward magenta and yellow, but its frame-mean CIEDE2000
+  matched x265's.
+  - So a third branch of the scoring graph area-averages both sides
+    into 16×16 blocks (16-bit RGB, after the HDR tone map) on every
+    sixth frame. Go then takes the CIELAB a*b* distance per block, which
+    is hue and saturation, ignoring lightness. That's recorded at the
+    99th and 99.9th percentiles (`colour_shift_p99`, `colour_shift_p999`).
+  - Checked against the eight Pyramid Creek HDR keepers as judged by
+    eye: the encodes that looked fine (VideoToolbox, both x265) measured
+    2.32–3.44 at p99.9, and every AV1 variant with the visible cast
+    4.32–5.04. At p99 the groups were only 0.13 apart; the cast covers
+    so little of the frame that the more extreme percentile is needed.
+  - `max_colour_shift` (suggested 3.9) fails encodes over the limit at
+    p99.9. Each row records its `scorer` version (v3 adds this), and rows
+    from older scorers are ignored for answers, seeds and settled checks.
+    The encode key includes the scorer, so they're re-encoded rather
+    than reused.
 - Each score is logged the moment it finishes, so an interrupted
   round loses only the scorings still running.
 - Encodes below the reference resolution are scaled back up

@@ -27,6 +27,14 @@ type Metrics struct {
 	PSNRCb    float64
 	PSNRCr    float64
 	CIEDE2000 float64
+	// ColourShiftP99 is the 99th percentile, over 16x16 blocks of
+	// sampled frames, of the shift in each block's average colour, as
+	// distance in CIELAB a*b* (hue and saturation, ignoring lightness).
+	// Lower is better. Unlike the frame averages above, it catches a
+	// cast confined to part of the picture. ColourShiftP999 is the same
+	// at the 99.9th percentile.
+	ColourShiftP99  float64
+	ColourShiftP999 float64
 }
 
 // vmafModel picks the model trained for the reference's viewing
@@ -51,38 +59,57 @@ const frameIndexPTS = "settb=AVTB,setpts=N"
 // resolution (half size, for 4:2:0) is enough to find them.
 const colourFrameStep = 6
 
+// colourBlock is the side, in pixels at scoring size, of the blocks
+// whose average colours are compared for colour shift. A colour cast
+// is a shift in the average colour of an area, and 16x16 blocks are
+// large enough to average out noise and small enough not to dilute a
+// cast confined to part of the frame (whitewater, say).
+const colourBlock = 16
+
+// blockSize is the size of the block-average images for a scoring size.
+func blockSize(width, height uint64) (uint64, uint64) {
+	return max(1, width/colourBlock), max(1, height/colourBlock)
+}
+
 // scoreArgv returns the ffmpeg command that scores distorted against
 // reference. It writes two libvmaf JSON logs: logPath with VMAF and
 // PSNR on every frame, and colourLogPath with CIEDE2000 on sampled
-// frames. The distorted video is scaled to the reference size first,
-// and both are converted to one pixel format, since libvmaf needs
-// matching inputs.
+// frames. It also writes, for sampled frames, block-average images of
+// both sides (16-bit RGB, one pixel per colourBlock square) to
+// distBlocks and refBlocks, for ColourShift. The distorted video is
+// scaled to the reference size first, and both are converted to one
+// pixel format, since libvmaf needs matching inputs.
 //
 // prefilter, if not "", is applied to both inputs first; for HDR, a
 // tone map to SDR, since VMAF and CIEDE2000 are only meaningful there.
-func scoreArgv(distorted, reference string, width, height uint64, threads int, logPath, colourLogPath, prefilter string) []string {
+func scoreArgv(distorted, reference string, width, height uint64, threads int, logPath, colourLogPath, distBlocks, refBlocks, prefilter string) []string {
 	model := vmafModel(height)
 	pre := ""
 	if prefilter != "" {
 		pre = prefilter + ","
 	}
 	sample := fmt.Sprintf("select='not(mod(n,%d))',scale=%d:%d:flags=area", colourFrameStep, (width/2)&^1, (height/2)&^1)
+	bw, bh := blockSize(width, height)
+	blocks := fmt.Sprintf("select='not(mod(n,%d))',format=rgb48le,scale=%d:%d:flags=area", colourFrameStep, bw, bh)
 	graph := fmt.Sprintf(
-		"[0:v]%sscale=%d:%d:flags=bicubic,format=yuv444p10le,"+frameIndexPTS+",split[d][dc];"+
-			"[1:v]%sformat=yuv444p10le,"+frameIndexPTS+",split[r][rc];"+
+		"[0:v]%sscale=%d:%d:flags=bicubic,format=yuv444p10le,"+frameIndexPTS+",split=3[d][dc][db];"+
+			"[1:v]%sformat=yuv444p10le,"+frameIndexPTS+",split=3[r][rc][rb];"+
 			"[d][r]libvmaf=log_fmt=json:log_path=%s:n_threads=%d"+
 			":model='version=%s\\:name=vmaf|version=%sneg\\:name=vmaf_neg'"+
 			":feature='name=psnr'[quality];"+
 			"[dc]%s[ds];[rc]%s[rs];"+
-			"[ds][rs]libvmaf=log_fmt=json:log_path=%s:n_threads=%d:feature='name=ciede'[colour]",
+			"[ds][rs]libvmaf=log_fmt=json:log_path=%s:n_threads=%d:feature='name=ciede'[colour];"+
+			"[db]%s[dbo];[rb]%s[rbo]",
 		pre, width, height, pre, escapeFilterValue(logPath), threads, model, model,
-		sample, sample, escapeFilterValue(colourLogPath), threads)
+		sample, sample, escapeFilterValue(colourLogPath), threads, blocks, blocks)
 	return []string{
-		"ffmpeg", "-hide_banner", "-loglevel", "error", "-nostats",
+		"ffmpeg", "-hide_banner", "-loglevel", "error", "-nostats", "-y",
 		"-i", distorted, "-i", reference,
 		"-filter_complex", graph,
 		"-map", "[quality]", "-f", "null", "-",
 		"-map", "[colour]", "-f", "null", "-",
+		"-map", "[dbo]", "-f", "rawvideo", distBlocks,
+		"-map", "[rbo]", "-f", "rawvideo", refBlocks,
 	}
 }
 
@@ -92,13 +119,22 @@ func scoreArgv(distorted, reference string, width, height uint64, threads int, l
 func Score(ctx context.Context, e Executor, distorted, reference string, width, height uint64, threads int, tmpDir, name, prefilter string) (Metrics, error) {
 	logPath := filepath.Join(tmpDir, name+".vmaf.json")
 	colourLogPath := filepath.Join(tmpDir, name+".ciede.json")
-	defer os.Remove(logPath)
-	defer os.Remove(colourLogPath)
-	argv := scoreArgv(distorted, reference, width, height, threads, logPath, colourLogPath, prefilter)
+	distBlocks := filepath.Join(tmpDir, name+".dist.blocks")
+	refBlocks := filepath.Join(tmpDir, name+".ref.blocks")
+	for _, p := range []string{logPath, colourLogPath, distBlocks, refBlocks} {
+		defer os.Remove(p)
+	}
+	argv := scoreArgv(distorted, reference, width, height, threads, logPath, colourLogPath, distBlocks, refBlocks, prefilter)
 	if _, err := e.Exec(ctx, argv); err != nil {
 		return Metrics{}, fmt.Errorf("scoring: %w", err)
 	}
-	return readLogs(logPath, colourLogPath)
+	m, err := readLogs(logPath, colourLogPath)
+	if err != nil {
+		return Metrics{}, err
+	}
+	bw, bh := blockSize(width, height)
+	m.ColourShiftP99, m.ColourShiftP999, err = ColourShift(distBlocks, refBlocks, bw, bh)
+	return m, err
 }
 
 // escapeFilterValue escapes s for use as an option value inside an

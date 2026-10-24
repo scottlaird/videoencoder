@@ -33,6 +33,13 @@ type Config struct {
 	TargetVMAF    float64 `yaml:"target_vmaf"`
 	MinCIEDE2000  float64 `yaml:"min_ciede2000"`
 	MinChromaPSNR float64 `yaml:"min_chroma_psnr"`
+	// MaxColourShift fails encodes whose block colour shift at the
+	// 99.9th percentile (Metrics.ColourShiftP999) exceeds it: a local
+	// colour cast that the frame averages above miss. 0 means no
+	// limit. On the Pyramid Creek HDR sample, encodes that looked fine
+	// measured at most 3.44 and those with a visible cast at least
+	// 4.32, so 3.9 is a reasonable starting point.
+	MaxColourShift float64 `yaml:"max_colour_shift"`
 	// VMAFThreads is passed to libvmaf's n_threads; VMAFJobs is how many
 	// scorings run at once.
 	VMAFThreads int                 `yaml:"vmaf_threads"`
@@ -219,6 +226,12 @@ func (c *Config) margin(m Metrics) float64 {
 	}
 	if c.MinChromaPSNR > 0 {
 		margin = min(margin, min(m.PSNRCb, m.PSNRCr)-c.MinChromaPSNR)
+	}
+	if c.MaxColourShift > 0 {
+		if math.IsNaN(m.ColourShiftP999) {
+			return math.Inf(-1)
+		}
+		margin = min(margin, c.MaxColourShift-m.ColourShiftP999)
 	}
 	return margin
 }
