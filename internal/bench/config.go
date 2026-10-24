@@ -37,11 +37,17 @@ type Config struct {
 	// 99.9th percentile (Metrics.ColorShiftP999) exceeds it: a local
 	// color cast that the frame averages above miss. 0 means no
 	// limit. On the Pyramid Creek HDR sample, encodes that looked fine
-	// measured at most 3.44 and those with a visible cast at least
-	// 4.32, so 3.9 is a reasonable starting point.
+	// measured at most 2.54 and those with a visible cast at least
+	// 2.92, so 2.7 is a reasonable starting point.
 	MaxColorShift float64 `yaml:"max_color_shift"`
 	// OldMaxColorShift is max_color_shift's first spelling, still read.
 	OldMaxColorShift float64 `yaml:"max_colour_shift"`
+	// MaxColorFlicker fails encodes whose block color flicker at the
+	// 99.9th percentile (Metrics.ColorFlickerP999) exceeds it: a color
+	// cast that comes and goes. 0 means no limit. On Pyramid Creek,
+	// fine encodes measured at most 1.12 and those with a visible
+	// flickering cast at least 1.32; 1.25 is a starting point.
+	MaxColorFlicker float64 `yaml:"max_color_flicker"`
 	// VMAFThreads is passed to libvmaf's n_threads; VMAFJobs is how many
 	// scorings run at once.
 	VMAFThreads int                 `yaml:"vmaf_threads"`
@@ -237,6 +243,12 @@ func (c *Config) margin(m Metrics) float64 {
 			return math.Inf(-1)
 		}
 		margin = min(margin, c.MaxColorShift-m.ColorShiftP999)
+	}
+	if c.MaxColorFlicker > 0 {
+		if math.IsNaN(m.ColorFlickerP999) {
+			return math.Inf(-1)
+		}
+		margin = min(margin, c.MaxColorFlicker-m.ColorFlickerP999)
 	}
 	return margin
 }

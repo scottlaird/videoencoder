@@ -54,7 +54,7 @@ func (f *fakeFFmpeg) Exec(_ context.Context, argv []string) (bench.Measurement, 
 		var bw, bh int
 		fmt.Sscanf(graph[strings.LastIndex(graph, "rgb48le,scale=")+len("rgb48le,scale="):], "%d:%d", &bw, &bh)
 		blocks := bytes.Repeat([]byte{0x30, 0x75}, 3*bw*bh)
-		os.WriteFile(argv[len(argv)-6], blocks, 0o644)
+		os.WriteFile(argv[len(argv)-8], blocks, 0o644)
 		os.WriteFile(argv[len(argv)-1], blocks, 0o644)
 		return bench.Measurement{}, nil
 	}
