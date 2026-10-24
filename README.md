@@ -49,6 +49,21 @@ thumbnails, tiled JPEGs added to `dash.mpd` and `hls.m3u8` and listed
 in a `thumbnails.vtt` WebVTT track (turn
 them off with `thumbnails: {enabled: false}` or `--thumbnails=false`).
 
+### Tuning quality
+
+`videoencoder tune` picks each rendition's quality setting for you.  It
+encodes a few seconds of the video (`tune.start`, `tune.duration`) at
+the shortest and tallest rendition of each encoder, searching for the
+setting that just reaches `tune.target_vmaf` (95 by default; a
+rendition's own `target_vmaf` overrides it), interpolates the
+renditions in between, and writes `quality` (and, for encoders with
+bitrate caps, `bitrate`) into the video's sidecar with a comment saying
+where each value came from.  Review the sidecar, then render as usual.
+
+Renditions up to 1080p are judged at 1080p and taller ones at 2160p
+with VMAF's 4K model.  HDR-only videos are tone-mapped to SDR for
+scoring; with an SDR source as well, that's used instead.
+
 ### Publishing
 
 With `publish.to` set, each render ends by copying the stream to a

@@ -368,3 +368,66 @@ publish:
 		t.Errorf("shared = %+v %+v; a prefix without {name} must not be PerVideo", tg["shared"], tg["shared"].S3)
 	}
 }
+
+func TestUpdateSidecar(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "v"+SidecarSuffix)
+	write(t, path, `# Big Four, spring 2026
+sources: {hdr: v.mov}
+poster: {offset: 2s} # the light is best here
+renditions:
+  av1-480: {quality: 28}
+  av1-4320: null
+  h264-1080:
+    quality: 18 # old
+    bitrate: 4M
+`)
+	err := UpdateSidecar(path, map[string]string{"x": "ignored.mov"}, []RenditionUpdate{
+		{Name: "av1-480", Quality: 31.5, Comment: "tuned: VMAF 95.1"},
+		{Name: "h264-1080", Quality: 21, Bitrate: "2.4M", Comment: "tuned: VMAF 95.0"},
+		{Name: "av1-1080", Quality: 33, Comment: "interpolated"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	text := string(data)
+	for _, want := range []string{"# Big Four, spring 2026", "# the light is best here", "quality: 31.5 # tuned: VMAF 95.1", "av1-4320: null"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("sidecar lacks %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "ignored.mov") {
+		t.Errorf("existing sources were overwritten:\n%s", text)
+	}
+
+	write(t, filepath.Join(dir, "v.mov"), "")
+	r, err := (&Loader{}).Load(Video{Name: "v", Dir: dir})
+	if err != nil {
+		t.Fatalf("reloading: %v\n%s", err, text)
+	}
+	checks := []struct {
+		name    string
+		quality float64
+		bitrate string
+	}{{"av1-480", 31.5, ""}, {"h264-1080", 21, "2.4M"}, {"av1-1080", 33, ""}}
+	for _, c := range checks {
+		rd := r.Renditions[c.name]
+		if rd == nil || rd.Quality != c.quality || (c.bitrate != "" && rd.Bitrate != c.bitrate) {
+			t.Errorf("%s = %+v, want quality %v bitrate %q", c.name, rd, c.quality, c.bitrate)
+		}
+	}
+	if _, ok := r.Renditions["av1-4320"]; ok {
+		t.Error("av1-4320 should still be deleted")
+	}
+
+	// A new sidecar for an ad hoc video gets its sources.
+	fresh := filepath.Join(dir, "w"+SidecarSuffix)
+	if err := UpdateSidecar(fresh, map[string]string{"0": "w.mov"}, []RenditionUpdate{{Name: "av1-480", Quality: 30}}); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(dir, "w.mov"), "")
+	if r, err := (&Loader{}).Load(Video{Name: "w", Dir: dir}); err != nil || r.Sources["0"] != filepath.Join(dir, "w.mov") {
+		t.Errorf("new sidecar: %+v, %v", r, err)
+	}
+}

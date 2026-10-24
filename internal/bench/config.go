@@ -74,6 +74,13 @@ var qualityDefaults = map[string]Quality{
 	"hevc_videotoolbox": {Flag: "-q:v", Min: 1, Max: 100, Step: 1, Seed: 60, HigherIsBetter: ptr(true)},
 }
 
+// DefaultQuality returns the quality flag, range, step, typical value
+// and direction for an ffmpeg encoder such as "libx265".
+func DefaultQuality(codec string) (Quality, bool) {
+	q, ok := qualityDefaults[codec]
+	return q, ok
+}
+
 // Encoder returns the ffmpeg video encoder named in the flagset's
 // arguments, or "".
 func (f *Flagset) Encoder() string {
@@ -185,6 +192,14 @@ func (c *Config) FlagsetNames() []string {
 	slices.Sort(names)
 	return names
 }
+
+// Steps is the number of steps between Min and Max.
+func (q Quality) Steps() int { return q.steps() }
+
+// IndexToQuality and QualityToIndex convert between step indexes (0 is
+// the best quality) and the encoder's values; see Search.
+func (q Quality) IndexToQuality(i int) float64 { return q.indexToQuality(i) }
+func (q Quality) QualityToIndex(v float64) int { return q.qualityToIndex(v) }
 
 // steps is the number of steps between Min and Max.
 func (q Quality) steps() int {

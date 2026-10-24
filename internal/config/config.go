@@ -35,6 +35,7 @@ type Config struct {
 	Thumbnails Thumbnails            `yaml:"thumbnails"`
 	Poster     Poster                `yaml:"poster"`
 	Publish    Publish               `yaml:"publish"`
+	Tune       Tune                  `yaml:"tune"`
 	Encoders   map[string]*Encoder   `yaml:"encoders"`
 	Renditions map[string]*Rendition `yaml:"renditions"`
 }
@@ -44,6 +45,14 @@ type Config struct {
 type layer struct {
 	Config `yaml:",inline"`
 	Videos map[string]any `yaml:"videos"`
+}
+
+// Tune says how "videoencoder tune" picks rendition qualities.
+type Tune struct {
+	TargetVMAF float64 `yaml:"target_vmaf"`
+	Start      string  `yaml:"start"`
+	Duration   string  `yaml:"duration"`
+	Anchors    int     `yaml:"anchors"`
 }
 
 // Thumbnails says how to make seek thumbnails.
@@ -117,6 +126,8 @@ type Rendition struct {
 	Bitrate string `yaml:"bitrate"`
 	// Args are extra options for this rendition only.
 	Args []string `yaml:"args"`
+	// TargetVMAF overrides tune.target_vmaf for this rendition.
+	TargetVMAF float64 `yaml:"target_vmaf"`
 }
 
 // SourceLabels returns the source labels in encoding order.
@@ -187,6 +198,14 @@ func (c *Config) Validate() error {
 	for _, f := range c.Poster.GainMapFormats {
 		if !slices.Contains(GainMapFormats, f) {
 			return fmt.Errorf("poster: gainmap_formats can't include %q (want some of %v)", f, GainMapFormats)
+		}
+	}
+	if t := c.Tune; t.TargetVMAF <= 0 || t.TargetVMAF > 100 || t.Anchors < 2 {
+		return fmt.Errorf("tune: target_vmaf must be in (0, 100] and anchors at least 2")
+	}
+	for _, f := range []struct{ name, v string }{{"tune.start", c.Tune.Start}, {"tune.duration", c.Tune.Duration}} {
+		if _, err := ParseOffset(f.v); err != nil {
+			return fmt.Errorf("%s: %w", f.name, err)
 		}
 	}
 	for name, t := range c.Publish.Targets {

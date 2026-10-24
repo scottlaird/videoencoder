@@ -508,8 +508,12 @@ log and reuses whatever it finds. So:
   timings are comparable. VMAF scoring runs in parallel with
   `n_threads`, but only between encodes, never alongside one.
 - VMAF uses `libvmaf=log_fmt=json:log_path=…:model=version=…`,
-  parsed from the JSON log, never by scraping stderr. Both streams get
-  `setpts=PTS-STARTPTS` so frames line up. We record the mean,
+  parsed from the JSON log, never by scraping stderr. Frames are paired
+  by position (`settb=AVTB,setpts=N` on both), not by timestamp:
+  Matroska rounds timestamps to the millisecond, and pairing a 30 fps
+  `.mkv` against an `.mp4` by timestamp compared every third frame with
+  the wrong one, which cost about 12 VMAF points. For the `.mov`
+  samples so far, both methods give identical scores. We record the mean,
   harmonic mean and the 1st-percentile frame score. The
   1st-percentile score catches the "one ugly second" that a mean
   hides, which is one of the ways VMAF misleads.
@@ -563,6 +567,41 @@ same timestamp, and distributing encodes over the same Temporal
 workers.
 
 ---
+
+## 3. videoencoder tune
+
+Combines the two: encbench's search and scoring, applied to the video
+being encoded, varying only the quality setting.
+
+- **Sample.** `tune.duration` (default 8 s) from `tune.start` (default
+  0) of the first SDR source, or the HDR source if there isn't one.
+  It's cut by stream copy, so it starts at a keyframe.
+- **Anchors.** Per encoder, the shortest and tallest renditions as
+  filtered for the source (`tune.anchors: 3` adds the middle one). Each
+  is encoded from the sample with its real arguments, but no bitrate
+  caps, while bench's search (regula falsi plus bisection) varies the
+  quality. The search starts from the configured quality, uses the
+  encoder's bench range, and steps no finer than 0.5.
+- **Scoring at viewing size**, as Netflix's per-title encoding does.
+  Renditions up to 1080p are compared with a lossless (FFV1) 1080p
+  reference of the sample, and taller ones with a 2160p reference using
+  the 4K model, never above the source. HDR is tone-mapped to SDR on
+  both sides first, since VMAF and CIEDE2000 are calibrated for SDR.
+- **Interpolation.** The other renditions get quality linear in log
+  height between anchors, held flat outside them, rounded to the step.
+  Bitrate is interpolated linearly in log bitrate.
+- **Bitrate caps.** For encoders with `cap_bitrate`, `bitrate` is set
+  to the tuned encode's average (two significant figures). The existing
+  1.5× maxrate/bufsize then follows from it. The sample may be calmer
+  than the rest of the video, so `tune.start` is worth pointing at a
+  busy part.
+- **Output.** `quality`/`bitrate` are written into
+  `<name>.video.yaml` by editing the YAML node tree, so other settings
+  and comments survive. Each value gets a comment such as `tuned
+  2026-10-24: VMAF 95.1 (target 95)` or `interpolated by tune …`.
+  A sidecar is created if needed, with `sources` for ad hoc videos.
+  Tuning never renders; the next render picks the values up like any
+  other setting.
 
 ## Order of work
 
