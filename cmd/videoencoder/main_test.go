@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -164,12 +166,18 @@ func TestAdHocEndToEnd(t *testing.T) {
 		t.Errorf("dash.mpd lacks the SDR label or the thumbnail track:\n%s", mpd)
 	}
 
+	before := hashMedia(t, streamdir)
 	runner.calls = map[string]int{}
 	if err := run(context.Background(), o, d); err != nil {
 		t.Fatalf("second run: %v", err)
 	}
 	if got := runner.calls["ffmpeg"]; got != 0 {
 		t.Errorf("second run: %d ffmpeg calls, want 0", got)
+	}
+	// Repackaging unchanged inputs gives byte-identical media, so a
+	// sync to object storage can skip it.
+	if after := hashMedia(t, streamdir); !maps.Equal(before, after) {
+		t.Errorf("repackaged media changed:\n before %v\n after  %v", before, after)
 	}
 
 	// Deleting one output (leaving its status file) rebuilds just that one.
@@ -304,6 +312,24 @@ videos:
 	if left, _ := filepath.Glob(filepath.Join(stream, "av1-*")); len(left) != 0 {
 		t.Errorf("dropped rendition left %q in the stream", left)
 	}
+}
+
+// hashMedia returns the SHA-256 of every .mp4 in dir, by name.
+func hashMedia(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	files, _ := filepath.Glob(filepath.Join(dir, "*.mp4"))
+	if len(files) == 0 {
+		t.Fatalf("no media in %s", dir)
+	}
+	sums := map[string]string{}
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sums[filepath.Base(f)] = fmt.Sprintf("%x", sha256.Sum256(data))
+	}
+	return sums
 }
 
 // makeHDRClip writes a two-second 320x240 PQ-tagged 10-bit clip.

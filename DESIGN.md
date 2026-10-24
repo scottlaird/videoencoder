@@ -265,18 +265,22 @@ with two changes: packager writes into a staging directory, and the
 thumbnail post-processor runs before publish. Audio comes from the
 first source, which is fine since the sources differ only in color.
 
-Packager rewrites every output on every run, and its output is **not**
-byte-deterministic. I tested this on 2026-10-24 with packager 3.9 and
-unchanged inputs:
+Packager rewrites every output on every run, and its output isn't
+byte-deterministic on its own. I tested this on 2026-10-24 with packager
+3.9 and unchanged inputs:
 
-- Every media file differs in exactly 6 bytes, the wall-clock creation
-  and modification times in `mvhd`/`tkhd`/`mdhd`. A small
-  post-processor rewrites those to a fixed value, the source's mtime,
-  which makes the media files deterministic. It needs no new
-  dependency, since MP4 boxes are easy to walk.
+- Every media file differs in exactly 6 bytes: the wall-clock creation
+  and modification times in `mvhd`/`tkhd`/`mdhd`. After packaging,
+  `internal/mp4.ZeroTimes` sets those to zero in place, walking the
+  boxes with no new dependency and moving nothing. With that, unchanged
+  renditions are byte-identical across runs, and an end-to-end test
+  checks it with real packager runs.
 - `dash.mpd` assigns AdaptationSet ids in thread order, so they
-  shuffle between runs. Manifests are tiny and are always uploaded
-  last anyway, so this doesn't matter.
+  shuffle between runs. Manifests are tiny and always uploaded last
+  anyway, so that's left alone.
+
+Packager runs with `--quiet`; its per-file INFO logging buried
+everything else.
 
 ### Publishing
 
@@ -298,7 +302,7 @@ the staging directory to the target:
   players already streaming the old manifest still work.
 
 Changing the quality of AV1 2160p re-encodes that one rendition and
-reruns packager. With the timestamps normalized, the upload is the new
+reruns packager. With the timestamps zeroed, the upload is the new
 `av1-2160.<key>.mp4` plus the manifests and nothing else.
 
 ### Temporal (later)

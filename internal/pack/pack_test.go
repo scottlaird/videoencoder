@@ -3,7 +3,9 @@ package pack
 import (
 	"context"
 	"errors"
+	"os"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/scottlaird/videoencoder/internal/probe"
@@ -19,10 +21,21 @@ func (f fakeProber) Probe(_ context.Context, name string) (probe.VideoData, erro
 	return vd, nil
 }
 
+// recorder records the packager command and writes a minimal MP4 for
+// each output, as packager would.
 type recorder struct{ argv []string }
 
 func (r *recorder) Run(_ context.Context, argv []string) error {
 	r.argv = argv
+	for _, a := range argv {
+		for _, field := range strings.Split(a, ",") {
+			if out, ok := strings.CutPrefix(field, "output="); ok {
+				if err := os.WriteFile(out, []byte("\x00\x00\x00\x08free"), 0o644); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	return nil
 }
 
