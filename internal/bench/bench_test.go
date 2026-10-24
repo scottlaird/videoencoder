@@ -197,12 +197,14 @@ func TestResultsRoundTrip(t *testing.T) {
 // produces q-dependent file sizes; scoring reports a VMAF that falls
 // linearly with q, so with a 95 target the answer is q = cutoff.
 type fakeFFmpeg struct {
-	mu      sync.Mutex // scoring runs in parallel
-	cutoff  float64
-	ciede   float64
-	quality map[string]float64 // encoded file -> quality
-	encodes []string           // "sample q" per encode
-	scores  int
+	mu         sync.Mutex // scoring runs in parallel
+	cutoff     float64
+	ciede      float64
+	quality    map[string]float64 // encoded file -> quality
+	encodes    []string           // "sample q" per encode
+	scores     int
+	graphs     []string // scoring filtergraphs
+	downscales int
 }
 
 func newFake(cutoff float64) *fakeFFmpeg {
@@ -214,6 +216,7 @@ func (f *fakeFFmpeg) Exec(_ context.Context, argv []string) (Measurement, error)
 	defer f.mu.Unlock()
 	if i := slices.Index(argv, "-filter_complex"); i >= 0 {
 		f.scores++
+		f.graphs = append(f.graphs, argv[i+1])
 		var logs []string
 		for _, part := range strings.Split(argv[i+1], "log_path=")[1:] {
 			logs = append(logs, strings.SplitN(part, ":n_threads", 2)[0])
@@ -226,6 +229,10 @@ func (f *fakeFFmpeg) Exec(_ context.Context, argv []string) (Measurement, error)
 		return Measurement{Wall: time.Second}, errors.Join(
 			os.WriteFile(logs[0], []byte(log), 0o644),
 			os.WriteFile(logs[1], []byte(colour), 0o644))
+	}
+	if slices.Contains(argv, "prores_ks") {
+		f.downscales++
+		return Measurement{}, os.WriteFile(argv[len(argv)-1], []byte("scaled"), 0o644)
 	}
 	if slices.Contains(argv, "libbroken") {
 		return Measurement{}, errors.New("Unknown encoder 'libbroken'")
@@ -403,5 +410,68 @@ func TestBenchDryRun(t *testing.T) {
 	}
 	if len(fake.encodes) != 0 || fake.scores != 0 {
 		t.Errorf("dry run ran %d encodes and %d scores", len(fake.encodes), fake.scores)
+	}
+}
+
+// sizedProber reports 8K PQ for "big" files, their scaled heights for
+// "@<h>p" copies, and 1080p SDR otherwise.
+type sizedProber struct{}
+
+func (sizedProber) Probe(_ context.Context, path string) (probe.VideoData, error) {
+	vd := probe.VideoData{Width: 1920, Height: 1080, Duration: 30 * time.Second, ColorTransfer: "bt709"}
+	base := filepath.Base(path)
+	if strings.HasPrefix(base, "big") {
+		vd.ColorTransfer = "smpte2084"
+		vd.Width, vd.Height = 7680, 4320
+		if strings.Contains(base, "@2160p") {
+			vd.Width, vd.Height = 3840, 2160
+		} else if strings.Contains(base, "@1080p") {
+			vd.Width, vd.Height = 1920, 1080
+		}
+	}
+	return vd, nil
+}
+
+func TestBenchScales(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "samples", "big.mov"), "8k hdr")
+	writeFile(t, filepath.Join(dir, "samples", "hd.mov"), "1080p sdr")
+	c := benchConfig(t, dir, "  x: {args: [-c:v, libx265]}\n")
+	c.Scales = []uint64{1080, 2160}
+
+	fake := newFake(18.7)
+	b := &Bench{Cfg: c, Exec: fake, Prober: sizedProber{}}
+	if err := b.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	results, _ := LoadResults(filepath.Join(dir, "work", "results.csv"))
+	var names []string
+	for _, best := range Bests(c, results) {
+		names = append(names, best.Sample)
+	}
+	slices.Sort(names)
+	if want := []string{"big@1080p.mov", "big@2160p.mov", "hd.mov"}; !slices.Equal(names, want) {
+		t.Errorf("samples tested = %q, want %q", names, want)
+	}
+	if fake.downscales != 2 {
+		t.Errorf("made %d downscaled copies, want 2", fake.downscales)
+	}
+	toneMapped := 0
+	for _, g := range fake.graphs {
+		if strings.Contains(g, "tonemap=") {
+			toneMapped++
+		}
+	}
+	if toneMapped == 0 || toneMapped == len(fake.graphs) {
+		t.Errorf("%d of %d scorings tone-mapped; want the HDR sample's only", toneMapped, len(fake.graphs))
+	}
+
+	// Copies are made once and reused, and keep their results.
+	fake.encodes, fake.downscales = nil, 0
+	if err := b.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if fake.downscales != 0 || len(fake.encodes) != 0 {
+		t.Errorf("rerun made %d copies and %d encodes, want none", fake.downscales, len(fake.encodes))
 	}
 }

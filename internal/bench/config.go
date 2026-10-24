@@ -21,6 +21,10 @@ type Config struct {
 	// Workdir holds results.csv, best.csv, kept encodes and scratch
 	// files. Defaults to "bench".
 	Workdir string `yaml:"workdir"`
+	// Scales lists heights to test samples at. Taller samples are
+	// downscaled once (cached in workdir/samples); a sample no taller
+	// than a scale is used as it is. Empty means native size only.
+	Scales []uint64 `yaml:"scales"`
 	// An encode passes when its mean VMAF reaches TargetVMAF (default
 	// 95) and it meets the optional colour limits. VMAF ignores chroma,
 	// so a colour cast only fails an encode through MinCIEDE2000 (a
