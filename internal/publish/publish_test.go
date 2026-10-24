@@ -128,6 +128,7 @@ func TestMetaFor(t *testing.T) {
 		{"poster-hdr-640.0123456789.avif", "image/avif", "public, max-age=31536000, immutable"},
 		{"thumbnail.jpg", "image/jpeg", "no-cache"},
 		{"poster.json", "application/json", "no-cache"},
+		{"thumbnails.vtt", "text/vtt", "no-cache"},
 	}
 	for _, tt := range tests {
 		if m := metaFor(tt.name); m.ContentType != tt.contentType || m.CacheControl != tt.cache {

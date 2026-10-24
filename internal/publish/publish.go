@@ -208,6 +208,8 @@ func metaFor(name string) Meta {
 		m.ContentType = "image/webp"
 	case ".json":
 		m.ContentType = "application/json"
+	case ".vtt":
+		m.ContentType = "text/vtt"
 	default:
 		m.ContentType = "application/octet-stream"
 	}

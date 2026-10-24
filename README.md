@@ -39,7 +39,8 @@ Intermediate renditions go in `transcodes/<name>/` and the stream in
 Each stream also gets posters, still images taken at `poster.offset`
 in several widths and formats (`poster-sdr-640.<key>.avif`, and HDR
 AVIFs when there's an HDR source), listed in `poster.json`, and seek
-thumbnails, tiled JPEGs added to both `dash.mpd` and `hls.m3u8` (turn
+thumbnails, tiled JPEGs added to `dash.mpd` and `hls.m3u8` and listed
+in a `thumbnails.vtt` WebVTT track (turn
 them off with `thumbnails: {enabled: false}` or `--thumbnails=false`).
 
 ### Publishing

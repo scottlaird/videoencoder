@@ -255,8 +255,10 @@ thumbnails: {enabled: true, interval: 5, height: 180, columns: 5, rows: 5}
    tile. That's the Roku/Apple image-playlist form, which Shaka Player
    also reads.
 
-A WebVTT sprite track (`#xywh=`), for players that only know that
-format, is left for later.
+4. WebVTT: `thumbnails.vtt` has one cue per thumbnail, pointing into
+   its tile with a `#xywh=x,y,w,h` fragment, the form Video.js, Plyr
+   and most players without DASH/HLS image-track support use. The last
+   cue ends at the end of the video.
 
 ### Packaging
 

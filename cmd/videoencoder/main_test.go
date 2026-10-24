@@ -155,7 +155,7 @@ func TestAdHocEndToEnd(t *testing.T) {
 	streamdir := filepath.Join(dir, "stream", "src")
 	for _, pattern := range []string{"dash.mpd", "hls.m3u8", "thumbnail.jpg", "poster.json",
 		"poster-sdr-320.*.avif", "poster-sdr-320.*.jpg", "audio.*.mp4", "audio.*.m3u8",
-		"thumbnails.m3u8", "thumbs.*/tile-1.jpg"} {
+		"thumbnails.m3u8", "thumbnails.vtt", "thumbs.*/tile-1.jpg"} {
 		if m, _ := filepath.Glob(filepath.Join(streamdir, pattern)); len(m) != 1 {
 			t.Errorf("stream outputs matching %s: %q, want one", pattern, m)
 		}

@@ -33,7 +33,7 @@ func TestAddThumbnails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 1 || files[0] != thumbnailPlaylist {
+	if len(files) != 2 || files[0] != thumbnailPlaylist || files[1] != thumbnailVTT {
 		t.Errorf("files = %q", files)
 	}
 
@@ -121,5 +121,41 @@ func TestAddThumbnailsErrors(t *testing.T) {
 	}
 	if _, err := AddThumbnails(dir, Thumbnails{Dir: "x", Tiles: 1, Columns: 1, Rows: 1, Interval: 1}); err == nil {
 		t.Error("AddThumbnails with two Periods: nil error")
+	}
+}
+
+func TestWebVTT(t *testing.T) {
+	// 2 tiles of 2x2 at 5 s, 31 s of video: thumbnails at 0, 5 … 30,
+	// seven in all, the last cue cut short at the end of the video.
+	track := Thumbnails{Dir: "thumbs.abc", Tiles: 2, Columns: 2, Rows: 2,
+		ThumbWidth: 320, ThumbHeight: 180, Interval: 5, Duration: 31}
+	want := `WEBVTT
+
+00:00:00.000 --> 00:00:05.000
+thumbs.abc/tile-1.jpg#xywh=0,0,320,180
+
+00:00:05.000 --> 00:00:10.000
+thumbs.abc/tile-1.jpg#xywh=320,0,320,180
+
+00:00:10.000 --> 00:00:15.000
+thumbs.abc/tile-1.jpg#xywh=0,180,320,180
+
+00:00:15.000 --> 00:00:20.000
+thumbs.abc/tile-1.jpg#xywh=320,180,320,180
+
+00:00:20.000 --> 00:00:25.000
+thumbs.abc/tile-2.jpg#xywh=0,0,320,180
+
+00:00:25.000 --> 00:00:30.000
+thumbs.abc/tile-2.jpg#xywh=320,0,320,180
+
+00:00:30.000 --> 00:00:31.000
+thumbs.abc/tile-2.jpg#xywh=0,180,320,180
+`
+	if got := string(webVTT(track)); got != want {
+		t.Errorf("webVTT() =\n%s\nwant\n%s", got, want)
+	}
+	if got := vttTime(3725.5); got != "01:02:05.500" {
+		t.Errorf("vttTime(3725.5) = %q", got)
 	}
 }

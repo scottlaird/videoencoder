@@ -24,8 +24,11 @@ type Thumbnails struct {
 	Bytes                   int64   // total size of the tiles
 }
 
-// HLS image playlist name for the thumbnail track.
-const thumbnailPlaylist = "thumbnails.m3u8"
+// Names of the HLS image playlist and the WebVTT track.
+const (
+	thumbnailPlaylist = "thumbnails.m3u8"
+	thumbnailVTT      = "thumbnails.vtt"
+)
 
 func (t Thumbnails) tileSeconds() float64 { return t.Interval * float64(t.Columns*t.Rows) }
 
@@ -43,7 +46,9 @@ func (t Thumbnails) bandwidth() int64 {
 // DASH gets the DASH-IF IOP form (an image AdaptationSet with a
 // thumbnail_tile EssentialProperty); HLS gets an EXT-X-IMAGE-STREAM-INF
 // pointing at an EXT-X-IMAGES-ONLY playlist with EXT-X-TILES, the form
-// Roku and Shaka Player read. Both are read by Shaka Player.
+// Roku and Shaka Player read. Both are read by Shaka Player. For other
+// players, it also writes a WebVTT track whose cues point into the
+// tiles with #xywh= fragments, as Video.js and Plyr expect.
 func AddThumbnails(streamdir string, t Thumbnails) ([]string, error) {
 	if t.Tiles == 0 {
 		return nil, fmt.Errorf("thumbnail track %s has no tiles", t.Dir)
@@ -68,12 +73,38 @@ func AddThumbnails(streamdir string, t Thumbnails) ([]string, error) {
 		{mpdPath, mpd},
 		{masterPath, addHLSThumbnails(master, t)},
 		{filepath.Join(streamdir, thumbnailPlaylist), hlsImagePlaylist(t)},
+		{filepath.Join(streamdir, thumbnailVTT), webVTT(t)},
 	} {
 		if err := writeFile(w.path, w.data); err != nil {
 			return nil, err
 		}
 	}
-	return []string{thumbnailPlaylist}, nil
+	return []string{thumbnailPlaylist, thumbnailVTT}, nil
+}
+
+// webVTT returns a WebVTT track with one cue per thumbnail.
+func webVTT(t Thumbnails) []byte {
+	var b strings.Builder
+	b.WriteString("WEBVTT\n")
+	perTile := t.Columns * t.Rows
+	n := min(int(math.Ceil(t.Duration/t.Interval)), t.Tiles*perTile)
+	for k := range max(n, 1) {
+		start := float64(k) * t.Interval
+		end := min(start+t.Interval, t.Duration)
+		if end <= start {
+			end = start + t.Interval
+		}
+		i := k % perTile
+		fmt.Fprintf(&b, "\n%s --> %s\n%s/tile-%d.jpg#xywh=%d,%d,%d,%d\n",
+			vttTime(start), vttTime(end), t.Dir, k/perTile+1,
+			(i%t.Columns)*t.ThumbWidth, (i/t.Columns)*t.ThumbHeight, t.ThumbWidth, t.ThumbHeight)
+	}
+	return []byte(b.String())
+}
+
+func vttTime(sec float64) string {
+	ms := int64(math.Round(sec * 1000))
+	return fmt.Sprintf("%02d:%02d:%02d.%03d", ms/3600000, ms/60000%60, ms/1000%60, ms%1000)
 }
 
 var adaptationSetID = regexp.MustCompile(`<AdaptationSet id="(\d+)"`)
