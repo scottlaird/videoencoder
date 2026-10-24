@@ -115,6 +115,10 @@ type Encoder struct {
 	// -maxrate and -bufsize at 1.5x. Without it the bitrate is only a
 	// label.
 	CapBitrate bool `yaml:"cap_bitrate"`
+	// SDROnly means the encoder only makes SDR renditions: from SDR
+	// sources, and from an HDR source (tone-mapped) only if the video
+	// has no SDR source.
+	SDROnly bool `yaml:"sdr_only"`
 }
 
 // Rendition is one output of the ladder.

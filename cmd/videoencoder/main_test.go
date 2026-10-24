@@ -633,6 +633,68 @@ func TestPortablePixelFormats(t *testing.T) {
 	}
 }
 
+// TestSDROnlyH264 checks that H.264 is never PQ: an HDR+SDR pair gets
+// H.264 from the SDR source only, and an HDR-only video gets it
+// tone-mapped to BT.709.
+func TestSDROnlyH264(t *testing.T) {
+	requireTools(t, "ffmpeg", "ffprobe", "packager")
+	ladder := `
+poster: {offset: "0.5", widths: [160], gainmap_formats: []}
+thumbnails: {enabled: false}
+renditions: {h264-480: null, h264-720: null, h265-480: null, h265-720: null, h265-1080: null,
+  h265-1440: null, h265-2160: null, av1-480: null, av1-720: null, av1-1440: null,
+  av1-2160: null, av1-3240: null, av1-4320: null}
+`
+	transfer := func(path string) string {
+		out, err := exec.Command("ffprobe", "-v", "error", "-select_streams", "v",
+			"-show_entries", "stream=color_transfer", "-of", "csv=p=0", path).Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Trim(strings.TrimSpace(string(out)), ",")
+	}
+	for _, tc := range []struct {
+		name    string
+		sources string
+		want    map[string]string // rendition glob -> transfer; "" means absent
+	}{
+		{"pair", "{hdr: v-hdr.mov, sdr: v-sdr.mov}", map[string]string{
+			"h264-1080.sdr.*.mp4": "bt709", "h264-1080.hdr.*.mp4": "", "av1-1080.hdr.*.mp4": "smpte2084"}},
+		{"hdr only", "{hdr: v-hdr.mov}", map[string]string{
+			"h264-1080.hdr.*.mp4": "bt709", "av1-1080.hdr.*.mp4": "smpte2084"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			makeHDRClip(t, filepath.Join(dir, "v-hdr.mov"))
+			makeClip(t, filepath.Join(dir, "v-sdr.mov"))
+			if err := os.WriteFile(filepath.Join(dir, "v.video.yaml"), []byte("sources: "+tc.sources+ladder), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			o, err := parseArgs([]string{"--config", "", dir}, io.Discard)
+			if err != nil {
+				t.Fatal(err)
+			}
+			d, _ := testDeps(io.Discard)
+			if err := run(context.Background(), o, d); err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			for glob, want := range tc.want {
+				m, _ := filepath.Glob(filepath.Join(dir, "stream", "v", glob))
+				switch {
+				case want == "" && len(m) != 0:
+					t.Errorf("%s exists: %q", glob, m)
+				case want != "" && len(m) != 1:
+					t.Errorf("%s: %q, want one", glob, m)
+				case want != "":
+					if got := transfer(m[0]); got != want {
+						t.Errorf("%s: transfer %s, want %s", glob, got, want)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestRunMissingSource(t *testing.T) {
 	requireTools(t, "ffprobe")
 	dir := t.TempDir()

@@ -53,22 +53,27 @@ func (tu *Tuner) Tune(ctx context.Context, r *config.Resolved, src string, vd pr
 	if sampleVD.Duration <= 0 {
 		return nil, fmt.Errorf("sample of %s is empty: is tune.start past its end?", src)
 	}
-	prefilter := ""
-	if vd.Tone() == probe.HDR {
-		prefilter = plan.ToneMapSDR
-	}
+	hdr := vd.Tone() == probe.HDR
 
-	refs := map[uint64]reference{}
+	refs := map[refKey]reference{}
 	results := make([]Result, len(targets))
 	byEncoder := map[string][]Point{}
 	for enc, idx := range Anchors(targets, r.Tune.Anchors) {
 		for _, i := range idx {
 			t := targets[i]
-			ref, err := tu.reference(ctx, refs, sample, vd, t.Height, workdir)
+			// SDR-only encoders tone-map HDR, as a render would, and are
+			// judged against a tone-mapped reference. The rest are judged
+			// with both sides tone-mapped, since VMAF is an SDR metric.
+			toneMap := t.Encoder.SDROnly && hdr
+			prefilter := ""
+			if hdr && !toneMap {
+				prefilter = plan.ToneMapSDR
+			}
+			ref, err := tu.reference(ctx, refs, sample, vd, t.Height, toneMap, workdir)
 			if err != nil {
 				return nil, err
 			}
-			res, bitrate, err := tu.search(ctx, r, t, sample, sampleVD.Duration.Seconds(), ref, prefilter, workdir)
+			res, bitrate, err := tu.search(ctx, r, t, sample, sampleVD.Duration.Seconds(), ref, toneMap, prefilter, workdir)
 			if err != nil {
 				return nil, fmt.Errorf("tuning %s: %w", t.Name, err)
 			}
@@ -94,6 +99,12 @@ func (tu *Tuner) Tune(ctx context.Context, r *config.Resolved, src string, vd pr
 	return results, nil
 }
 
+// refKey picks a reference: its height, and whether it is tone-mapped.
+type refKey struct {
+	height  uint64
+	toneMap bool
+}
+
 // reference is the sample at the size a rendition is judged at.
 type reference struct {
 	path          string
@@ -111,23 +122,31 @@ func viewingHeight(h, source uint64) uint64 {
 	return min(v, source)
 }
 
-func (tu *Tuner) reference(ctx context.Context, refs map[uint64]reference, sample string, vd probe.VideoData, h uint64, workdir string) (reference, error) {
+func (tu *Tuner) reference(ctx context.Context, refs map[refKey]reference, sample string, vd probe.VideoData, h uint64, toneMap bool, workdir string) (reference, error) {
 	vh := viewingHeight(h, vd.Height)
-	if ref, ok := refs[vh]; ok {
+	key := refKey{vh, toneMap}
+	if ref, ok := refs[key]; ok {
 		return ref, nil
 	}
+	name := fmt.Sprintf("ref-%d.mkv", vh)
+	if toneMap {
+		name = fmt.Sprintf("ref-%d-sdr.mkv", vh)
+	}
 	ref := reference{
-		path:   filepath.Join(workdir, fmt.Sprintf("ref-%d.mkv", vh)),
+		path:   filepath.Join(workdir, name),
 		width:  uint64(float64(vd.Width)*float64(vh)/float64(vd.Height)+0.5) &^ 1,
 		height: vh,
 	}
 	// FFV1 is lossless, so the reference adds no error of its own.
-	err := tu.ffmpeg(ctx, "-i", sample, "-vf", fmt.Sprintf("scale=%d:%d:flags=lanczos", ref.width, ref.height),
-		"-c:v", "ffv1", "-level", "3", ref.path)
+	vf := fmt.Sprintf("scale=%d:%d:flags=lanczos", ref.width, ref.height)
+	if toneMap {
+		vf = plan.ToneMapSDR + "," + vf
+	}
+	err := tu.ffmpeg(ctx, "-i", sample, "-vf", vf, "-c:v", "ffv1", "-level", "3", ref.path)
 	if err != nil {
 		return reference{}, fmt.Errorf("making %dp reference: %w", vh, err)
 	}
-	refs[vh] = ref
+	refs[key] = ref
 	return ref, nil
 }
 
@@ -153,9 +172,10 @@ func target(r *config.Resolved, t *plan.Target) float64 {
 }
 
 // search finds the worst quality setting at which t, encoded from the
-// sample without bitrate caps, reaches its target VMAF. It returns the
-// result and the bitrate of that encode.
-func (tu *Tuner) search(ctx context.Context, r *config.Resolved, t *plan.Target, sample string, seconds float64, ref reference, prefilter, workdir string) (Result, float64, error) {
+// sample without bitrate caps (and tone-mapped first with toneMap),
+// reaches its target VMAF. It returns the result and the bitrate of
+// that encode.
+func (tu *Tuner) search(ctx context.Context, r *config.Resolved, t *plan.Target, sample string, seconds float64, ref reference, toneMap bool, prefilter, workdir string) (Result, float64, error) {
 	spec := qualitySpec(t.Encoder.Codec)
 	goal := target(r, t)
 	s := bench.NewSearch(spec.Steps(), spec.QualityToIndex(t.Quality))
@@ -190,7 +210,7 @@ func (tu *Tuner) search(ctx context.Context, r *config.Resolved, t *plan.Target,
 		trial.Quality = q
 		trial.Encoder.CapBitrate = false
 		out := filepath.Join(workdir, fmt.Sprintf("%s.q%v.mp4", t.Name, q))
-		job := trial.Job(src, workdir)
+		job := trial.Job(src, workdir, toneMap)
 		args := append([]string{"-i", sample}, job.Args...)
 		if err := tu.ffmpeg(ctx, append(args, out)...); err != nil {
 			return Result{}, 0, err
