@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"go.yaml.in/yaml/v4"
 )
@@ -32,7 +33,7 @@ func node(t *testing.T, s string) *yaml.Node {
 func TestMergeInto(t *testing.T) {
 	base := `
 outdir: a
-thumbnails: true
+thumbnails: {enabled: true}
 encoders:
   x: {codec: libx264, quality_flag: -crf, args: [-preset, fast]}
 renditions:
@@ -60,7 +61,7 @@ renditions:
 	if got.Outdir != "b" {
 		t.Errorf("outdir = %q, want b (scalar replaced)", got.Outdir)
 	}
-	if got.Thumbnails {
+	if got.Thumbnails.Enabled {
 		t.Error("thumbnails still set; null should delete it")
 	}
 	x := got.Encoders["x"]
@@ -116,7 +117,7 @@ renditions:
   av1-2160: {quality: 30}
 `)
 
-	l := &Loader{GlobalPath: global, Overrides: map[string]any{"thumbnails": true}}
+	l := &Loader{GlobalPath: global, Overrides: map[string]any{"thumbnails": map[string]any{"enabled": false}}}
 	r, err := l.Load(Video{Name: "hike", Dir: proj})
 	if err != nil {
 		t.Fatalf("Load() = %v", err)
@@ -133,7 +134,8 @@ renditions:
 		{"sidecar beats parent project", r.Renditions["av1-2160"].Quality, 30.0},
 		{"video entry applies", r.Renditions["av1-1080"].Quality, 29.0},
 		{"defaults kept underneath", r.Renditions["av1-1080"].Height, uint64(1080)},
-		{"command line on top", r.Thumbnails, true},
+		{"command line on top", r.Thumbnails.Enabled, false},
+		{"defaults under a partial override", r.Thumbnails.Columns, uint64(5)},
 	}
 	for _, c := range checks {
 		if c.got != c.want {
@@ -178,13 +180,23 @@ func TestLoadErrors(t *testing.T) {
 		},
 		{
 			name:    "no sources",
-			files:   map[string]string{"v" + SidecarSuffix: "thumbnails: true"},
+			files:   map[string]string{"v" + SidecarSuffix: "poster: {offset: 2s}"},
 			wantErr: "no sources",
 		},
 		{
 			name:    "rendition with unknown encoder",
 			files:   map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\nrenditions: {x: {encoder: vp9, height: 720}}"},
 			wantErr: `unknown encoder "vp9"`,
+		},
+		{
+			name:    "bad poster format",
+			files:   map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\nposter: {formats: [gif]}"},
+			wantErr: `unknown format "gif"`,
+		},
+		{
+			name:    "bad poster offset",
+			files:   map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\nposter: {offset: later}"},
+			wantErr: "poster.offset",
 		},
 		{
 			name:    "bad bitrate",
@@ -287,6 +299,30 @@ func TestParseBitrate(t *testing.T) {
 		got, err := ParseBitrate(tt.in)
 		if (err != nil) != tt.wantErr || got != tt.want {
 			t.Errorf("ParseBitrate(%q) = %d, %v; want %d, err %v", tt.in, got, err, tt.want, tt.wantErr)
+		}
+	}
+}
+
+func TestParseOffset(t *testing.T) {
+	tests := []struct {
+		in      string
+		want    time.Duration
+		wantErr bool
+	}{
+		{"1s", time.Second, false},
+		{"1.5s", 1500 * time.Millisecond, false},
+		{"72.5", 72500 * time.Millisecond, false},
+		{"01:12.5", 72500 * time.Millisecond, false},
+		{"1:00:00", time.Hour, false},
+		{"", 0, true},
+		{"1:75", 0, true},
+		{"-3s", 0, true},
+		{"soon", 0, true},
+	}
+	for _, tt := range tests {
+		got, err := ParseOffset(tt.in)
+		if (err != nil) != tt.wantErr || got != tt.want {
+			t.Errorf("ParseOffset(%q) = %v, %v; want %v, err %v", tt.in, got, err, tt.want, tt.wantErr)
 		}
 	}
 }

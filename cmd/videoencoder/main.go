@@ -8,8 +8,8 @@
 // With directories (default "."), it renders every video defined under
 // them by a <name>.video.yaml sidecar or a videos: entry in a
 // videoencoder.yaml. With media files, they are versions of one video
-// (e.g. HDR and SDR), all offered in one stream; audio and the poster
-// come from the first. "plan" prints each video's merged config, with
+// (e.g. HDR and SDR), all offered in one stream; audio comes from the
+// first, and posters from the first of each tone. "plan" prints each video's merged config, with
 // where each value came from, and which renditions would be rebuilt.
 package main
 
@@ -55,10 +55,10 @@ func parseArgs(args []string, stderr io.Writer) (options, error) {
 	fs := flag.NewFlagSet("videoencoder", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&o.globalPath, "config", config.DefaultGlobalPath(), "global config file")
-	fs.StringVar(&o.rebuild, "rebuild", "", `rebuild matching outputs even if up to date: "*" for all, "av1-*", "hdr/h264-1080", "audio", "poster"`)
+	fs.StringVar(&o.rebuild, "rebuild", "", `rebuild matching outputs even if up to date: "*" for all, "av1-*", "hdr/h264-1080", "audio", "poster/*"`)
 	outdir := fs.String("outdir", "", "override outdir: directory for intermediate renditions")
 	streamdir := fs.String("streamdir", "", "override streamdir: directory for the finished stream")
-	thumbnails := fs.Bool("thumbnails", false, "override thumbnails: generate seek thumbnails (not yet supported by shaka-packager)")
+	thumbnails := fs.Bool("thumbnails", true, "override thumbnails.enabled: add seek thumbnails to the stream")
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}
@@ -69,7 +69,7 @@ func parseArgs(args []string, stderr io.Writer) (options, error) {
 		case "streamdir":
 			o.overrides["streamdir"] = absOrSame(*streamdir)
 		case "thumbnails":
-			o.overrides["thumbnails"] = *thumbnails
+			o.overrides["thumbnails"] = map[string]any{"enabled": *thumbnails}
 		}
 	})
 	o.paths = fs.Args()
@@ -164,12 +164,13 @@ func run(ctx context.Context, o options, d deps) error {
 
 // built is everything a video's outputs are made from.
 type built struct {
-	vd        probe.VideoData
-	sources   []plan.Source // in encoding order; the first supplies audio and poster
+	vd        probe.VideoData // of the first source
+	sources   []plan.Source   // in encoding order; the first supplies audio
+	vds       []probe.VideoData
 	targets   plan.Targets
 	perSource [][]*ffmpeg.Job // rendition jobs, in target order
 	audio     *ffmpeg.Job
-	poster    *ffmpeg.Job
+	posters   []plan.Poster
 	thumbs    *ffmpeg.Job // nil unless thumbnails are on
 	manifest  *state.Manifest
 	desc      map[*ffmpeg.Job]string // for plan output
@@ -181,7 +182,10 @@ func (b *built) all() []*ffmpeg.Job {
 	for _, s := range b.perSource {
 		js = append(js, s...)
 	}
-	js = append(js, b.audio, b.poster)
+	js = append(js, b.audio)
+	for _, p := range b.posters {
+		js = append(js, p.Job)
+	}
 	if b.thumbs != nil {
 		js = append(js, b.thumbs)
 	}
@@ -195,13 +199,19 @@ func prepare(ctx context.Context, r *config.Resolved, d deps) (*built, error) {
 		if err != nil {
 			return nil, err
 		}
+		vd, err := d.prober.Probe(ctx, src.Path)
+		if err != nil {
+			return nil, err
+		}
+		if off, _ := config.ParseOffset(r.Poster.Offset); vd.Duration > 0 && off >= vd.Duration {
+			return nil, fmt.Errorf("poster.offset %s is past the end of %s (%v)", r.Poster.Offset, src.Path, vd.Duration)
+		}
 		b.sources = append(b.sources, src)
+		b.vds = append(b.vds, vd)
 	}
 	first := b.sources[0]
+	b.vd = b.vds[0]
 	var err error
-	if b.vd, err = d.prober.Probe(ctx, first.Path); err != nil {
-		return nil, err
-	}
 	ladder, err := plan.FromConfig(&r.Config)
 	if err != nil {
 		return nil, err
@@ -217,9 +227,12 @@ func prepare(ctx context.Context, r *config.Resolved, d deps) (*built, error) {
 		b.perSource = append(b.perSource, js)
 	}
 	b.audio = plan.AudioJob(first, r.Outdir)
-	b.poster = plan.PosterJob(first, r.Outdir)
-	if r.Thumbnails {
-		b.thumbs = plan.SeekThumbnailJob(b.vd, first, r.Outdir)
+	b.posters = posters(r.Poster, b.sources, b.vds, r.Outdir)
+	for _, p := range b.posters {
+		b.desc[p.Job] = fmt.Sprintf("%s %dx%d from %s", p.Job.Slot, p.Width, p.Height, p.Source)
+	}
+	if r.Thumbnails.Enabled {
+		b.thumbs = plan.SeekThumbnailJob(r.Thumbnails, b.vd, first, r.Outdir)
 	}
 	b.manifest, err = state.Load(r.Outdir, r.Name)
 	return b, err
@@ -270,20 +283,27 @@ func render(ctx context.Context, r *config.Resolved, d deps, rebuild string) err
 	if err := ffmpeg.RunIfNeeded(ctx, d.runner, b.manifest, b.audio, forced(rebuild, b.audio)); err != nil {
 		return fmt.Errorf("extracting audio: %w", err)
 	}
-	if err := ffmpeg.RunIfNeeded(ctx, d.runner, b.manifest, b.poster, forced(rebuild, b.poster)); err != nil {
-		return fmt.Errorf("making poster: %w", err)
+	if err := runPosters(ctx, d, b, rebuild); err != nil {
+		return fmt.Errorf("making posters: %w", err)
 	}
 
-	p := &pack.Packager{Runner: d.runner, Prober: d.prober, Thumbnails: r.Thumbnails}
+	p := &pack.Packager{Runner: d.runner, Prober: d.prober}
 	mpd, files, err := p.Package(ctx, r.Streamdir, videos, b.audio.Output)
 	if err != nil {
 		return fmt.Errorf("packaging: %w", err)
 	}
-	streamPoster := filepath.Join(r.Streamdir, "thumbnail.jpg")
-	if err := copySmallFile(b.poster.Output, streamPoster); err != nil {
-		return err
+	if b.thumbs != nil {
+		thumbFiles, err := publishThumbnails(r, b)
+		if err != nil {
+			return fmt.Errorf("adding seek thumbnails: %w", err)
+		}
+		files = append(files, thumbFiles...)
 	}
-	files = append(files, filepath.Base(streamPoster))
+	posterFiles, err := publishPosters(r.Streamdir, r.Poster.Offset, b.posters)
+	if err != nil {
+		return fmt.Errorf("publishing posters: %w", err)
+	}
+	files = append(files, posterFiles...)
 
 	// Only now that the new stream is complete, drop what it replaced.
 	var slots []string
@@ -297,7 +317,32 @@ func render(ctx context.Context, r *config.Resolved, d deps, rebuild string) err
 	); err != nil {
 		return err
 	}
-	slog.Info("Done", "video", r.Name, "manifest", mpd, "poster", streamPoster)
+	slog.Info("Done", "video", r.Name, "manifest", mpd)
+	return nil
+}
+
+// runPosters builds the stale posters, one ffmpeg per source.
+func runPosters(ctx context.Context, d deps, b *built, rebuild string) error {
+	batches := map[string]*ffmpeg.Batch{}
+	for _, p := range b.posters {
+		batch, ok := batches[p.Job.Input]
+		if !ok {
+			batch = &ffmpeg.Batch{Manifest: b.manifest}
+			batches[p.Job.Input] = batch
+		}
+		if forced(rebuild, p.Job) {
+			batch.Add(p.Job)
+		} else if _, err := batch.AddIfNeeded(p.Job); err != nil {
+			return err
+		}
+	}
+	for _, src := range b.sources {
+		if batch, ok := batches[src.Path]; ok {
+			if err := batch.Run(ctx, d.runner); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
@@ -330,19 +375,6 @@ func printPlan(ctx context.Context, r *config.Resolved, d deps) error {
 		fmt.Fprintf(w, "#   %s -> %s: %s\n", desc, filepath.Base(j.Result()), reason)
 	}
 	fmt.Fprintln(w)
-	return nil
-}
-
-// copySmallFile copies by reading the whole file into memory, so it is
-// only for small files such as posters.
-func copySmallFile(src, dst string) error {
-	b, err := os.ReadFile(src)
-	if err != nil {
-		return fmt.Errorf("copying %q: %w", src, err)
-	}
-	if err := os.WriteFile(dst, b, 0o644); err != nil {
-		return fmt.Errorf("copying %q: %w", src, err)
-	}
 	return nil
 }
 

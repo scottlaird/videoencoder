@@ -205,12 +205,61 @@ func TestAuxJobs(t *testing.T) {
 		slot, name string
 	}{
 		{AudioJob(src, "out"), "audio", "audio.%s.mp4"},
-		{PosterJob(src, "out"), "poster", "poster.%s.jpg"},
-		{SeekThumbnailJob(vd, src, "out"), "thumbs", "thumbs.%s/%%d.jpg"},
+		{SeekThumbnailJob(config.Thumbnails{Interval: 5, Height: 180, Columns: 5, Rows: 5}, vd, src, "out"), "thumbs", "thumbs.%s/tile-%%d.jpg"},
 	}
 	for _, tt := range tests {
 		if want := "out/" + fmt.Sprintf(tt.name, tt.job.Key); tt.job.Slot != tt.slot || tt.job.Output != want {
 			t.Errorf("%s: slot %q output %q, want %q", tt.slot, tt.job.Slot, tt.job.Output, want)
 		}
+	}
+}
+
+func TestPosters(t *testing.T) {
+	p := config.Poster{Offset: "2s", Widths: []uint64{320, 1920, 7680}, Formats: []string{"avif", "jpg"}}
+	src := Source{Label: "hdr", Path: "in.mov", ID: "id1"}
+	hdr := probe.VideoData{Width: 3840, Height: 2160, ColorTransfer: "smpte2084"}
+	sdr := probe.VideoData{Width: 3840, Height: 2160, ColorTransfer: "bt709"}
+
+	describe := func(ps []Poster) []string {
+		var out []string
+		for _, p := range ps {
+			out = append(out, fmt.Sprintf("%s %dx%d %s", p.Tone, p.Width, p.Height, p.Format))
+		}
+		return out
+	}
+	tests := []struct {
+		name string
+		vd   probe.VideoData
+		tone probe.Tone
+		want []string
+	}{
+		{"SDR from SDR, 7680 dropped", sdr, probe.SDR, []string{"SDR 320x180 avif", "SDR 320x180 jpg", "SDR 1920x1080 avif", "SDR 1920x1080 jpg"}},
+		{"HDR is AVIF only", hdr, probe.HDR, []string{"HDR 320x180 avif", "HDR 1920x1080 avif"}},
+		{"tiny source falls back to its own width", probe.VideoData{Width: 200, Height: 100}, probe.SDR, []string{"SDR 200x100 avif", "SDR 200x100 jpg"}},
+	}
+	for _, tt := range tests {
+		if got := describe(Posters(p, src, tt.vd, tt.tone, "out")); !slices.Equal(got, tt.want) {
+			t.Errorf("%s:\n got %q\nwant %q", tt.name, got, tt.want)
+		}
+	}
+
+	// The SDR poster of an HDR source is tone-mapped; its HDR poster is
+	// tagged PQ; both seek before decoding.
+	sdrFromHDR := Posters(p, src, hdr, probe.SDR, "out")[0].Job
+	hdrPoster := Posters(p, src, hdr, probe.HDR, "out")[0].Job
+	if !strings.Contains(strings.Join(sdrFromHDR.Args, " "), "tonemap=") {
+		t.Errorf("SDR poster from HDR isn't tone-mapped: %q", sdrFromHDR.Args)
+	}
+	if !strings.Contains(strings.Join(hdrPoster.Args, " "), "-color_trc smpte2084") {
+		t.Errorf("HDR poster isn't tagged PQ: %q", hdrPoster.Args)
+	}
+	if !strings.Contains(strings.Join(hdrPoster.Base, " "), "-ss 2s -i in.mov") {
+		t.Errorf("poster doesn't seek before the input: %q", hdrPoster.Base)
+	}
+	if want := "out/poster-hdr-320." + hdrPoster.Key + ".avif"; hdrPoster.Output != want || hdrPoster.Slot != "poster/hdr-320-avif" {
+		t.Errorf("HDR poster output %q slot %q", hdrPoster.Output, hdrPoster.Slot)
+	}
+	if sdrFromHDR.Key == Posters(p, src, sdr, probe.SDR, "out")[0].Job.Key {
+		t.Error("tone-mapped and direct SDR posters share a key")
 	}
 }

@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--Generated with https://github.com/shaka-project/shaka-packager version v3.9.0-64463b5-release-->
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="urn:mpeg:dash:schema:mpd:2011 DASH-MPD.xsd" profiles="urn:mpeg:dash:profile:isoff-on-demand:2011" minBufferTime="PT10S" type="static" mediaPresentationDuration="PT5S">
+  <Period id="0">
+    <AdaptationSet id="1" contentType="audio" subsegmentStartsWithSAP="1" subsegmentAlignment="true">
+      <Representation id="0" bandwidth="131759" codecs="mp4a.40.2" mimeType="audio/mp4" audioSamplingRate="48000">
+        <AudioChannelConfiguration schemeIdUri="urn:mpeg:dash:23003:3:audio_channel_configuration:2011" value="2"/>
+        <BaseURL>audio.ecbab22065.mp4</BaseURL>
+        <SegmentBase indexRange="833-876" timescale="48000">
+          <Initialization range="0-832"/>
+        </SegmentBase>
+      </Representation>
+    </AdaptationSet>
+    <AdaptationSet id="0" contentType="video" maxWidth="5376" maxHeight="3024" frameRate="15360/256" subsegmentAlignment="true" par="16:9">
+      <SupplementalProperty schemeIdUri="urn:mpeg:mpegB:cicp:MatrixCoefficients" value="1"/>
+      <SupplementalProperty schemeIdUri="urn:mpeg:mpegB:cicp:ColourPrimaries" value="1"/>
+      <SupplementalProperty schemeIdUri="urn:mpeg:mpegB:cicp:TransferCharacteristics" value="1"/>
+      <SupplementalProperty schemeIdUri="urn:mpeg:dash:adaptation-set-switching:2016" value="2,3"/>
+      <Role schemeIdUri="urn:mpeg:dash:role:2011" value="main"/>
+      <Label>SDR</Label>
+      <Representation id="1" bandwidth="509396" codecs="av01.0.05M.10.0.110.01.01.01.0" mimeType="video/mp4" sar="640:639" width="852" height="480">
+        <BaseURL>av1-480.main.e1f2de5d13.mp4</BaseURL>
+        <SegmentBase indexRange="850-893" timescale="15360">
+          <Initialization range="0-849"/>
+        </SegmentBase>
+      </Representation>
+      <Representation id="2" bandwidth="980053" codecs="av01.0.08M.10.0.110.01.01.01.0" mimeType="video/mp4" sar="1:1" width="1280" height="720">
+        <BaseURL>av1-720.main.12579fc4bd.mp4</BaseURL>
+        <SegmentBase indexRange="834-877" timescale="15360">
+          <Initialization range="0-833"/>
+        </SegmentBase>
+      </Representation>
+      <Representation id="3" bandwidth="1468272" codecs="av01.0.09M.10.0.110.01.01.01.0" mimeType="video/mp4" sar="1:1" width="1920" height="1080">
+        <BaseURL>av1-1080.main.255bc70ef2.mp4</BaseURL>
+        <SegmentBase indexRange="834-877" timescale="15360">
+          <Initialization range="0-833"/>
+        </SegmentBase>
+      </Representation>
+      <Representation id="4" bandwidth="2655444" codecs="av01.0.12M.10.0.110.01.01.01.0" mimeType="video/mp4" sar="1:1" width="2560" height="1440">
+        <BaseURL>av1-1440.main.4425b1a9bf.mp4</BaseURL>
+        <SegmentBase indexRange="835-878" timescale="15360">
+          <Initialization range="0-834"/>
+        </SegmentBase>
+      </Representation>
+      <Representation id="5" bandwidth="6579392" codecs="av01.0.13M.10.0.110.01.01.01.0" mimeType="video/mp4" sar="1:1" width="3840" height="2160">
+        <BaseURL>av1-2160.main.dbffb1fc40.mp4</BaseURL>
+        <SegmentBase indexRange="835-878" timescale="15360">
+          <Initialization range="0-834"/>
+        </SegmentBase>
+      </Representation>
+      <Representation id="6" bandwidth="9151965" codecs="av01.0.16M.10.0.110.01.01.01.0" mimeType="video/mp4" sar="1:1" width="5376" height="3024">
+        <BaseURL>av1-4320.main.ce53810837.mp4</BaseURL>
+        <SegmentBase indexRange="835-878" timescale="15360">
+          <Initialization range="0-834"/>
+        </SegmentBase>
+      </Representation>
+    </AdaptationSet>
+    <AdaptationSet id="3" contentType="video" maxWidth="1920" maxHeight="1080" frameRate="15360/256" subsegmentAlignment="true" par="16:9">
+      <SupplementalProperty schemeIdUri="urn:mpeg:mpegB:cicp:TransferCharacteristics" value="1"/>
+      <SupplementalProperty schemeIdUri="urn:mpeg:dash:adaptation-set-switching:2016" value="0,2"/>
+      <Role schemeIdUri="urn:mpeg:dash:role:2011" value="main"/>
+      <Label>SDR</Label>
+      <Representation id="7" bandwidth="1221704" codecs="avc1.7a001f" mimeType="video/mp4" sar="640:639" width="852" height="480">
+        <BaseURL>h264-480.main.0a419fc903.mp4</BaseURL>
+        <SegmentBase indexRange="919-962" timescale="15360">
+          <Initialization range="0-918"/>
+        </SegmentBase>
+      </Representation>
+      <Representation id="8" bandwidth="2683319" codecs="avc1.7a0020" mimeType="video/mp4" sar="1:1" width="1280" height="720">
+        <BaseURL>h264-720.main.d1b18a1546.mp4</BaseURL>
+        <SegmentBase indexRange="900-943" timescale="15360">
+          <Initialization range="0-899"/>
+        </SegmentBase>
+      </Representation>
+      <Representation id="9" bandwidth="4513356" codecs="avc1.7a002a" mimeType="video/mp4" sar="1:1" width="1920" height="1080">
+        <BaseURL>h264-1080.main.816cf1355b.mp4</BaseURL>
+        <SegmentBase indexRange="900-943" timescale="15360">
+          <Initialization range="0-899"/>
+        </SegmentBase>
+      </Representation>
+    </AdaptationSet>
+    <AdaptationSet id="2" contentType="video" maxWidth="3840" maxHeight="2160" frameRate="15360/256" subsegmentAlignment="true" par="16:9">
+      <SupplementalProperty schemeIdUri="urn:mpeg:mpegB:cicp:MatrixCoefficients" value="1"/>
+      <SupplementalProperty schemeIdUri="urn:mpeg:mpegB:cicp:ColourPrimaries" value="1"/>
+      <SupplementalProperty schemeIdUri="urn:mpeg:mpegB:cicp:TransferCharacteristics" value="1"/>
+      <SupplementalProperty schemeIdUri="urn:mpeg:dash:adaptation-set-switching:2016" value="0,3"/>
+      <Role schemeIdUri="urn:mpeg:dash:role:2011" value="main"/>
+      <Label>SDR</Label>
+      <Representation id="10" bandwidth="680784" codecs="hvc1.4.10.L93.9d.8" mimeType="video/mp4" sar="640:639" width="852" height="480">
+        <BaseURL>h265-480.main.6454c4fe2e.mp4</BaseURL>
+        <SegmentBase indexRange="3443-3486" timescale="15360">
+          <Initialization range="0-3442"/>
+        </SegmentBase>
+      </Representation>
+      <Representation id="11" bandwidth="1523728" codecs="hvc1.4.10.L120.9d.8" mimeType="video/mp4" sar="1:1" width="1280" height="720">
+        <BaseURL>h265-720.main.82ec5e6359.mp4</BaseURL>
+        <SegmentBase indexRange="3389-3432" timescale="15360">
+          <Initialization range="0-3388"/>
+        </SegmentBase>
+      </Representation>
+      <Representation id="12" bandwidth="3121562" codecs="hvc1.4.10.L123.9d.8" mimeType="video/mp4" sar="1:1" width="1920" height="1080">
+        <BaseURL>h265-1080.main.a2dee7a5ce.mp4</BaseURL>
+        <SegmentBase indexRange="3392-3435" timescale="15360">
+          <Initialization range="0-3391"/>
+        </SegmentBase>
+      </Representation>
+      <Representation id="13" bandwidth="4690520" codecs="hvc1.4.10.L150.9d.8" mimeType="video/mp4" sar="1:1" width="2560" height="1440">
+        <BaseURL>h265-1440.main.a7960e673d.mp4</BaseURL>
+        <SegmentBase indexRange="3392-3435" timescale="15360">
+          <Initialization range="0-3391"/>
+        </SegmentBase>
+      </Representation>
+      <Representation id="14" bandwidth="6229943" codecs="hvc1.4.10.L153.9d.8" mimeType="video/mp4" sar="1:1" width="3840" height="2160">
+        <BaseURL>h265-2160.main.62c21f0b46.mp4</BaseURL>
+        <SegmentBase indexRange="3391-3434" timescale="15360">
+          <Initialization range="0-3390"/>
+        </SegmentBase>
+      </Representation>
+    </AdaptationSet>
+  </Period>
+</MPD>

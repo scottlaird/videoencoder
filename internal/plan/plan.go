@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/scottlaird/videoencoder/internal/config"
 	"github.com/scottlaird/videoencoder/internal/ffmpeg"
@@ -119,10 +121,16 @@ func baseCommand(infile string) []string {
 const keyLength = 10
 
 // newJob makes a job whose output is named "<stem>.<key><ext>" in
-// outdir. The key covers the source's identity and every argument, with
-// the input path left out so moving the source doesn't rebuild.
+// outdir, with the standard base command.
 func newJob(src Source, outdir, slot, stem, ext string, args []string) *ffmpeg.Job {
-	base := baseCommand(src.Path)
+	return newJobWithBase(src, baseCommand(src.Path), outdir, slot, stem, ext, args)
+}
+
+// newJobWithBase is newJob with a given base command, which must end
+// with the input path. The key covers the source's identity and every
+// argument, with the input path left out so moving the source doesn't
+// rebuild.
+func newJobWithBase(src Source, base []string, outdir, slot, stem, ext string, args []string) *ffmpeg.Job {
 	h := sha256.New()
 	fmt.Fprintf(h, "build/v1\x00%s", src.ID)
 	for _, a := range base[:len(base)-1] {
@@ -161,29 +169,105 @@ func (t *Target) Job(src Source, outdir string) *ffmpeg.Job {
 	return newJob(src, outdir, src.Label+"/"+t.Name, t.Name+"."+src.Label, ".mp4", args)
 }
 
-// SeekThumbnailJob writes one 180p JPEG per second of src into a
-// "thumbs.<key>" directory, for seek thumbnails.
-func SeekThumbnailJob(vd probe.VideoData, src Source, outdir string) *ffmpeg.Job {
-	const height = 180
+// SeekThumbnailJob writes src's seek-thumbnail tiles into a
+// "thumbs.<key>" directory as tile-1.jpg, tile-2.jpg, ...: one frame
+// every t.Interval seconds, t.Height high, tiled t.Columns x t.Rows.
+func SeekThumbnailJob(t config.Thumbnails, vd probe.VideoData, src Source, outdir string) *ffmpeg.Job {
+	// select, unlike fps, takes the first frame even when the video is
+	// shorter than one interval. MJPEG needs full-range YUV.
+	filter := fmt.Sprintf(`select='isnan(prev_selected_t)+gte(t-prev_selected_t\,%s)',scale=%d:%d,format=yuvj420p,tile=%dx%d`,
+		strconv.FormatFloat(t.Interval, 'f', -1, 64), scaledWidth(vd, t.Height), t.Height, t.Columns, t.Rows)
 	j := newJob(src, outdir, "thumbs", "thumbs", "", []string{
-		"-s", fmt.Sprintf("%dx%d", scaledWidth(vd, height), height),
-		"-r", "1",
+		"-vf", filter,
+		"-fps_mode", "vfr",
+		"-q:v", "5",
 		"-f", "image2",
+		"-start_number", "1",
 	})
-	j.Output = filepath.Join(j.Output, "%d.jpg")
+	j.Output = filepath.Join(j.Output, "tile-%d.jpg")
 	return j
 }
+
+// ThumbWidth is the width of each seek thumbnail of vd.
+func ThumbWidth(t config.Thumbnails, vd probe.VideoData) uint64 { return scaledWidth(vd, t.Height) }
 
 // AudioJob extracts the audio of src.
 func AudioJob(src Source, outdir string) *ffmpeg.Job {
 	return newJob(src, outdir, "audio", "audio", ".mp4", []string{"-vn"})
 }
 
-// PosterJob grabs the frame at 1s of src.
-func PosterJob(src Source, outdir string) *ffmpeg.Job {
-	return newJob(src, outdir, "poster", "poster", ".jpg", []string{
-		"-ss", "00:00:01.000",
-		"-vframes", "1",
-		"-update", "1",
-	})
+// Poster is one poster image to make.
+type Poster struct {
+	Job           *ffmpeg.Job
+	Source        string // label of the source it's taken from
+	Tone          probe.Tone
+	Format        string
+	Width, Height uint64
+}
+
+// tonemapSDR converts HDR (PQ or HLG) to BT.709 SDR.
+const tonemapSDR = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv"
+
+// Posters returns the jobs for p's poster images in tone, taken from
+// src (whose video is vd). An SDR poster from an HDR source is tone
+// mapped. HDR posters are AVIF only. Widths larger than the source are
+// dropped; if that drops them all, the source's own width is used.
+func Posters(p config.Poster, src Source, vd probe.VideoData, tone probe.Tone, outdir string) []Poster {
+	base := []string{"ffmpeg", "-loglevel", "warning", "-y", "-ss", p.Offset, "-i", src.Path}
+	widths := slices.DeleteFunc(slices.Clone(p.Widths), func(w uint64) bool { return w > vd.Width })
+	if len(widths) == 0 {
+		widths = []uint64{vd.Width}
+	}
+	fromHDR := vd.Tone() == probe.HDR
+
+	var out []Poster
+	for _, w := range widths {
+		h := uint64(float64(vd.Height)*float64(w)/float64(vd.Width)+0.5) &^ 1
+		for _, f := range p.Formats {
+			if tone == probe.HDR && f != "avif" {
+				continue
+			}
+			args := posterArgs(tone, fromHDR, f, w, h)
+			stem := fmt.Sprintf("poster-%s-%d", strings.ToLower(string(tone)), w)
+			slot := fmt.Sprintf("poster/%s-%d-%s", strings.ToLower(string(tone)), w, f)
+			out = append(out, Poster{
+				Job:    newJobWithBase(src, base, outdir, slot, stem, "."+f, args),
+				Source: src.Label,
+				Tone:   tone,
+				Format: f,
+				Width:  w,
+				Height: h,
+			})
+		}
+	}
+	return out
+}
+
+func posterArgs(tone probe.Tone, fromHDR bool, format string, w, h uint64) []string {
+	var filters []string
+	if tone == probe.SDR && fromHDR {
+		filters = append(filters, tonemapSDR)
+	}
+	filters = append(filters, fmt.Sprintf("scale=%d:%d:flags=lanczos", w, h))
+	pixFmt := map[bool]string{false: "yuv420p", true: "yuv420p10le"}[tone == probe.HDR]
+	if format == "jpg" {
+		pixFmt = "yuvj420p"
+	}
+	filters = append(filters, "format="+pixFmt)
+
+	args := []string{"-vf", strings.Join(filters, ","), "-frames:v", "1", "-update", "1"}
+	switch format {
+	case "avif":
+		args = append(args, "-c:v", "libaom-av1", "-still-picture", "1", "-crf", "30", "-cpu-used", "6")
+	case "jpg":
+		args = append(args, "-q:v", "3")
+	case "webp":
+		args = append(args, "-c:v", "libwebp", "-quality", "80")
+	}
+	if tone == probe.HDR {
+		args = append(args, "-color_primaries", "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc")
+	} else {
+		args = append(args, "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709")
+	}
+	return args
 }

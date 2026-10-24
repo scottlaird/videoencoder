@@ -189,52 +189,74 @@ decoding (especially 6K H.265) is a large share of the cost.
 
 ### Posters
 
-The "album" still image. For each source tone that is present, we
-write `poster-{sdr,hdr}-{width}.{fmt}`, for example
-`poster-sdr-640.avif` and `poster-hdr-1920.avif`:
+The "album" still image. For each tone present, we write
+`poster-{sdr,hdr}-<width>.<key>.<format>` at each configured width up
+to the source's width, for example `poster-sdr-640.<key>.avif` and
+`poster-hdr-1920.<key>.avif`:
 
-- The frame is taken at `poster.offset` with an accurate seek (`-ss`
-  after `-i`, which is slower but frame-exact). It's decoded once and
-  then scaled to each width.
-- SDR: AVIF and JPEG (and WebP if configured).
-- HDR: AVIF only, 10-bit, tagged PQ/BT.2020. JPEG can't carry it
-  without gain maps, which are a later step.
-- If a video has only an HDR source, the SDR poster is tone-mapped
-  with `zscale`+`tonemap` (or `libplacebo`), so every page always
-  has an SDR poster.
-- We also write a small `poster.json` listing every variant with its
-  width, height, format and tone, so a page template can build
-  `<picture>`/`srcset` without guessing names.
+```yaml
+poster:
+  offset: 1s            # seconds, "1.5s", or "MM:SS.ms"
+  widths: [320, 640, 1280, 1920, 3840]
+  formats: [avif, jpg]  # also webp
+```
+
+- The frame is found by seeking before the input (`-ss` before `-i`),
+  which is frame-accurate when transcoding and doesn't decode the 100 GB
+  that precede it. It's decoded once, and each variant is one output of
+  the same ffmpeg process, so posters get the same build keys,
+  atomic writes and cleanup as renditions. An offset past the end of a
+  source is an error.
+- SDR posters come in every configured format. AVIF uses libaom with
+  `-still-picture 1`.
+- HDR posters are AVIF only, 10-bit, tagged PQ/BT.2020; JPEG and WebP
+  can't carry HDR without gain maps.
+- SDR comes from the first SDR source. If there's no SDR source, it's
+  tone-mapped from the HDR one (`zscale` + `tonemap=hable`), so every
+  video has an SDR poster.
+- `poster.json` lists every variant with its file, tone, format, width
+  and height, so a page can build `<picture>`/`srcset` markup without
+  guessing names. For pages that still use the single poster earlier
+  versions wrote, `thumbnail.jpg` is a copy of the largest SDR JPEG
+  that's at most 1920 wide.
 
 Later: merge the SDR and HDR posters into one gain-mapped AVIF/JPEG.
 
 ### Seek thumbnails
 
-Shaka Packager 3.9 has no thumbnail support. The existing
-`--add_thumbnail_adaptation_set` flag doesn't exist in packager and
-would make it fail with `--thumbnails`. So thumbnails become a
-post-processing step:
+Shaka Packager 3.9 has no thumbnail support. The old
+`--add_thumbnail_adaptation_set` flag isn't a packager flag, so
+`--thumbnails` made packager fail. Thumbnails are now a separate output
+plus a post-processing step, on by default:
 
-1. ffmpeg: `fps=1/5,scale=-2:180,tile=5x5` produces
-   `thumbs/tile-%d.jpg`. Each tile covers 25 × 5 s = 125 s.
-2. DASH: we parse `dash.mpd` with `encoding/xml` and append one
-   `AdaptationSet contentType="image" mimeType="image/jpeg"`. It holds
-   a `SegmentTemplate` (`media="thumbs/tile-$Number$.jpg"`,
-   `duration` = the tile's time span, `startNumber=1`), one
-   `Representation` whose `width`/`height` are the whole tile image's,
-   and `EssentialProperty
+```yaml
+thumbnails: {enabled: true, interval: 5, height: 180, columns: 5, rows: 5}
+```
+
+1. ffmpeg, in the same process as the first source's renditions so the
+   decode is shared, runs `select='isnan(prev_selected_t)+gte(t-prev_selected_t,5)',
+   scale=…:180,format=yuvj420p,tile=5x5` into `thumbs.<key>/tile-%d.jpg`.
+   `select` is used rather than `fps=1/5` because `fps` writes nothing
+   for a video shorter than one interval. Each tile covers 25 × 5 s =
+   125 s.
+2. DASH: before `</Period>` in `dash.mpd` we insert an
+   `AdaptationSet contentType="image" mimeType="image/jpeg"` with a
+   `SegmentTemplate` (`media="thumbs.<key>/tile-$Number$.jpg"`,
+   `duration="125"`, `startNumber="1"`), one `Representation` whose
+   `width`/`height` are the whole grid's, and `EssentialProperty
    schemeIdUri="http://dashif.org/thumbnail_tile" value="5x5"`. This
-   is the DASH-IF IOP form that Shaka Player and dash.js read.
+   is the DASH-IF IOP form that Shaka Player and dash.js read. It's a
+   text insertion, not an XML round trip, since `encoding/xml` would
+   mangle packager's namespaces; the tests check that the result still
+   parses.
 3. HLS: we append `#EXT-X-IMAGE-STREAM-INF` to `hls.m3u8` and write
-   an image playlist using `#EXT-X-IMAGES-ONLY` and
-   `#EXT-X-TILES:RESOLUTION=…,LAYOUT=5x5,DURATION=5`. That's the
-   Roku/Apple image-media-playlist form, which Shaka Player also
-   reads.
-4. Optionally a WebVTT sprite track (`#xywh=`) for players that only
-   know that format.
+   `thumbnails.m3u8`, an `#EXT-X-IMAGES-ONLY` playlist with
+   `#EXT-X-TILES:RESOLUTION=320x180,LAYOUT=5x5,DURATION=5.000` per
+   tile. That's the Roku/Apple image-playlist form, which Shaka Player
+   also reads.
 
-All four steps are deterministic, so they rerun cheaply whenever the
-manifests change.
+A WebVTT sprite track (`#xywh=`), for players that only know that
+format, is left for later.
 
 ### Packaging
 

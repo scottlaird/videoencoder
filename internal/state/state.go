@@ -124,15 +124,15 @@ func (m *Manifest) Prune(keep []string) error {
 	return errors.Join(errs...)
 }
 
-// SetStream records that files (names in streamdir) make up the stream
-// now, and deletes those of the previous stream that aren't among them.
-// The caller saves the manifest.
+// SetStream records that files (names in streamdir; directories are
+// allowed) make up the stream now, and deletes those of the previous
+// stream that aren't among them. The caller saves the manifest.
 func (m *Manifest) SetStream(streamdir string, files []string) error {
 	var errs []error
 	for _, f := range m.Stream {
 		if !slices.Contains(files, f) {
-			err := os.Remove(filepath.Join(streamdir, f))
-			if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			err := os.RemoveAll(filepath.Join(streamdir, f))
+			if err != nil {
 				errs = append(errs, err)
 			}
 		}

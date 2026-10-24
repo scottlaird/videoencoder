@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 //go:embed default.yaml
@@ -31,7 +32,8 @@ type Config struct {
 	Sources    map[string]string     `yaml:"sources"`
 	Outdir     string                `yaml:"outdir"`
 	Streamdir  string                `yaml:"streamdir"`
-	Thumbnails bool                  `yaml:"thumbnails"`
+	Thumbnails Thumbnails            `yaml:"thumbnails"`
+	Poster     Poster                `yaml:"poster"`
 	Encoders   map[string]*Encoder   `yaml:"encoders"`
 	Renditions map[string]*Rendition `yaml:"renditions"`
 }
@@ -42,6 +44,25 @@ type layer struct {
 	Config `yaml:",inline"`
 	Videos map[string]any `yaml:"videos"`
 }
+
+// Thumbnails says how to make seek thumbnails.
+type Thumbnails struct {
+	Enabled  bool    `yaml:"enabled"`
+	Interval float64 `yaml:"interval"` // seconds between thumbnails
+	Height   uint64  `yaml:"height"`
+	Columns  uint64  `yaml:"columns"`
+	Rows     uint64  `yaml:"rows"`
+}
+
+// Poster says how to make the video's still images.
+type Poster struct {
+	Offset  string   `yaml:"offset"`
+	Widths  []uint64 `yaml:"widths"`
+	Formats []string `yaml:"formats"`
+}
+
+// PosterFormats are the image formats posters can be written in.
+var PosterFormats = []string{"avif", "jpg", "webp"}
 
 // Encoder is an ffmpeg video encoder and its fixed options.
 type Encoder struct {
@@ -116,6 +137,20 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("encoder %q: codec and quality_flag are required", name)
 		}
 	}
+	if t := c.Thumbnails; t.Enabled && (t.Interval <= 0 || t.Height == 0 || t.Columns == 0 || t.Rows == 0) {
+		return fmt.Errorf("thumbnails: interval, height, columns and rows must be positive")
+	}
+	if _, err := ParseOffset(c.Poster.Offset); err != nil {
+		return fmt.Errorf("poster.offset: %w", err)
+	}
+	if len(c.Poster.Widths) == 0 || len(c.Poster.Formats) == 0 {
+		return fmt.Errorf("poster: widths and formats are required")
+	}
+	for _, f := range c.Poster.Formats {
+		if !slices.Contains(PosterFormats, f) {
+			return fmt.Errorf("poster: unknown format %q (want one of %v)", f, PosterFormats)
+		}
+	}
 	if len(c.Renditions) == 0 {
 		return fmt.Errorf("no renditions")
 	}
@@ -134,6 +169,30 @@ func (c *Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+// ParseOffset parses a time into the video: seconds ("72.5"), seconds
+// with a unit ("1.5s"), or "[HH:]MM:SS[.ms]".
+func ParseOffset(s string) (time.Duration, error) {
+	if s == "" {
+		return 0, fmt.Errorf("empty")
+	}
+	if d, err := time.ParseDuration(s); err == nil && d >= 0 {
+		return d, nil
+	}
+	parts := strings.Split(s, ":")
+	if len(parts) > 3 {
+		return 0, fmt.Errorf("bad time %q", s)
+	}
+	var total float64
+	for i, p := range parts {
+		f, err := strconv.ParseFloat(p, 64)
+		if err != nil || f < 0 || (i > 0 && f >= 60) {
+			return 0, fmt.Errorf("bad time %q", s)
+		}
+		total = total*60 + f
+	}
+	return time.Duration(total * float64(time.Second)), nil
 }
 
 // ParseBitrate parses "4M", "800k" or "1500000" as bits per second. An

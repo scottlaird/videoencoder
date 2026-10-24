@@ -36,3 +36,6 @@ typescript
 
 *~
 /videoencoder
+
+# Test fixtures that the patterns above would otherwise exclude.
+!internal/pack/testdata/*

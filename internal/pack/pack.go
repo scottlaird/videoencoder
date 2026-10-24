@@ -17,9 +17,6 @@ import (
 type Packager struct {
 	Runner ffmpeg.Runner
 	Prober probe.Prober
-	// Thumbnails asks packager for a seek-thumbnail adaptation set.
-	// Packager 3.9 doesn't support this, so the run will fail.
-	Thumbnails bool
 }
 
 // Package writes dash.mpd, hls.m3u8 and the segmented media into
@@ -82,11 +79,5 @@ func (p *Packager) argv(ctx context.Context, streamdir string, videos []string, 
 		"--allow_approximate_segment_timeline",
 		"--default_language=en",
 	)
-	if p.Thumbnails {
-		argv = append(argv,
-			"--add_thumbnail_adaptation_set",
-			fmt.Sprintf("mimeType=image/jpg:bandwidth=10000,height=180,media=%s/thumbnails-$Number$.jpg,timescale=1,duration=1", streamdir),
-		)
-	}
 	return argv, nil
 }

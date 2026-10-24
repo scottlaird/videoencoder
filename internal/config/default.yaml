@@ -8,8 +8,26 @@
 outdir: transcodes/{name}
 streamdir: stream/{name}
 
-# Seek-thumbnail JPEGs. Not yet supported by shaka-packager.
-thumbnails: false
+# Seek thumbnails: a frame every interval seconds, height pixels high,
+# tiled columns x rows to a JPEG, and added to dash.mpd (as a DASH-IF
+# thumbnail AdaptationSet) and hls.m3u8 (as an image playlist).
+thumbnails:
+  enabled: true
+  interval: 5
+  height: 180
+  columns: 5
+  rows: 5
+
+# The still image that represents the video. It is taken at offset (a
+# time in seconds, "1.5s", or "MM:SS.ms") and written at each width up
+# to the source's, in each format: poster-<tone>-<width>.<key>.<format>
+# plus a poster.json index. SDR posters come from an SDR source, or are
+# tone-mapped from an HDR one; HDR posters come from an HDR source and
+# are AVIF only, since JPEG and WebP can't carry HDR.
+poster:
+  offset: 1s
+  widths: [320, 640, 1280, 1920, 3840]
+  formats: [avif, jpg]
 
 encoders:
   h264:

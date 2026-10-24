@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -50,7 +52,7 @@ func TestParseArgs(t *testing.T) {
 		{
 			args:      []string{"--outdir", "t", "--thumbnails", "hdr.mov", "sdr.mov"},
 			paths:     []string{"hdr.mov", "sdr.mov"},
-			overrides: map[string]any{"outdir": abs("t"), "thumbnails": true},
+			overrides: map[string]any{"outdir": abs("t"), "thumbnails": map[string]any{"enabled": true}},
 		},
 		{
 			args:      []string{"plan", "--streamdir", "/s", "proj"},
@@ -74,7 +76,7 @@ func TestParseArgs(t *testing.T) {
 			continue
 		}
 		for k, v := range tt.overrides {
-			if got.overrides[k] != v {
+			if fmt.Sprint(got.overrides[k]) != fmt.Sprint(v) {
 				t.Errorf("parseArgs(%q) override %s = %v, want %v", tt.args, k, got.overrides[k], v)
 			}
 		}
@@ -141,13 +143,15 @@ func TestAdHocEndToEnd(t *testing.T) {
 	if err := run(context.Background(), o, d); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
-	// One batched video encode, audio, poster.
+	// One batched video encode, audio, one batch of posters.
 	if got := runner.calls["ffmpeg"]; got != 3 {
 		t.Errorf("first run: %d ffmpeg calls, want 3", got)
 	}
 	// Defaults put outputs beside the source, under the video's name.
 	streamdir := filepath.Join(dir, "stream", "src")
-	for _, pattern := range []string{"dash.mpd", "hls.m3u8", "thumbnail.jpg", "audio.*.mp4", "audio.*.m3u8"} {
+	for _, pattern := range []string{"dash.mpd", "hls.m3u8", "thumbnail.jpg", "poster.json",
+		"poster-sdr-320.*.avif", "poster-sdr-320.*.jpg", "audio.*.mp4", "audio.*.m3u8",
+		"thumbnails.m3u8", "thumbs.*/tile-1.jpg"} {
 		if m, _ := filepath.Glob(filepath.Join(streamdir, pattern)); len(m) != 1 {
 			t.Errorf("stream outputs matching %s: %q, want one", pattern, m)
 		}
@@ -156,8 +160,8 @@ func TestAdHocEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(mpd), "SDR") {
-		t.Errorf("dash.mpd has no SDR label:\n%s", mpd)
+	if !strings.Contains(string(mpd), "SDR") || !strings.Contains(string(mpd), "thumbnail_tile") {
+		t.Errorf("dash.mpd lacks the SDR label or the thumbnail track:\n%s", mpd)
 	}
 
 	runner.calls = map[string]int{}
@@ -299,6 +303,84 @@ videos:
 	}
 	if left, _ := filepath.Glob(filepath.Join(stream, "av1-*")); len(left) != 0 {
 		t.Errorf("dropped rendition left %q in the stream", left)
+	}
+}
+
+// makeHDRClip writes a two-second 320x240 PQ-tagged 10-bit clip.
+func makeHDRClip(t *testing.T, path string) {
+	t.Helper()
+	gen := exec.Command("ffmpeg", "-loglevel", "error", "-y",
+		"-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30:duration=2",
+		"-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+		"-vf", "setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc,format=yuv420p10le",
+		"-c:v", "libx265", "-x265-params", "log-level=error",
+		"-c:a", "aac", "-shortest", path)
+	if out, err := gen.CombinedOutput(); err != nil {
+		t.Fatalf("generating HDR clip: %v\n%s", err, out)
+	}
+}
+
+// TestHDRAndSDRPosters renders an HDR+SDR pair and checks that both
+// tones get posters, with HDR as AVIF only, listed in poster.json.
+func TestHDRAndSDRPosters(t *testing.T) {
+	requireTools(t, "ffmpeg", "ffprobe", "packager")
+	dir := t.TempDir()
+	makeHDRClip(t, filepath.Join(dir, "trip-hdr.mov"))
+	makeClip(t, filepath.Join(dir, "trip-sdr.mov"))
+	if err := os.WriteFile(filepath.Join(dir, "trip.video.yaml"), []byte(`
+sources: {hdr: trip-hdr.mov, sdr: trip-sdr.mov}
+poster: {offset: "0.5", widths: [160, 320], formats: [avif, jpg, webp]}
+renditions: {h264-480: null, h264-720: null, h265-480: null, h265-720: null, h265-1080: null,
+  h265-1440: null, h265-2160: null, av1-480: null, av1-720: null, av1-1080: null, av1-1440: null,
+  av1-2160: null, av1-3240: null, av1-4320: null}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o, err := parseArgs([]string{"--config", "", dir}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, _ := testDeps(io.Discard)
+	if err := run(context.Background(), o, d); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "stream", "trip", "poster.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var idx posterIndex
+	if err := json.Unmarshal(data, &idx); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, im := range idx.Images {
+		got = append(got, fmt.Sprintf("%s %d %s", im.Tone, im.Width, im.Format))
+		if _, err := os.Stat(filepath.Join(dir, "stream", "trip", im.Src)); err != nil {
+			t.Errorf("poster.json lists %s, which isn't in the stream: %v", im.Src, err)
+		}
+	}
+	want := []string{
+		"SDR 160 avif", "SDR 160 jpg", "SDR 160 webp", "SDR 320 avif", "SDR 320 jpg", "SDR 320 webp",
+		"HDR 160 avif", "HDR 320 avif",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("poster.json images = %q, want %q", got, want)
+	}
+	if idx.Offset != "0.5" {
+		t.Errorf("poster.json offset = %q", idx.Offset)
+	}
+
+	hdrPosters, _ := filepath.Glob(filepath.Join(dir, "stream", "trip", "poster-hdr-320.*.avif"))
+	if len(hdrPosters) != 1 {
+		t.Fatalf("HDR posters %q, want one", hdrPosters)
+	}
+	vd, err := probe.FFProbe{}.Probe(context.Background(), hdrPosters[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vd.Tone() != probe.HDR {
+		t.Errorf("HDR poster has transfer %q, want PQ", vd.ColorTransfer)
 	}
 }
 

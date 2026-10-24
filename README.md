@@ -36,6 +36,12 @@ up to 4k, and AV1 up to 8k, never above the source's resolution.
 Intermediate renditions go in `transcodes/<name>/` and the stream in
 `stream/<name>/`, next to the video.
 
+Each stream also gets posters, still images taken at `poster.offset`
+in several widths and formats (`poster-sdr-640.<key>.avif`, and HDR
+AVIFs when there's an HDR source), listed in `poster.json`, and seek
+thumbnails, tiled JPEGs added to both `dash.mpd` and `hls.m3u8` (turn
+them off with `thumbnails: {enabled: false}` or `--thumbnails=false`).
+
 ### Configuration
 
 Settings are YAML, merged from several layers, lowest priority first:
