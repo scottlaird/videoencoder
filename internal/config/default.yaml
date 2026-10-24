@@ -20,21 +20,26 @@ thumbnails:
 
 # The still image that represents the video. It is taken at offset (a
 # time in seconds, "1.5s", or "MM:SS.ms") and written at each width up
-# to the source's, in each format: poster-<tone>-<width>.<key>.<format>
-# plus a poster.json index. SDR posters come from an SDR source, or are
-# tone-mapped from an HDR one; HDR posters come from an HDR source and
-# are AVIF only, since JPEG and WebP can't carry HDR.
+# to the source's, and at the source's own width, in each format, as
+# poster-<tone>-<width>.<key>.<format>, listed in poster.json. SDR
+# posters come from an SDR source, or are tone-mapped from an HDR one.
 #
 # With an HDR source, gainmap_formats also get gain-mapped posters,
 # poster-gainmap-<width>.<key>.<format>: an SDR image that HDR displays
 # brighten to the HDR rendition. JPEGs are Ultra HDR (ISO 21496-1 and
 # hdrgm XMP), written by videoencoder itself; AVIFs need avifgainmaputil
-# from libavif.
+# from libavif. Plain PQ HDR AVIFs (poster-hdr-...) are only made with
+# hdr: true; browsers tone-map them poorly on SDR displays.
+#
+# The best poster of each size and format, gain-mapped where there is
+# one and SDR otherwise, is also copied to a fixed name:
+# poster-<width>.<format>, and poster.<format> at full resolution.
 poster:
   offset: 1s
   widths: [320, 640, 1280, 1920, 3840]
   formats: [avif, jpg]
   gainmap_formats: [jpg, avif]
+  hdr: false
 
 encoders:
   h264:

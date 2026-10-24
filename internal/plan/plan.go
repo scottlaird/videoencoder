@@ -281,14 +281,13 @@ func GainMapPosters(p config.Poster, sdr Source, sdrVD probe.VideoData, hdr Sour
 	return out
 }
 
-// posterWidths returns p's widths that fit vd, or vd's own width if
-// none do.
+// posterWidths returns p's widths that fit vd, plus vd's own width,
+// in ascending order.
 func posterWidths(p config.Poster, vd probe.VideoData) []uint64 {
 	widths := slices.DeleteFunc(slices.Clone(p.Widths), func(w uint64) bool { return w > vd.Width })
-	if len(widths) == 0 {
-		widths = []uint64{vd.Width}
-	}
-	return widths
+	widths = append(widths, vd.Width)
+	slices.Sort(widths)
+	return slices.Compact(widths)
 }
 
 // tonemapSDR converts HDR (PQ or HLG) to BT.709 SDR.
@@ -297,7 +296,7 @@ const tonemapSDR = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tone
 // Posters returns the jobs for p's poster images in tone, taken from
 // src (whose video is vd). An SDR poster from an HDR source is tone
 // mapped. HDR posters are AVIF only. Widths larger than the source are
-// dropped; if that drops them all, the source's own width is used.
+// dropped, and the source's own width is always included.
 func Posters(p config.Poster, src Source, vd probe.VideoData, tone probe.Tone, outdir string) []Poster {
 	base := []string{"ffmpeg", "-loglevel", "warning", "-y", "-ss", p.Offset, "-i", src.Path}
 	widths := posterWidths(p, vd)

@@ -40,9 +40,11 @@ Intermediate renditions go in `transcodes/<name>/` and the stream in
 `stream/<name>/`, next to the video.
 
 Each stream also gets posters, still images taken at `poster.offset`
-in several widths and formats (`poster-sdr-640.<key>.avif`, plus HDR
-AVIFs and gain-mapped JPEG and AVIF posters when there's an HDR
-source), listed in `poster.json`, and seek
+in several widths and formats, plus gain-mapped JPEG and AVIF posters
+when there's an HDR source, listed in `poster.json`.  The best one of
+each size is always at `poster-<width>.<format>` (gain-mapped if
+possible, SDR otherwise), and the full-resolution one at
+`poster.<format>`.  There are also seek
 thumbnails, tiled JPEGs added to `dash.mpd` and `hls.m3u8` and listed
 in a `thumbnails.vtt` WebVTT track (turn
 them off with `thumbnails: {enabled: false}` or `--thumbnails=false`).

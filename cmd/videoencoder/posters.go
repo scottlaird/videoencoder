@@ -33,14 +33,16 @@ func toneSources(vds []probe.VideoData) (sdr, hdr int) {
 }
 
 // posters returns the poster jobs, and the gain-mapped posters if there
-// is an HDR source.
+// is an HDR source. Plain HDR posters are made only if p.HDR is set.
 func posters(p config.Poster, sources []plan.Source, vds []probe.VideoData, outdir string) ([]plan.Poster, []plan.GainMapPoster) {
 	sdr, hdr := toneSources(vds)
 	out := plan.Posters(p, sources[sdr], vds[sdr], probe.SDR, outdir)
 	if hdr < 0 {
 		return out, nil
 	}
-	out = append(out, plan.Posters(p, sources[hdr], vds[hdr], probe.HDR, outdir)...)
+	if p.HDR {
+		out = append(out, plan.Posters(p, sources[hdr], vds[hdr], probe.HDR, outdir)...)
+	}
 	return out, plan.GainMapPosters(p, sources[sdr], vds[sdr], sources[hdr], outdir)
 }
 
@@ -59,6 +61,9 @@ type posterImage struct {
 	Format string `json:"format"`
 	Width  uint64 `json:"width"`
 	Height uint64 `json:"height"`
+	// Aliases are fixed names this image is also copied to, as the best
+	// poster of its size and format.
+	Aliases []string `json:"aliases,omitempty"`
 }
 
 // legacyPosterWidth caps the width of thumbnail.jpg, the single poster
@@ -68,7 +73,12 @@ const legacyPosterWidth = 1920
 // publishPosters copies the posters into streamdir and writes
 // poster.json and thumbnail.jpg there. It returns the names it wrote.
 // Gain-mapped posters are listed with tone "gainmap".
-func publishPosters(streamdir, offset string, ps []plan.Poster, gms []plan.GainMapPoster) ([]string, error) {
+//
+// The best poster of each width and format (gain-mapped if there is
+// one, else SDR) is also copied to poster-<width>.<format>, and the
+// one at full resolution, full pixels wide, to poster.<format>, so
+// pages can use names that never change.
+func publishPosters(streamdir, offset string, full uint64, ps []plan.Poster, gms []plan.GainMapPoster) ([]string, error) {
 	idx := posterIndex{Offset: offset}
 	var files []string
 	for _, g := range gms {
@@ -97,6 +107,12 @@ func publishPosters(streamdir, offset string, ps []plan.Poster, gms []plan.GainM
 		}
 	}
 
+	aliasFiles, err := writeAliases(streamdir, full, idx.Images)
+	if err != nil {
+		return nil, err
+	}
+	files = append(files, aliasFiles...)
+
 	data, err := json.MarshalIndent(idx, "", "  ")
 	if err != nil {
 		return nil, err
@@ -111,6 +127,40 @@ func publishPosters(streamdir, offset string, ps []plan.Poster, gms []plan.GainM
 			return nil, err
 		}
 		files = append(files, "thumbnail.jpg")
+	}
+	return files, nil
+}
+
+// writeAliases copies the best image of each width and format to its
+// fixed names, records them in images, and returns the names. Images
+// are in preference order: gain-mapped first, then SDR; HDR images
+// never get aliases.
+func writeAliases(streamdir string, full uint64, images []posterImage) ([]string, error) {
+	best := map[string]int{}
+	var order []string
+	for i, im := range images {
+		if im.Tone == string(probe.HDR) {
+			continue
+		}
+		k := fmt.Sprintf("%d.%s", im.Width, im.Format)
+		if _, ok := best[k]; !ok {
+			best[k] = i
+			order = append(order, k)
+		}
+	}
+	var files []string
+	for _, k := range order {
+		im := &images[best[k]]
+		im.Aliases = []string{fmt.Sprintf("poster-%d.%s", im.Width, im.Format)}
+		if im.Width == full {
+			im.Aliases = append(im.Aliases, "poster."+im.Format)
+		}
+		for _, a := range im.Aliases {
+			if err := copySmallFile(filepath.Join(streamdir, im.Src), filepath.Join(streamdir, a)); err != nil {
+				return nil, err
+			}
+			files = append(files, a)
+		}
 	}
 	return files, nil
 }

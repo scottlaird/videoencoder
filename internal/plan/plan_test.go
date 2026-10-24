@@ -233,9 +233,10 @@ func TestPosters(t *testing.T) {
 		tone probe.Tone
 		want []string
 	}{
-		{"SDR from SDR, 7680 dropped", sdr, probe.SDR, []string{"SDR 320x180 avif", "SDR 320x180 jpg", "SDR 1920x1080 avif", "SDR 1920x1080 jpg"}},
-		{"HDR is AVIF only", hdr, probe.HDR, []string{"HDR 320x180 avif", "HDR 1920x1080 avif"}},
-		{"tiny source falls back to its own width", probe.VideoData{Width: 200, Height: 100}, probe.SDR, []string{"SDR 200x100 avif", "SDR 200x100 jpg"}},
+		{"SDR from SDR: 7680 dropped, full width added", sdr, probe.SDR, []string{"SDR 320x180 avif", "SDR 320x180 jpg", "SDR 1920x1080 avif", "SDR 1920x1080 jpg", "SDR 3840x2160 avif", "SDR 3840x2160 jpg"}},
+		{"HDR is AVIF only", hdr, probe.HDR, []string{"HDR 320x180 avif", "HDR 1920x1080 avif", "HDR 3840x2160 avif"}},
+		{"tiny source gets just its own width", probe.VideoData{Width: 200, Height: 100}, probe.SDR, []string{"SDR 200x100 avif", "SDR 200x100 jpg"}},
+		{"source width already listed isn't repeated", probe.VideoData{Width: 1920, Height: 1080}, probe.SDR, []string{"SDR 320x180 avif", "SDR 320x180 jpg", "SDR 1920x1080 avif", "SDR 1920x1080 jpg"}},
 	}
 	for _, tt := range tests {
 		if got := describe(Posters(p, src, tt.vd, tt.tone, "out")); !slices.Equal(got, tt.want) {
