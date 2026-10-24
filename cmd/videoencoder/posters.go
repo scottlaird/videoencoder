@@ -12,11 +12,11 @@ import (
 	"github.com/scottlaird/videoencoder/internal/probe"
 )
 
-// posters picks a source for each tone and returns the poster jobs: SDR
-// from the first SDR source, or tone-mapped from the first HDR one if
-// there is no SDR source; HDR from the first HDR source.
-func posters(p config.Poster, sources []plan.Source, vds []probe.VideoData, outdir string) []plan.Poster {
-	sdr, hdr := -1, -1
+// toneSources picks the source of each tone: SDR from the first SDR
+// source, or the first HDR one (to be tone-mapped) if there's no SDR
+// source; HDR from the first HDR source, or -1 if there is none.
+func toneSources(vds []probe.VideoData) (sdr, hdr int) {
+	sdr, hdr = -1, -1
 	for i, vd := range vds {
 		if vd.Tone() == probe.HDR {
 			if hdr < 0 {
@@ -29,11 +29,19 @@ func posters(p config.Poster, sources []plan.Source, vds []probe.VideoData, outd
 	if sdr < 0 {
 		sdr = hdr
 	}
+	return sdr, hdr
+}
+
+// posters returns the poster jobs, and the gain-mapped posters if there
+// is an HDR source.
+func posters(p config.Poster, sources []plan.Source, vds []probe.VideoData, outdir string) ([]plan.Poster, []plan.GainMapPoster) {
+	sdr, hdr := toneSources(vds)
 	out := plan.Posters(p, sources[sdr], vds[sdr], probe.SDR, outdir)
-	if hdr >= 0 {
-		out = append(out, plan.Posters(p, sources[hdr], vds[hdr], probe.HDR, outdir)...)
+	if hdr < 0 {
+		return out, nil
 	}
-	return out
+	out = append(out, plan.Posters(p, sources[hdr], vds[hdr], probe.HDR, outdir)...)
+	return out, plan.GainMapPosters(p, sources[sdr], vds[sdr], sources[hdr], outdir)
 }
 
 // posterIndex is poster.json: what a page needs to build <picture>
@@ -44,7 +52,9 @@ type posterIndex struct {
 }
 
 type posterImage struct {
-	Src    string `json:"src"`
+	Src string `json:"src"`
+	// Tone is "SDR", "HDR", or "gainmap" for an SDR image that HDR
+	// displays brighten.
 	Tone   string `json:"tone"`
 	Format string `json:"format"`
 	Width  uint64 `json:"width"`
@@ -57,9 +67,20 @@ const legacyPosterWidth = 1920
 
 // publishPosters copies the posters into streamdir and writes
 // poster.json and thumbnail.jpg there. It returns the names it wrote.
-func publishPosters(streamdir, offset string, ps []plan.Poster) ([]string, error) {
+// Gain-mapped posters are listed with tone "gainmap".
+func publishPosters(streamdir, offset string, ps []plan.Poster, gms []plan.GainMapPoster) ([]string, error) {
 	idx := posterIndex{Offset: offset}
 	var files []string
+	for _, g := range gms {
+		name := filepath.Base(g.Output)
+		if err := copySmallFile(g.Output, filepath.Join(streamdir, name)); err != nil {
+			return nil, err
+		}
+		files = append(files, name)
+		idx.Images = append(idx.Images, posterImage{
+			Src: name, Tone: "gainmap", Format: g.Format, Width: g.Width, Height: g.Height,
+		})
+	}
 	var legacy *plan.Poster
 	for i, p := range ps {
 		name := filepath.Base(p.Job.Output)

@@ -82,13 +82,18 @@ type S3Target struct {
 
 // Poster says how to make the video's still images.
 type Poster struct {
-	Offset  string   `yaml:"offset"`
-	Widths  []uint64 `yaml:"widths"`
-	Formats []string `yaml:"formats"`
+	Offset         string   `yaml:"offset"`
+	Widths         []uint64 `yaml:"widths"`
+	Formats        []string `yaml:"formats"`
+	GainMapFormats []string `yaml:"gainmap_formats"`
 }
 
-// PosterFormats are the image formats posters can be written in.
-var PosterFormats = []string{"avif", "jpg", "webp"}
+// PosterFormats are the image formats posters can be written in, and
+// GainMapFormats those that can carry a gain map.
+var (
+	PosterFormats  = []string{"avif", "jpg", "webp"}
+	GainMapFormats = []string{"avif", "jpg"}
+)
 
 // Encoder is an ffmpeg video encoder and its fixed options.
 type Encoder struct {
@@ -175,6 +180,11 @@ func (c *Config) Validate() error {
 	for _, f := range c.Poster.Formats {
 		if !slices.Contains(PosterFormats, f) {
 			return fmt.Errorf("poster: unknown format %q (want one of %v)", f, PosterFormats)
+		}
+	}
+	for _, f := range c.Poster.GainMapFormats {
+		if !slices.Contains(GainMapFormats, f) {
+			return fmt.Errorf("poster: gainmap_formats can't include %q (want some of %v)", f, GainMapFormats)
 		}
 	}
 	for name, t := range c.Publish.Targets {

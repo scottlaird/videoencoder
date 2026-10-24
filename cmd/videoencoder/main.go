@@ -193,6 +193,7 @@ type built struct {
 	perSource [][]*ffmpeg.Job // rendition jobs, in target order
 	audio     *ffmpeg.Job
 	posters   []plan.Poster
+	gainmaps  []plan.GainMapPoster
 	thumbs    *ffmpeg.Job // nil unless thumbnails are on
 	manifest  *state.Manifest
 	desc      map[*ffmpeg.Job]string // for plan output
@@ -249,7 +250,10 @@ func prepare(ctx context.Context, r *config.Resolved, d deps) (*built, error) {
 		b.perSource = append(b.perSource, js)
 	}
 	b.audio = plan.AudioJob(first, r.Outdir)
-	b.posters = posters(r.Poster, b.sources, b.vds, r.Outdir)
+	b.posters, b.gainmaps = posters(r.Poster, b.sources, b.vds, r.Outdir)
+	if err := checkGainMapTools(b.gainmaps); err != nil {
+		return nil, err
+	}
 	for _, p := range b.posters {
 		b.desc[p.Job] = fmt.Sprintf("%s %dx%d from %s", p.Job.Slot, p.Width, p.Height, p.Source)
 	}
@@ -308,6 +312,9 @@ func render(ctx context.Context, r *config.Resolved, d deps, rebuild string) err
 	if err := runPosters(ctx, d, b, rebuild); err != nil {
 		return fmt.Errorf("making posters: %w", err)
 	}
+	if err := buildGainMaps(ctx, d, b, rebuild); err != nil {
+		return fmt.Errorf("making gain-mapped posters: %w", err)
+	}
 
 	p := &pack.Packager{Runner: d.runner, Prober: d.prober}
 	mpd, files, err := p.Package(ctx, r.Streamdir, videos, b.audio.Output)
@@ -321,7 +328,7 @@ func render(ctx context.Context, r *config.Resolved, d deps, rebuild string) err
 		}
 		files = append(files, thumbFiles...)
 	}
-	posterFiles, err := publishPosters(r.Streamdir, r.Poster.Offset, b.posters)
+	posterFiles, err := publishPosters(r.Streamdir, r.Poster.Offset, b.posters, b.gainmaps)
 	if err != nil {
 		return fmt.Errorf("publishing posters: %w", err)
 	}
@@ -331,6 +338,9 @@ func render(ctx context.Context, r *config.Resolved, d deps, rebuild string) err
 	var slots []string
 	for _, j := range b.all() {
 		slots = append(slots, j.Slot)
+	}
+	for _, g := range b.gainmaps {
+		slots = append(slots, g.Slot)
 	}
 	if err := errors.Join(
 		b.manifest.SetStream(r.Streamdir, files),
@@ -395,6 +405,16 @@ func printPlan(ctx context.Context, r *config.Resolved, d deps) error {
 			reason = "build: " + reason
 		}
 		fmt.Fprintf(w, "#   %s -> %s: %s\n", desc, filepath.Base(j.Result()), reason)
+	}
+	for _, g := range b.gainmaps {
+		_, err := os.Stat(g.Output)
+		reason := b.manifest.Explain(g.Slot, g.Key, g.SourceID(), err == nil)
+		if reason == state.UpToDate {
+			reason = "up to date"
+		} else {
+			reason = "build: " + reason
+		}
+		fmt.Fprintf(w, "#   %s -> %s: %s\n", gainMapDesc(g), filepath.Base(g.Output), reason)
 	}
 	fmt.Fprintln(w)
 	return nil

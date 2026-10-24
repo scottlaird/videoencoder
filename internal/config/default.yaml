@@ -24,10 +24,17 @@ thumbnails:
 # plus a poster.json index. SDR posters come from an SDR source, or are
 # tone-mapped from an HDR one; HDR posters come from an HDR source and
 # are AVIF only, since JPEG and WebP can't carry HDR.
+#
+# With an HDR source, gainmap_formats also get gain-mapped posters,
+# poster-gainmap-<width>.<key>.<format>: an SDR image that HDR displays
+# brighten to the HDR rendition. JPEGs are Ultra HDR (ISO 21496-1 and
+# hdrgm XMP), written by videoencoder itself; AVIFs need avifgainmaputil
+# from libavif.
 poster:
   offset: 1s
   widths: [320, 640, 1280, 1920, 3840]
   formats: [avif, jpg]
+  gainmap_formats: [jpg, avif]
 
 encoders:
   h264:

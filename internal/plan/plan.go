@@ -15,6 +15,7 @@ import (
 	"github.com/scottlaird/videoencoder/internal/config"
 	"github.com/scottlaird/videoencoder/internal/ffmpeg"
 	"github.com/scottlaird/videoencoder/internal/fileid"
+	"github.com/scottlaird/videoencoder/internal/gainmap"
 	"github.com/scottlaird/videoencoder/internal/probe"
 )
 
@@ -205,6 +206,91 @@ type Poster struct {
 	Width, Height uint64
 }
 
+// Encoder settings for gain-mapped posters, chosen by measurement (see
+// DESIGN.md). They are part of each poster's key, so changing them
+// rebuilds the posters.
+var (
+	GainMapJPEGQuality = gainmap.Quality{Base: 85, GainMap: 70}
+	GainMapAVIFArgs    = []string{"-q", "55", "--qgain-map", "50", "--yuv-gain-map", "400", "-s", "6"}
+)
+
+// GainMapPoster is a gain-mapped poster: an SDR base taken from SDR
+// (tone-mapped first if ToneMap is set) and a gain map that brightens
+// it to HDR. It isn't a single ffmpeg job, so it has its own key.
+type GainMapPoster struct {
+	Slot, Key, Output string
+	SDR, HDR          Source
+	ToneMap           bool
+	Offset            string
+	Format            string
+	Width, Height     uint64
+}
+
+// SourceID combines the identities of both inputs, for the manifest.
+func (g *GainMapPoster) SourceID() string { return g.SDR.ID + "+" + g.HDR.ID }
+
+// SDRFilter is the ffmpeg filter giving the SDR base at the poster's
+// size, as 8-bit RGB.
+func (g *GainMapPoster) SDRFilter() string {
+	f := fmt.Sprintf("scale=%d:%d:flags=lanczos,format=rgb24", g.Width, g.Height)
+	if g.ToneMap {
+		f = tonemapSDR + "," + f
+	}
+	return f
+}
+
+// HDRLinearFilter gives the HDR rendition as planar float RGB in linear
+// light with BT.709 primaries, scaled so that 203 nits, the BT.2408
+// reference white, is 1.0, matching SDR white.
+func (g *GainMapPoster) HDRLinearFilter() string {
+	return fmt.Sprintf("scale=%d:%d:flags=lanczos,zscale=t=linear:npl=203,format=gbrpf32le,zscale=p=bt709,format=gbrpf32le", g.Width, g.Height)
+}
+
+// HDRFilter gives the HDR rendition as 16-bit RGB, still PQ/BT.2020.
+func (g *GainMapPoster) HDRFilter() string {
+	return fmt.Sprintf("scale=%d:%d:flags=lanczos,format=rgb48be", g.Width, g.Height)
+}
+
+// GainMapPosters returns the gain-mapped posters for p, with the SDR
+// base from sdr (whose video is sdrVD) and the HDR rendition from hdr.
+// If sdr is the HDR source itself, the base is tone-mapped.
+func GainMapPosters(p config.Poster, sdr Source, sdrVD probe.VideoData, hdr Source, outdir string) []GainMapPoster {
+	toneMap := sdrVD.Tone() == probe.HDR
+	var out []GainMapPoster
+	for _, w := range posterWidths(p, sdrVD) {
+		h := uint64(float64(sdrVD.Height)*float64(w)/float64(sdrVD.Width)+0.5) &^ 1
+		for _, f := range p.GainMapFormats {
+			hsh := sha256.New()
+			fmt.Fprintf(hsh, "gainmap/v1\x00%s\x00%s\x00%v\x00%s\x00%s\x00%d\x00%d\x00%+v\x00%q\x00%v",
+				sdr.ID, hdr.ID, toneMap, p.Offset, f, w, h, GainMapJPEGQuality, GainMapAVIFArgs, gainmap.MaxHeadroom)
+			key := hex.EncodeToString(hsh.Sum(nil))[:keyLength]
+			out = append(out, GainMapPoster{
+				Slot:    fmt.Sprintf("poster/gainmap-%d-%s", w, f),
+				Key:     key,
+				Output:  filepath.Join(outdir, fmt.Sprintf("poster-gainmap-%d.%s.%s", w, key, f)),
+				SDR:     sdr,
+				HDR:     hdr,
+				ToneMap: toneMap,
+				Offset:  p.Offset,
+				Format:  f,
+				Width:   w,
+				Height:  h,
+			})
+		}
+	}
+	return out
+}
+
+// posterWidths returns p's widths that fit vd, or vd's own width if
+// none do.
+func posterWidths(p config.Poster, vd probe.VideoData) []uint64 {
+	widths := slices.DeleteFunc(slices.Clone(p.Widths), func(w uint64) bool { return w > vd.Width })
+	if len(widths) == 0 {
+		widths = []uint64{vd.Width}
+	}
+	return widths
+}
+
 // tonemapSDR converts HDR (PQ or HLG) to BT.709 SDR.
 const tonemapSDR = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv"
 
@@ -214,10 +300,7 @@ const tonemapSDR = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tone
 // dropped; if that drops them all, the source's own width is used.
 func Posters(p config.Poster, src Source, vd probe.VideoData, tone probe.Tone, outdir string) []Poster {
 	base := []string{"ffmpeg", "-loglevel", "warning", "-y", "-ss", p.Offset, "-i", src.Path}
-	widths := slices.DeleteFunc(slices.Clone(p.Widths), func(w uint64) bool { return w > vd.Width })
-	if len(widths) == 0 {
-		widths = []uint64{vd.Width}
-	}
+	widths := posterWidths(p, vd)
 	fromHDR := vd.Tone() == probe.HDR
 
 	var out []Poster

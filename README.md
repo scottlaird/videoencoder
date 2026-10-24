@@ -10,6 +10,9 @@ Requirements:
 
 - ffmpeg + ffprobe
 - [Shaka Packager](https://github.com/shaka-project/shaka-packager), installed in the path as `packager`.
+- For gain-mapped AVIF posters of HDR videos, `avifgainmaputil` from
+  [libavif](https://github.com/AOMediaCodec/libavif) (`brew install
+  libavif`).  Gain-mapped JPEGs need nothing extra.
 
 ## Usage
 
@@ -37,8 +40,9 @@ Intermediate renditions go in `transcodes/<name>/` and the stream in
 `stream/<name>/`, next to the video.
 
 Each stream also gets posters, still images taken at `poster.offset`
-in several widths and formats (`poster-sdr-640.<key>.avif`, and HDR
-AVIFs when there's an HDR source), listed in `poster.json`, and seek
+in several widths and formats (`poster-sdr-640.<key>.avif`, plus HDR
+AVIFs and gain-mapped JPEG and AVIF posters when there's an HDR
+source), listed in `poster.json`, and seek
 thumbnails, tiled JPEGs added to `dash.mpd` and `hls.m3u8` and listed
 in a `thumbnails.vtt` WebVTT track (turn
 them off with `thumbnails: {enabled: false}` or `--thumbnails=false`).

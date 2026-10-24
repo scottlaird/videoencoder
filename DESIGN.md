@@ -220,7 +220,68 @@ poster:
   versions wrote, `thumbnail.jpg` is a copy of the largest SDR JPEG
   that's at most 1920 wide.
 
-Later: merge the SDR and HDR posters into one gain-mapped AVIF/JPEG.
+**Gain-mapped posters.** With an HDR source, each width also gets
+`poster-gainmap-<width>.<key>.{jpg,avif}` (`poster.gainmap_formats`,
+default both). These are SDR images that HDR displays brighten to the
+HDR rendition. They're listed in `poster.json` with tone `gainmap`,
+alongside the separate SDR and HDR posters.
+
+- The inputs come from ffmpeg at the poster offset and size. The SDR
+  base is 8-bit RGB from the SDR source, or tone-mapped from the HDR
+  one. The HDR rendition is converted to linear float with BT.709
+  primaries, scaled so 203 nits (BT.2408 reference white) is 1.0,
+  matching SDR white.
+- **JPEG, in pure Go** (`internal/gainmap`):
+  - The gain map is single-channel, computed on luminance as
+    `log2((Y_hdr + 1/64) / (Y_sdr + 1/64))`, normalized to its range
+    and quantized to 8 bits.
+  - Both images are encoded with `image/jpeg` and joined by an MPF
+    index.
+  - The metadata is written twice: as ISO 21496-1 binary (a version
+    marker in the primary, parameters in the gain map image, laid out
+    as libultrahdr writes it) and as hdrgm XMP (the container directory
+    in the primary, parameters in the gain map). Readers that know
+    either form work, and readers that know neither see an SDR JPEG.
+  - Checked against libultrahdr's `ultrahdr_app`: it recognizes the
+    file and reads the same parameters from either form alone. Its
+    linear decode reproduces the HDR luminance we computed the map from
+    to within 8%.
+- **AVIF:** ffmpeg writes SDR and HDR (PQ/BT.2020, 16-bit) PNGs, and
+  libavif's `avifgainmaputil combine` makes the file. That tool is
+  needed only when `avif` is in `gainmap_formats`, and its absence is
+  reported before any encoding starts.
+- **Settings, measured.** On a real HDR frame (Big Four, 1280×720,
+  sunlit snow 1.8 stops over SDR white), I decoded each variant to
+  linear light (libultrahdr for JPEG, `avifgainmaputil tonemap` for
+  AVIF) and measured luminance error in stops against the true HDR
+  frame:
+
+  | variant | bytes | mean | p99 |
+  |:--|--:|--:|--:|
+  | JPEG base 100, map 100, full size (method floor) | 1534695 | 0.017 | 0.097 |
+  | JPEG base 85, map 85, full size | 465487 | 0.103 | 0.436 |
+  | **JPEG base 85, map 70, full size** (chosen) | 391542 | 0.106 | 0.450 |
+  | JPEG base 85, map 70, ½ size | 298324 | 0.127 | 0.567 |
+  | JPEG base 85, map 70, ¼ size | 271604 | 0.141 | 0.653 |
+  | AVIF q75, map 75, 3-channel (libavif default shape) | 478194 | 0.073 | 0.279 |
+  | **AVIF q55, map 50, 1-channel** (chosen) | 200881 | 0.144 | 0.607 |
+  | AVIF q60, map 60, 1-channel, ½ size | 185231 | 0.148 | 0.657 |
+  | plain HDR AVIF poster (for comparison) | 66174 | 0.183 | 0.779 |
+
+  Most of the error comes from compressing the SDR base, which is
+  the loss any JPEG of the scene has anyway. So the bases are set to
+  match the plain SDR posters' size (JPEG quality 85, AVIF `-q 55`),
+  and the map's own quality barely matters. Downscaling the map does
+  matter: with a global tone curve the gain follows image detail, so a
+  smaller map smears it, and maps are kept full size. A single-channel
+  map costs nothing in accuracy. Every chosen variant is more accurate
+  than the plain HDR AVIF. At 1280 wide that's about 390 KB for JPEG
+  (vs 262 KB plain SDR) and 200 KB for AVIF (vs 113 KB).
+- Both formats fully apply the gain at a display headroom of 4 stops
+  (16× SDR white), libavif's default. Viewers scale the gain by the
+  fraction of that headroom the display has. Advertising an image's
+  full, sometimes 7+ stop, range instead would make it look dim on
+  real HDR displays.
 
 ### Seek thumbnails
 

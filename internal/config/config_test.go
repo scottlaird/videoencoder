@@ -194,6 +194,11 @@ func TestLoadErrors(t *testing.T) {
 			wantErr: `unknown format "gif"`,
 		},
 		{
+			name:    "gain map in a format that can't carry one",
+			files:   map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\nposter: {gainmap_formats: [webp]}"},
+			wantErr: `gainmap_formats can't include "webp"`,
+		},
+		{
 			name:    "bad poster offset",
 			files:   map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\nposter: {offset: later}"},
 			wantErr: "poster.offset",

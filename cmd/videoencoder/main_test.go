@@ -351,7 +351,7 @@ func makeHDRClip(t *testing.T, path string) {
 // TestHDRAndSDRPosters renders an HDR+SDR pair and checks that both
 // tones get posters, with HDR as AVIF only, listed in poster.json.
 func TestHDRAndSDRPosters(t *testing.T) {
-	requireTools(t, "ffmpeg", "ffprobe", "packager")
+	requireTools(t, "ffmpeg", "ffprobe", "packager", "avifgainmaputil")
 	dir := t.TempDir()
 	makeHDRClip(t, filepath.Join(dir, "trip-hdr.mov"))
 	makeClip(t, filepath.Join(dir, "trip-sdr.mov"))
@@ -389,6 +389,7 @@ renditions: {h264-480: null, h264-720: null, h265-480: null, h265-720: null, h26
 		}
 	}
 	want := []string{
+		"gainmap 160 jpg", "gainmap 160 avif", "gainmap 320 jpg", "gainmap 320 avif",
 		"SDR 160 avif", "SDR 160 jpg", "SDR 160 webp", "SDR 320 avif", "SDR 320 jpg", "SDR 320 webp",
 		"HDR 160 avif", "HDR 320 avif",
 	}
@@ -409,6 +410,23 @@ renditions: {h264-480: null, h264-720: null, h265-480: null, h265-720: null, h26
 	}
 	if vd.Tone() != probe.HDR {
 		t.Errorf("HDR poster has transfer %q, want PQ", vd.ColorTransfer)
+	}
+
+	// The reference decoders recognise the gain-mapped posters.
+	gmJPEG, _ := filepath.Glob(filepath.Join(dir, "stream", "trip", "poster-gainmap-320.*.jpg"))
+	gmAVIF, _ := filepath.Glob(filepath.Join(dir, "stream", "trip", "poster-gainmap-320.*.avif"))
+	if len(gmJPEG) != 1 || len(gmAVIF) != 1 {
+		t.Fatalf("gain-mapped posters %q %q, want one of each", gmJPEG, gmAVIF)
+	}
+	if app, err := exec.LookPath("ultrahdr_app"); err == nil {
+		out, err := exec.Command(app, "-m", "1", "-P", "-j", gmJPEG[0]).CombinedOutput()
+		if err != nil || !strings.Contains(string(out), "Ultra HDR Image: Yes") {
+			t.Errorf("ultrahdr_app doesn't recognise %s: %v\n%s", gmJPEG[0], err, out)
+		}
+	}
+	out, err := exec.Command("avifgainmaputil", "printmetadata", gmAVIF[0]).CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "Alternate headroom") {
+		t.Errorf("avifgainmaputil printmetadata %s: %v\n%s", gmAVIF[0], err, out)
 	}
 }
 

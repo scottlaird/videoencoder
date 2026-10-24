@@ -263,3 +263,28 @@ func TestPosters(t *testing.T) {
 		t.Error("tone-mapped and direct SDR posters share a key")
 	}
 }
+
+func TestGainMapPosterKeys(t *testing.T) {
+	p := config.Poster{Offset: "2s", Widths: []uint64{640}, GainMapFormats: []string{"jpg"}}
+	sdr := Source{Label: "sdr", ID: "s1"}
+	hdr := Source{Label: "hdr", ID: "h1"}
+	vd := probe.VideoData{Width: 1920, Height: 1080, ColorTransfer: "bt709"}
+	key := func() string { return GainMapPosters(p, sdr, vd, hdr, "out")[0].Key }
+	base := key()
+
+	saved := GainMapJPEGQuality
+	GainMapJPEGQuality.GainMap++
+	if key() == base {
+		t.Error("changing the encoder settings didn't change the key")
+	}
+	GainMapJPEGQuality = saved
+
+	if g := GainMapPosters(p, sdr, vd, hdr, "out")[0]; g.ToneMap || g.Output != "out/poster-gainmap-640."+base+".jpg" {
+		t.Errorf("poster %+v", g)
+	}
+	hdrVD := vd
+	hdrVD.ColorTransfer = "smpte2084"
+	if g := GainMapPosters(p, hdr, hdrVD, hdr, "out")[0]; !g.ToneMap || g.Key == base {
+		t.Errorf("HDR-only poster: tonemap %v, key %s", g.ToneMap, g.Key)
+	}
+}
