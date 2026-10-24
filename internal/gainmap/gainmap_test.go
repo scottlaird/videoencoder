@@ -230,7 +230,7 @@ func TestWriteJPEGStructure(t *testing.T) {
 }
 
 // TestReferenceDecoder checks the output with libultrahdr's
-// ultrahdr_app, when it is installed: it must recognise the file and
+// ultrahdr_app, when it is installed: it must recognize the file and
 // read back the metadata we wrote.
 func TestReferenceDecoder(t *testing.T) {
 	app, err := exec.LookPath("ultrahdr_app")
@@ -248,7 +248,7 @@ func TestReferenceDecoder(t *testing.T) {
 		t.Fatalf("ultrahdr_app probe: %v\n%s", err, out)
 	}
 	if !bytes.Contains(out, []byte("Ultra HDR Image: Yes")) {
-		t.Fatalf("ultrahdr_app doesn't recognise the file:\n%s", out)
+		t.Fatalf("ultrahdr_app doesn't recognize the file:\n%s", out)
 	}
 	field := func(name string) float64 {
 		mm := regexp.MustCompile(`--` + name + ` ([-0-9.e]+)`).FindSubmatch(out)

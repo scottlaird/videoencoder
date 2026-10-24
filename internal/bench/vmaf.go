@@ -13,10 +13,10 @@ import (
 
 // Metrics are the quality scores of one encode against its reference.
 //
-// VMAF only looks at luma, so it can't see colour casts at all; the
+// VMAF only looks at luma, so it can't see color casts at all; the
 // chroma PSNRs and CIEDE2000 are there to catch those. For all of them,
 // higher is better, and a perfect match is +Inf. CIEDE2000 is measured
-// on sampled frames at half resolution (see colourFrameStep), the rest
+// on sampled frames at half resolution (see colorFrameStep), the rest
 // on every frame.
 type Metrics struct {
 	VMAF      float64 // mean
@@ -27,6 +27,14 @@ type Metrics struct {
 	PSNRCb    float64
 	PSNRCr    float64
 	CIEDE2000 float64
+	// ColorShiftP99 is the 99th percentile, over 16x16 blocks of
+	// sampled frames, of the shift in each block's average color, as
+	// distance in CIELAB a*b* (hue and saturation, ignoring lightness).
+	// Lower is better. Unlike the frame averages above, it catches a
+	// cast confined to part of the picture. ColorShiftP999 is the same
+	// at the 99.9th percentile.
+	ColorShiftP99  float64
+	ColorShiftP999 float64
 }
 
 // vmafModel picks the model trained for the reference's viewing
@@ -45,44 +53,63 @@ func vmafModel(height uint64) string {
 // compares every third frame against the wrong reference frame.
 const frameIndexPTS = "settb=AVTB,setpts=N"
 
-// colourFrameStep and the half-resolution scale make CIEDE2000, which
-// costs several times as much as VMAF per pixel, affordable. Colour
+// colorFrameStep and the half-resolution scale make CIEDE2000, which
+// costs several times as much as VMAF per pixel, affordable. Color
 // casts are broad and persistent, so every sixth frame at chroma
 // resolution (half size, for 4:2:0) is enough to find them.
-const colourFrameStep = 6
+const colorFrameStep = 6
+
+// colorBlock is the side, in pixels at scoring size, of the blocks
+// whose average colors are compared for color shift. A color cast
+// is a shift in the average color of an area, and 16x16 blocks are
+// large enough to average out noise and small enough not to dilute a
+// cast confined to part of the frame (whitewater, say).
+const colorBlock = 16
+
+// blockSize is the size of the block-average images for a scoring size.
+func blockSize(width, height uint64) (uint64, uint64) {
+	return max(1, width/colorBlock), max(1, height/colorBlock)
+}
 
 // scoreArgv returns the ffmpeg command that scores distorted against
 // reference. It writes two libvmaf JSON logs: logPath with VMAF and
-// PSNR on every frame, and colourLogPath with CIEDE2000 on sampled
-// frames. The distorted video is scaled to the reference size first,
-// and both are converted to one pixel format, since libvmaf needs
-// matching inputs.
+// PSNR on every frame, and colorLogPath with CIEDE2000 on sampled
+// frames. It also writes, for sampled frames, block-average images of
+// both sides (16-bit RGB, one pixel per colorBlock square) to
+// distBlocks and refBlocks, for ColorShift. The distorted video is
+// scaled to the reference size first, and both are converted to one
+// pixel format, since libvmaf needs matching inputs.
 //
 // prefilter, if not "", is applied to both inputs first; for HDR, a
 // tone map to SDR, since VMAF and CIEDE2000 are only meaningful there.
-func scoreArgv(distorted, reference string, width, height uint64, threads int, logPath, colourLogPath, prefilter string) []string {
+func scoreArgv(distorted, reference string, width, height uint64, threads int, logPath, colorLogPath, distBlocks, refBlocks, prefilter string) []string {
 	model := vmafModel(height)
 	pre := ""
 	if prefilter != "" {
 		pre = prefilter + ","
 	}
-	sample := fmt.Sprintf("select='not(mod(n,%d))',scale=%d:%d:flags=area", colourFrameStep, (width/2)&^1, (height/2)&^1)
+	sample := fmt.Sprintf("select='not(mod(n,%d))',scale=%d:%d:flags=area", colorFrameStep, (width/2)&^1, (height/2)&^1)
+	bw, bh := blockSize(width, height)
+	blocks := fmt.Sprintf("select='not(mod(n,%d))',format=rgb48le,scale=%d:%d:flags=area", colorFrameStep, bw, bh)
 	graph := fmt.Sprintf(
-		"[0:v]%sscale=%d:%d:flags=bicubic,format=yuv444p10le,"+frameIndexPTS+",split[d][dc];"+
-			"[1:v]%sformat=yuv444p10le,"+frameIndexPTS+",split[r][rc];"+
+		"[0:v]%sscale=%d:%d:flags=bicubic,format=yuv444p10le,"+frameIndexPTS+",split=3[d][dc][db];"+
+			"[1:v]%sformat=yuv444p10le,"+frameIndexPTS+",split=3[r][rc][rb];"+
 			"[d][r]libvmaf=log_fmt=json:log_path=%s:n_threads=%d"+
 			":model='version=%s\\:name=vmaf|version=%sneg\\:name=vmaf_neg'"+
 			":feature='name=psnr'[quality];"+
 			"[dc]%s[ds];[rc]%s[rs];"+
-			"[ds][rs]libvmaf=log_fmt=json:log_path=%s:n_threads=%d:feature='name=ciede'[colour]",
+			"[ds][rs]libvmaf=log_fmt=json:log_path=%s:n_threads=%d:feature='name=ciede'[color];"+
+			"[db]%s[dbo];[rb]%s[rbo]",
 		pre, width, height, pre, escapeFilterValue(logPath), threads, model, model,
-		sample, sample, escapeFilterValue(colourLogPath), threads)
+		sample, sample, escapeFilterValue(colorLogPath), threads, blocks, blocks)
 	return []string{
-		"ffmpeg", "-hide_banner", "-loglevel", "error", "-nostats",
+		"ffmpeg", "-hide_banner", "-loglevel", "error", "-nostats", "-y",
 		"-i", distorted, "-i", reference,
 		"-filter_complex", graph,
 		"-map", "[quality]", "-f", "null", "-",
-		"-map", "[colour]", "-f", "null", "-",
+		"-map", "[color]", "-f", "null", "-",
+		"-map", "[dbo]", "-f", "rawvideo", distBlocks,
+		"-map", "[rbo]", "-f", "rawvideo", refBlocks,
 	}
 }
 
@@ -91,14 +118,23 @@ func scoreArgv(distorted, reference string, width, height uint64, threads int, l
 // named after name. See scoreArgv for prefilter.
 func Score(ctx context.Context, e Executor, distorted, reference string, width, height uint64, threads int, tmpDir, name, prefilter string) (Metrics, error) {
 	logPath := filepath.Join(tmpDir, name+".vmaf.json")
-	colourLogPath := filepath.Join(tmpDir, name+".ciede.json")
-	defer os.Remove(logPath)
-	defer os.Remove(colourLogPath)
-	argv := scoreArgv(distorted, reference, width, height, threads, logPath, colourLogPath, prefilter)
+	colorLogPath := filepath.Join(tmpDir, name+".ciede.json")
+	distBlocks := filepath.Join(tmpDir, name+".dist.blocks")
+	refBlocks := filepath.Join(tmpDir, name+".ref.blocks")
+	for _, p := range []string{logPath, colorLogPath, distBlocks, refBlocks} {
+		defer os.Remove(p)
+	}
+	argv := scoreArgv(distorted, reference, width, height, threads, logPath, colorLogPath, distBlocks, refBlocks, prefilter)
 	if _, err := e.Exec(ctx, argv); err != nil {
 		return Metrics{}, fmt.Errorf("scoring: %w", err)
 	}
-	return readLogs(logPath, colourLogPath)
+	m, err := readLogs(logPath, colorLogPath)
+	if err != nil {
+		return Metrics{}, err
+	}
+	bw, bh := blockSize(width, height)
+	m.ColorShiftP99, m.ColorShiftP999, err = ColorShift(distBlocks, refBlocks, bw, bh)
+	return m, err
 }
 
 // escapeFilterValue escapes s for use as an option value inside an
@@ -177,21 +213,21 @@ func percentile(xs []float64, p float64) float64 {
 	return s[max(i, 0)]
 }
 
-// parseColourLog reads the mean CIEDE2000 out of a libvmaf JSON log.
-func parseColourLog(data []byte) (float64, error) {
+// parseColorLog reads the mean CIEDE2000 out of a libvmaf JSON log.
+func parseColorLog(data []byte) (float64, error) {
 	var l vmafLog
 	if err := json.Unmarshal(data, &l); err != nil {
-		return 0, fmt.Errorf("parsing libvmaf colour log: %w", err)
+		return 0, fmt.Errorf("parsing libvmaf color log: %w", err)
 	}
 	p, ok := l.Pooled["ciede2000"]
 	if !ok {
-		return 0, fmt.Errorf("libvmaf colour log has no ciede2000")
+		return 0, fmt.Errorf("libvmaf color log has no ciede2000")
 	}
 	return orInf(p.Mean), nil
 }
 
 // readLogs reads the two logs written by the scoreArgv command.
-func readLogs(logPath, colourLogPath string) (Metrics, error) {
+func readLogs(logPath, colorLogPath string) (Metrics, error) {
 	data, err := os.ReadFile(logPath)
 	if err != nil {
 		return Metrics{}, fmt.Errorf("reading libvmaf log: %w", err)
@@ -200,9 +236,9 @@ func readLogs(logPath, colourLogPath string) (Metrics, error) {
 	if err != nil {
 		return Metrics{}, err
 	}
-	if data, err = os.ReadFile(colourLogPath); err != nil {
-		return Metrics{}, fmt.Errorf("reading libvmaf colour log: %w", err)
+	if data, err = os.ReadFile(colorLogPath); err != nil {
+		return Metrics{}, fmt.Errorf("reading libvmaf color log: %w", err)
 	}
-	m.CIEDE2000, err = parseColourLog(data)
+	m.CIEDE2000, err = parseColorLog(data)
 	return m, err
 }

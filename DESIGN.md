@@ -437,7 +437,7 @@ when we get there.
 samples: samples/           # every video file here is a sample clip
 workdir: work               # results.csv, best.csv, keep/, tmp/
 target_vmaf: 95
-min_ciede2000: 0            # optional colour limits, see Measurement
+min_ciede2000: 0            # optional color limits, see Measurement
 min_chroma_psnr: 0
 vmaf_threads: 4             # libvmaf n_threads
 vmaf_jobs: 3                # scorings run at once
@@ -488,6 +488,23 @@ for one encode. The encodes run one after another, then all of them
 are scored in parallel. In the tests (a 300-step CRF range) a search
 with no seed took 7 encodes, and seeded ones took 3–4.
 
+### Sample sizes and HDR
+
+`scales: [1080]` tests every sample at those heights. A taller sample
+is downscaled once (Lanczos, ProRes 422 HQ, video only, color tags
+kept) into `work/samples/<name>@<height>p.mov`. A sample no taller
+than a scale is used as it is, so an existing 1080p sample keeps its
+results. A copy's identity is derived from its source's identity and
+the height, not from the copy's bytes, so remaking it doesn't
+invalidate anything. Large originals (8K ProRes) are then decoded only
+once, and VMAF runs at sizes its models were trained for.
+
+HDR (PQ/HLG) samples are encoded as they are, but both sides are
+tone-mapped to SDR (`zscale` + `tonemap=hable`) before scoring.
+VMAF and CIEDE2000 are only calibrated for SDR, so this is a proxy.
+It still catches artifacts and color shifts. An HDR/SDR pair of the
+same footage gives a check on how far the proxy can be trusted.
+
 ### Caching and incrementality
 
 Every encode is keyed by a hash of (the sample's identity, the
@@ -500,6 +517,11 @@ log and reuses whatever it finds. So:
   the other samples' answers as seeds;
 - renaming a flagset reruns nothing, since the key comes from its
   args, not its name. Editing its args makes a new flagset.
+- a pair the log already settles is skipped outright: one with a
+  passing setting whose next step fails, or a pass or fail at the end
+  of the range. Searching it again would start from a seed that may
+  have moved (seeds come from other samples' answers), and a different
+  path needs encodes the log doesn't have.
 
 ### Measurement
 
@@ -521,17 +543,36 @@ log and reuses whatever it finds. So:
   pattern still scores VMAF 99.9. So the same libvmaf pass also
   computes per-plane PSNR (`psnr_y/cb/cr`) and CIEDE2000, where higher
   is better: about 51 for a 2° hue shift, 43 for 5°. `min_ciede2000`
-  and `min_chroma_psnr` make colour error fail an encode. This is aimed
-  at the AV1 colour cast in the water of the North Cascades video, which
+  and `min_chroma_psnr` make color error fail an encode. This is aimed
+  at the AV1 color cast in the water of the North Cascades video, which
   more quality only partly fixes. Both inputs are converted to
   `yuv444p10le` before scoring, so chroma subsampling loss counts too.
 - CIEDE2000 costs about 9× as much as VMAF per frame. On a 3 s test,
   VMAF took 3.1 s, both VMAF models 5.5 s, and adding CIEDE2000 28 s.
   So it runs in a second branch of the same filtergraph, on every
   sixth frame at half resolution, the chroma's own resolution in
-  4:2:0, for about 1/24 the cost. A colour cast is broad and
+  4:2:0, for about 1/24 the cost. A color cast is broad and
   persistent, so sampling doesn't miss it. Chroma PSNR is nearly free
   and stays on every frame.
+- **Local color shift.** Frame averages miss a color cast confined
+  to part of the picture. On Pyramid Creek, every SVT-AV1 encode shifted
+  the whitewater toward magenta and yellow, but its frame-mean CIEDE2000
+  matched x265's.
+  - So a third branch of the scoring graph area-averages both sides
+    into 16×16 blocks (16-bit RGB, after the HDR tone map) on every
+    sixth frame. Go then takes the CIELAB a*b* distance per block, which
+    is hue and saturation, ignoring lightness. That's recorded at the
+    99th and 99.9th percentiles (`color_shift_p99`, `color_shift_p999`).
+  - Checked against the eight Pyramid Creek HDR keepers as judged by
+    eye: the encodes that looked fine (VideoToolbox, both x265) measured
+    2.32–3.44 at p99.9, and every AV1 variant with the visible cast
+    4.32–5.04. At p99 the groups were only 0.13 apart; the cast covers
+    so little of the frame that the more extreme percentile is needed.
+  - `max_color_shift` (suggested 3.9) fails encodes over the limit at
+    p99.9. Each row records its `scorer` version (v3 adds this), and rows
+    from older scorers are ignored for answers, seeds and settled checks.
+    The encode key includes the scorer, so they're re-encoded rather
+    than reused.
 - Each score is logged the moment it finishes, so an interrupted
   round loses only the scorings still running.
 - Encodes below the reference resolution are scaled back up
@@ -608,7 +649,7 @@ being encoded, varying only the quality setting.
 1. **Foundation.** Split into packages, add error propagation and
    tests, merge the two rebuild checks into one (which fixes the
    missing-output crash), add `MkdirAll` and atomic outputs. No
-   behaviour change otherwise.
+   behavior change otherwise.
 2. **encbench**, which only needs `probe` and `ffmpeg` from step 1:
    config, runner, VMAF JSON, results log/cache, search, keepers,
    reports. It's independent of steps 3–7, so it can be built in

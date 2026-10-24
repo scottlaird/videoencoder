@@ -437,13 +437,13 @@ renditions: {h264-480: null, h264-720: null, h265-480: null, h265-720: null, h26
 		}
 	}
 
-	// The reference decoders recognise the gain-mapped posters.
+	// The reference decoders recognize the gain-mapped posters.
 	gmJPEG := []string{filepath.Join(dir, "stream", "trip", "poster.jpg")}
 	gmAVIF := []string{filepath.Join(dir, "stream", "trip", "poster.avif")}
 	if app, err := exec.LookPath("ultrahdr_app"); err == nil {
 		out, err := exec.Command(app, "-m", "1", "-P", "-j", gmJPEG[0]).CombinedOutput()
 		if err != nil || !strings.Contains(string(out), "Ultra HDR Image: Yes") {
-			t.Errorf("ultrahdr_app doesn't recognise %s: %v\n%s", gmJPEG[0], err, out)
+			t.Errorf("ultrahdr_app doesn't recognize %s: %v\n%s", gmJPEG[0], err, out)
 		}
 	}
 	out, err := exec.Command("avifgainmaputil", "printmetadata", gmAVIF[0]).CombinedOutput()

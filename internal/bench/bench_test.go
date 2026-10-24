@@ -3,6 +3,7 @@ package bench
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
@@ -120,7 +121,7 @@ func TestParseVMAFLog(t *testing.T) {
 	}
 }
 
-func TestParseColourLog(t *testing.T) {
+func TestParseColorLog(t *testing.T) {
 	tests := []struct {
 		log     string
 		want    float64
@@ -132,15 +133,15 @@ func TestParseColourLog(t *testing.T) {
 		{log: `not json`, wantErr: true},
 	}
 	for _, tt := range tests {
-		got, err := parseColourLog([]byte(tt.log))
+		got, err := parseColorLog([]byte(tt.log))
 		if (err != nil) != tt.wantErr || (!tt.wantErr && got != tt.want) {
-			t.Errorf("parseColourLog(%s) = %v, %v; want %v, err %v", tt.log, got, err, tt.want, tt.wantErr)
+			t.Errorf("parseColorLog(%s) = %v, %v; want %v, err %v", tt.log, got, err, tt.want, tt.wantErr)
 		}
 	}
 }
 
 func TestScoreArgvEscaping(t *testing.T) {
-	argv := scoreArgv("d.mp4", "r.mov", 3840, 2160, 8, "/tmp/a:b/log.json", "/tmp/c.json", "")
+	argv := scoreArgv("d.mp4", "r.mov", 3840, 2160, 8, "/tmp/a:b/log.json", "/tmp/c.json", "/tmp/d.blocks", "/tmp/r.blocks", "")
 	graph := argv[slices.Index(argv, "-filter_complex")+1]
 	for _, want := range []string{
 		`log_path=/tmp/a\:b/log.json`, "log_path=/tmp/c.json", "version=vmaf_4k_v0.6.1\\:name=vmaf|",
@@ -153,10 +154,13 @@ func TestScoreArgvEscaping(t *testing.T) {
 }
 
 func TestScoreArgvPrefilter(t *testing.T) {
-	argv := scoreArgv("d.mp4", "r.mov", 1920, 1080, 4, "/l.json", "/c.json", "tonemap=hable")
+	argv := scoreArgv("d.mp4", "r.mov", 1920, 1080, 4, "/l.json", "/c.json", "/d.blocks", "/r.blocks", "tonemap=hable")
 	graph := argv[slices.Index(argv, "-filter_complex")+1]
 	if strings.Count(graph, "tonemap=hable,") != 2 {
 		t.Errorf("prefilter isn't applied to both inputs: %q", graph)
+	}
+	if !strings.Contains(graph, "format=rgb48le,scale=120:67:flags=area") || !slices.Contains(argv, "/d.blocks") {
+		t.Errorf("no block-average outputs: %q", argv)
 	}
 }
 
@@ -197,12 +201,15 @@ func TestResultsRoundTrip(t *testing.T) {
 // produces q-dependent file sizes; scoring reports a VMAF that falls
 // linearly with q, so with a 95 target the answer is q = cutoff.
 type fakeFFmpeg struct {
-	mu      sync.Mutex // scoring runs in parallel
-	cutoff  float64
-	ciede   float64
-	quality map[string]float64 // encoded file -> quality
-	encodes []string           // "sample q" per encode
-	scores  int
+	mu         sync.Mutex // scoring runs in parallel
+	tint       uint16     // added to the red of every distorted block
+	cutoff     float64
+	ciede      float64
+	quality    map[string]float64 // encoded file -> quality
+	encodes    []string           // "sample q" per encode
+	scores     int
+	graphs     []string // scoring filtergraphs
+	downscales int
 }
 
 func newFake(cutoff float64) *fakeFFmpeg {
@@ -214,6 +221,7 @@ func (f *fakeFFmpeg) Exec(_ context.Context, argv []string) (Measurement, error)
 	defer f.mu.Unlock()
 	if i := slices.Index(argv, "-filter_complex"); i >= 0 {
 		f.scores++
+		f.graphs = append(f.graphs, argv[i+1])
 		var logs []string
 		for _, part := range strings.Split(argv[i+1], "log_path=")[1:] {
 			logs = append(logs, strings.SplitN(part, ":n_threads", 2)[0])
@@ -222,20 +230,34 @@ func (f *fakeFFmpeg) Exec(_ context.Context, argv []string) (Measurement, error)
 		vmaf := 95 + (f.cutoff-q)*0.5
 		log := fmt.Sprintf(`{"frames":[{"metrics":{"vmaf":%v}}],"pooled_metrics":{"vmaf":{"mean":%v,"harmonic_mean":%v},"vmaf_neg":{"mean":%v},"psnr_y":{"mean":45},"psnr_cb":{"mean":48},"psnr_cr":{"mean":48}}}`,
 			vmaf, vmaf, vmaf, vmaf-1)
-		colour := fmt.Sprintf(`{"pooled_metrics":{"ciede2000":{"mean":%v}}}`, f.ciede)
+		color := fmt.Sprintf(`{"pooled_metrics":{"ciede2000":{"mean":%v}}}`, f.ciede)
+		dist, ref := blockImages(argv, f.tint)
 		return Measurement{Wall: time.Second}, errors.Join(
 			os.WriteFile(logs[0], []byte(log), 0o644),
-			os.WriteFile(logs[1], []byte(colour), 0o644))
+			os.WriteFile(logs[1], []byte(color), 0o644),
+			os.WriteFile(argv[len(argv)-6], dist, 0o644),
+			os.WriteFile(argv[len(argv)-1], ref, 0o644))
+	}
+	if slices.Contains(argv, "prores_ks") {
+		f.downscales++
+		return Measurement{}, os.WriteFile(argv[len(argv)-1], []byte("scaled"), 0o644)
 	}
 	if slices.Contains(argv, "libbroken") {
 		return Measurement{}, errors.New("Unknown encoder 'libbroken'")
 	}
 	out := argv[len(argv)-1]
-	q, err := strconv.ParseFloat(argv[len(argv)-3], 64)
+	qi := slices.IndexFunc(argv, func(a string) bool { return a == "-crf" || a == "-qp" })
+	if qi < 0 {
+		return Measurement{}, errors.New("no quality flag")
+	}
+	q, err := strconv.ParseFloat(argv[qi+1], 64)
 	if err != nil {
 		return Measurement{}, err
 	}
 	f.quality[out] = q
+	if slices.Contains(argv, "libx265") && !slices.Contains(argv, "hvc1") {
+		return Measurement{}, errors.New("HEVC encode not tagged hvc1")
+	}
 	f.encodes = append(f.encodes, fmt.Sprintf("%s %v", filepath.Base(argv[slices.Index(argv, "-i")+1]), q))
 	return Measurement{Wall: 2 * time.Second, User: 10 * time.Second}, os.WriteFile(out, bytes.Repeat([]byte("x"), int(10000/q)), 0o644)
 }
@@ -357,21 +379,21 @@ func TestBenchRun(t *testing.T) {
 	}
 }
 
-func TestBenchColourLimit(t *testing.T) {
+func TestBenchColorLimit(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "samples", "a.mov"), "sample a")
 	c := benchConfig(t, dir, "  x: {args: [-c:v, libx265]}\n")
 	c.MinCIEDE2000 = 50
 
 	fake := newFake(18.7)
-	fake.ciede = 45 // a colour cast at every quality: nothing passes
+	fake.ciede = 45 // a color cast at every quality: nothing passes
 	b := &Bench{Cfg: c, Exec: fake, Prober: fakeProber{}}
 	if err := b.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	results, _ := LoadResults(filepath.Join(dir, "work", "results.csv"))
 	if bests := Bests(c, results); len(bests) != 0 {
-		t.Errorf("got answers %+v despite the colour limit", bests)
+		t.Errorf("got answers %+v despite the color limit", bests)
 	}
 }
 
@@ -403,5 +425,252 @@ func TestBenchDryRun(t *testing.T) {
 	}
 	if len(fake.encodes) != 0 || fake.scores != 0 {
 		t.Errorf("dry run ran %d encodes and %d scores", len(fake.encodes), fake.scores)
+	}
+}
+
+// sizedProber reports 8K PQ for "big" files, their scaled heights for
+// "@<h>p" copies, and 1080p SDR otherwise.
+type sizedProber struct{}
+
+func (sizedProber) Probe(_ context.Context, path string) (probe.VideoData, error) {
+	vd := probe.VideoData{Width: 1920, Height: 1080, Duration: 30 * time.Second, ColorTransfer: "bt709"}
+	base := filepath.Base(path)
+	if strings.HasPrefix(base, "big") {
+		vd.ColorTransfer = "smpte2084"
+		vd.Width, vd.Height = 7680, 4320
+		if strings.Contains(base, "@2160p") {
+			vd.Width, vd.Height = 3840, 2160
+		} else if strings.Contains(base, "@1080p") {
+			vd.Width, vd.Height = 1920, 1080
+		}
+	}
+	return vd, nil
+}
+
+func TestBenchScales(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "samples", "big.mov"), "8k hdr")
+	writeFile(t, filepath.Join(dir, "samples", "hd.mov"), "1080p sdr")
+	c := benchConfig(t, dir, "  x: {args: [-c:v, libx265]}\n")
+	c.Scales = []uint64{1080, 2160}
+
+	fake := newFake(18.7)
+	b := &Bench{Cfg: c, Exec: fake, Prober: sizedProber{}}
+	if err := b.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	results, _ := LoadResults(filepath.Join(dir, "work", "results.csv"))
+	var names []string
+	for _, best := range Bests(c, results) {
+		names = append(names, best.Sample)
+	}
+	slices.Sort(names)
+	if want := []string{"big@1080p.mov", "big@2160p.mov", "hd.mov"}; !slices.Equal(names, want) {
+		t.Errorf("samples tested = %q, want %q", names, want)
+	}
+	if fake.downscales != 2 {
+		t.Errorf("made %d downscaled copies, want 2", fake.downscales)
+	}
+	toneMapped := 0
+	for _, g := range fake.graphs {
+		if strings.Contains(g, "tonemap=") {
+			toneMapped++
+		}
+	}
+	if toneMapped == 0 || toneMapped == len(fake.graphs) {
+		t.Errorf("%d of %d scorings tone-mapped; want the HDR sample's only", toneMapped, len(fake.graphs))
+	}
+
+	// Copies are made once and reused, and keep their results.
+	fake.encodes, fake.downscales = nil, 0
+	if err := b.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if fake.downscales != 0 || len(fake.encodes) != 0 {
+		t.Errorf("rerun made %d copies and %d encodes, want none", fake.downscales, len(fake.encodes))
+	}
+}
+
+func TestContainerArgs(t *testing.T) {
+	tests := []struct {
+		args []string
+		want []string
+	}{
+		{[]string{"-c:v", "libx265"}, []string{"-tag:v", "hvc1"}},
+		{[]string{"-c:v", "hevc_videotoolbox"}, []string{"-tag:v", "hvc1"}},
+		{[]string{"-c:v", "libx265", "-tag:v", "hev1"}, nil},
+		{[]string{"-c:v", "libsvtav1"}, nil},
+	}
+	for _, tt := range tests {
+		if got := containerArgs(&Flagset{Args: tt.args}); !slices.Equal(got, tt.want) {
+			t.Errorf("containerArgs(%q) = %q, want %q", tt.args, got, tt.want)
+		}
+	}
+}
+
+// blockImages returns two frames of gray block averages sized as the
+// scoring command asks, the distorted one with tint added to red.
+func blockImages(argv []string, tint uint16) (dist, ref []byte) {
+	graph := argv[slices.Index(argv, "-filter_complex")+1]
+	var bw, bh int
+	fmt.Sscanf(graph[strings.LastIndex(graph, "rgb48le,scale=")+len("rgb48le,scale="):], "%d:%d", &bw, &bh)
+	for range 2 * bw * bh {
+		ref = binary.LittleEndian.AppendUint16(ref, 30000)
+		ref = binary.LittleEndian.AppendUint16(ref, 30000)
+		ref = binary.LittleEndian.AppendUint16(ref, 30000)
+		dist = binary.LittleEndian.AppendUint16(dist, 30000+tint)
+		dist = binary.LittleEndian.AppendUint16(dist, 30000)
+		dist = binary.LittleEndian.AppendUint16(dist, 30000)
+	}
+	return dist, ref
+}
+
+func TestColorShift(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string, px [][3]uint16) string {
+		var b []byte
+		for _, p := range px {
+			for _, c := range p {
+				b = binary.LittleEndian.AppendUint16(b, c)
+			}
+		}
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	gray := [3]uint16{30000, 30000, 30000}
+	// 2x2 blocks, one frame: one block gets a strong magenta cast.
+	ref := write("ref", [][3]uint16{gray, gray, gray, gray})
+	dist := write("dist", [][3]uint16{gray, gray, gray, {33000, 29000, 33000}})
+	got, _, err := ColorShift(dist, ref, 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got < 5 {
+		t.Errorf("ColorShift = %.2f; want the cast block's shift (several a*b* units) at p99", got)
+	}
+	if same, _, _ := ColorShift(ref, ref, 2, 2); same != 0 {
+		t.Errorf("ColorShift(ref, ref) = %v, want 0", same)
+	}
+	// An extra frame on one side is ignored.
+	long := write("long", [][3]uint16{gray, gray, gray, {33000, 29000, 33000}, gray, gray, gray, gray})
+	if a, _, err := ColorShift(long, ref, 2, 2); err != nil || a != got {
+		t.Errorf("ColorShift with an extra frame = %v, %v; want %v", a, err, got)
+	}
+	ragged := write("ragged", [][3]uint16{gray})
+	if _, _, err := ColorShift(ragged, ref, 2, 2); err == nil {
+		t.Error("ColorShift with a partial frame: nil error")
+	}
+}
+
+func TestBenchColorShiftLimit(t *testing.T) {
+	for _, tc := range []struct {
+		tint    uint16
+		answers int
+	}{{0, 1}, {4000, 0}} {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "samples", "a.mov"), "sample a")
+		c := benchConfig(t, dir, "  x: {args: [-c:v, libx265]}\n")
+		c.MaxColorShift = 3.9
+		fake := newFake(18.7)
+		fake.tint = tc.tint
+		b := &Bench{Cfg: c, Exec: fake, Prober: fakeProber{}}
+		if err := b.Run(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		results, _ := LoadResults(filepath.Join(dir, "work", "results.csv"))
+		if got := len(Bests(c, results)); got != tc.answers {
+			t.Errorf("tint %d: %d answers, want %d", tc.tint, got, tc.answers)
+		}
+		if len(results.Rows) > 0 && results.Rows[0].Scorer != scorer {
+			t.Errorf("rows logged with scorer %q, want %q", results.Rows[0].Scorer, scorer)
+		}
+	}
+}
+
+func TestResultsUpgrade(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "results.csv")
+	oldCols := resultColumns[:len(resultColumns)-3]
+	oldRow := "a.mov,libx265,x,-c:v libx265,-crf,20,k1,f1,100,26.6,1,1,0,0,96,96,95,95,45,48,48,50,8.1,h,2026-10-24T00:00:00Z"
+	// An old header, an old row, then a row appended by the new code.
+	newRow := oldRow[:strings.Index(oldRow, ",k1,")] + ",k2," + oldRow[strings.Index(oldRow, ",k1,")+4:] + ",1.5,3.2,v3"
+	if err := os.WriteFile(path, []byte(strings.Join(oldCols, ",")+"\n"+oldRow+"\n"+newRow+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := LoadResults(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if old, _ := r.Lookup("k1"); old.Scorer != "v2" || !math.IsNaN(old.Metrics.ColorShiftP999) {
+		t.Errorf("old row = %+v", old)
+	}
+	if nw, _ := r.Lookup("k2"); nw.Scorer != "v3" || nw.Metrics.ColorShiftP999 != 3.2 {
+		t.Errorf("appended row = scorer %q shift %v", nw.Scorer, nw.Metrics.ColorShiftP999)
+	}
+	data, _ := os.ReadFile(path)
+	if first := strings.SplitN(string(data), "\n", 2)[0]; first != strings.Join(resultColumns, ",") {
+		t.Errorf("header not upgraded: %q", first)
+	}
+	// And it reads back the same.
+	again, err := LoadResults(path)
+	if err != nil || len(again.Rows) != 2 {
+		t.Fatalf("reload: %v, %d rows", err, len(again.Rows))
+	}
+	if nw, _ := again.Lookup("k2"); nw.Scorer != "v3" {
+		t.Errorf("after upgrade, appended row scorer %q", nw.Scorer)
+	}
+}
+
+func TestOldSpellings(t *testing.T) {
+	dir := t.TempDir()
+	// A log whose header has the first spelling of the color columns.
+	header := strings.Join(resultColumns, ",")
+	header = strings.ReplaceAll(header, "color_shift", "colour_shift")
+	row := "a.mov,libx265,x,-c:v libx265,-crf,20,k1,f1,100,26.6,1,1,0,0,96,96,95,95,45,48,48,50,8.1,h,2026-10-24T00:00:00Z,1.5,3.2,v3"
+	path := filepath.Join(dir, "results.csv")
+	if err := os.WriteFile(path, []byte(header+"\n"+row+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := LoadResults(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.Lookup("k1"); got.Metrics.ColorShiftP999 != 3.2 || got.Scorer != "v3" {
+		t.Errorf("row read as %+v", got)
+	}
+	data, _ := os.ReadFile(path)
+	if strings.Contains(string(data), "colour") {
+		t.Errorf("header not rewritten with the current spelling:\n%s", data)
+	}
+
+	// And the config key.
+	cfg := filepath.Join(dir, "bench.yaml")
+	writeFile(t, cfg, "samples: s\nmax_colour_shift: 3.9\nflagsets: {a: {args: [-c:v, libx265]}}")
+	c, err := LoadConfig(cfg)
+	if err != nil || c.MaxColorShift != 3.9 {
+		t.Errorf("max_colour_shift: %v, %v", c, err)
+	}
+}
+
+func TestOldScorerRowsIgnored(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "results.csv")
+	// A row as written before color_shift_p99 and scorer existed.
+	old := strings.Join(resultColumns[:len(resultColumns)-3], ",") + "\n" +
+		"a.mov,libx265,x,-c:v libx265,-crf,20,k1,f1,100,26.6,1,1,0,0,96,96,95,95,45,48,48,50,8.1,h,2026-10-24T00:00:00Z\n"
+	if err := os.WriteFile(path, []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := LoadResults(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row := r.Rows[0]; row.Scorer != "v2" || !math.IsNaN(row.Metrics.ColorShiftP99) || !math.IsNaN(row.Metrics.ColorShiftP999) {
+		t.Errorf("old row: scorer %q, color shift %v", row.Scorer, row.Metrics.ColorShiftP99)
+	}
+	c := &Config{TargetVMAF: 95, Flagsets: map[string]*Flagset{"x": {Args: []string{"-c:v", "libx265"}, Quality: Quality{Flag: "-crf"}}}}
+	if len(bestByPair(c, r)) != 0 {
+		t.Error("an old-scorer row counted as an answer")
 	}
 }

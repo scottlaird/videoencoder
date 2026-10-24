@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -16,21 +18,24 @@ import (
 
 // Row is one encode and its scores: a line of results.csv.
 type Row struct {
-	Sample        string
-	Encoder       string
-	Flagset       string
-	Args          string
-	QualityFlag   string
-	Quality       float64
-	Key           string // identifies this encode: sample, flagset, quality
-	FlagsetKey    string // identifies the flagset, independent of its name
-	Bytes         int64
-	Kbps          float64
-	WallS         float64
-	UserS         float64
-	SysS          float64
-	MaxRSSKB      int64
-	Metrics       Metrics
+	Sample      string
+	Encoder     string
+	Flagset     string
+	Args        string
+	QualityFlag string
+	Quality     float64
+	Key         string // identifies this encode: sample, flagset, quality
+	FlagsetKey  string // identifies the flagset, independent of its name
+	Bytes       int64
+	Kbps        float64
+	WallS       float64
+	UserS       float64
+	SysS        float64
+	MaxRSSKB    int64
+	Metrics     Metrics
+	// Scorer is the scoring method's version. Rows from other versions
+	// stay in the log but don't count.
+	Scorer        string
 	FFmpegVersion string
 	Host          string
 	Time          time.Time
@@ -40,8 +45,12 @@ var resultColumns = []string{
 	"sample", "encoder", "flagset", "args", "quality_flag", "quality",
 	"key", "flagset_key", "bytes", "kbps", "wall_s", "user_s", "sys_s", "max_rss_kb",
 	"vmaf", "vmaf_hmean", "vmaf_p1", "vmaf_neg", "psnr_y", "psnr_cb", "psnr_cr", "ciede2000",
-	"ffmpeg_version", "host", "time",
+	"ffmpeg_version", "host", "time", "color_shift_p99", "color_shift_p999", "scorer",
 }
+
+// scorer is the current scoring method: v2 added CIEDE2000 on sampled
+// frames; v3 the block color shift.
+const scorer = "v3"
 
 func ftoa(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }
 
@@ -54,6 +63,7 @@ func (r *Row) record() []string {
 		ftoa(m.VMAF), ftoa(m.VMAFHMean), ftoa(m.VMAFP1), ftoa(m.VMAFNeg),
 		ftoa(m.PSNRY), ftoa(m.PSNRCb), ftoa(m.PSNRCr), ftoa(m.CIEDE2000),
 		r.FFmpegVersion, r.Host, r.Time.UTC().Format(time.RFC3339),
+		ftoa(m.ColorShiftP99), ftoa(m.ColorShiftP999), r.Scorer,
 	}
 }
 
@@ -115,6 +125,20 @@ func parseRow(col map[string]int, rec []string) (Row, error) {
 		errs = append(errs, fmt.Errorf("time: %w", err))
 	}
 	r.Time = t
+	// Columns added later are absent from older rows.
+	for name, dst := range map[string]*float64{
+		"color_shift_p99":  &r.Metrics.ColorShiftP99,
+		"color_shift_p999": &r.Metrics.ColorShiftP999,
+	} {
+		*dst = math.NaN()
+		if i, ok := col[name]; ok && i < len(rec) {
+			*dst = float(name)
+		}
+	}
+	r.Scorer = "v2"
+	if i, ok := col["scorer"]; ok && i < len(rec) {
+		r.Scorer = get("scorer")
+	}
 	return r, errors.Join(errs...)
 }
 
@@ -127,6 +151,12 @@ type Results struct {
 }
 
 // LoadResults reads the log at path; a missing file is an empty log.
+//
+// A log written before columns were added is upgraded: its header is a
+// prefix of the current columns, older rows lack the new fields (they
+// read as NaN), and rows appended since carry them past the old header.
+// The file is then rewritten with the current header, so later appends
+// line up.
 func LoadResults(path string) (*Results, error) {
 	r := &Results{path: path, byKey: map[string]int{}}
 	f, err := os.Open(path)
@@ -139,6 +169,7 @@ func LoadResults(path string) (*Results, error) {
 	defer f.Close()
 
 	cr := csv.NewReader(f)
+	cr.FieldsPerRecord = -1
 	header, err := cr.Read()
 	if err == io.EOF {
 		return r, nil
@@ -146,10 +177,15 @@ func LoadResults(path string) (*Results, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
-	col := map[string]int{}
-	for i, name := range header {
-		col[name] = i
+	asWritten := slices.Clone(header)
+	for i, h := range header {
+		if n, ok := renamedColumns[h]; ok {
+			header[i] = n
+		}
 	}
+	col := columnIndex(header)
+	current := columnIndex(resultColumns)
+	upgradable := len(header) <= len(resultColumns) && slices.Equal(header, resultColumns[:len(header)])
 	for line := 2; ; line++ {
 		rec, err := cr.Read()
 		if err == io.EOF {
@@ -158,13 +194,59 @@ func LoadResults(path string) (*Results, error) {
 		if err != nil {
 			return nil, fmt.Errorf("reading %s: %w", path, err)
 		}
-		row, err := parseRow(col, rec)
+		cols := col
+		if len(rec) > len(header) && upgradable {
+			cols = current
+		}
+		row, err := parseRow(cols, rec)
 		if err != nil {
 			return nil, fmt.Errorf("%s line %d: %w", path, line, err)
 		}
 		r.add(row)
 	}
+	if !slices.Equal(asWritten, resultColumns) {
+		if !upgradable {
+			return nil, fmt.Errorf("%s: unrecognized columns %q", path, header)
+		}
+		if err := r.rewrite(); err != nil {
+			return nil, fmt.Errorf("upgrading %s: %w", path, err)
+		}
+	}
 	return r, nil
+}
+
+// renamedColumns maps old column names to current ones.
+var renamedColumns = map[string]string{
+	"colour_shift_p99":  "color_shift_p99",
+	"colour_shift_p999": "color_shift_p999",
+}
+
+func columnIndex(names []string) map[string]int {
+	m := map[string]int{}
+	for i, n := range names {
+		m[n] = i
+	}
+	return m
+}
+
+// rewrite writes the whole log with the current columns, atomically.
+func (r *Results) rewrite() error {
+	tmp := r.path + ".partial"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	w := csv.NewWriter(f)
+	w.Write(resultColumns)
+	for i := range r.Rows {
+		w.Write(r.Rows[i].record())
+	}
+	w.Flush()
+	if err := errors.Join(w.Error(), f.Close()); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, r.path)
 }
 
 func (r *Results) add(row Row) {
@@ -223,7 +305,7 @@ func flagsetKey(f *Flagset) string {
 // encodeKey identifies one encode. The scoring method is versioned so
 // that changing how scores are computed reruns everything.
 func encodeKey(sampleID, fkey string, quality float64) string {
-	return hashKey("encode/v1", "score/v2", sampleID, fkey, ftoa(quality))
+	return hashKey("encode/v1", "score/"+scorer, sampleID, fkey, ftoa(quality))
 }
 
 // joinArgs renders arguments for the log; it is for reading, not for

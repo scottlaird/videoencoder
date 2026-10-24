@@ -50,6 +50,12 @@ func (f *fakeFFmpeg) Exec(_ context.Context, argv []string) (bench.Measurement, 
 		log := fmt.Sprintf(`{"frames":[{"metrics":{"vmaf":%v}}],"pooled_metrics":{"vmaf":{"mean":%v,"harmonic_mean":%v},"vmaf_neg":{"mean":%v},"psnr_y":{"mean":45},"psnr_cb":{"mean":48},"psnr_cr":{"mean":48}}}`, vmaf, vmaf, vmaf, vmaf)
 		os.WriteFile(logs[0], []byte(log), 0o644)
 		os.WriteFile(logs[1], []byte(`{"pooled_metrics":{"ciede2000":{"mean":50}}}`), 0o644)
+		// Identical gray block images: no color shift.
+		var bw, bh int
+		fmt.Sscanf(graph[strings.LastIndex(graph, "rgb48le,scale=")+len("rgb48le,scale="):], "%d:%d", &bw, &bh)
+		blocks := bytes.Repeat([]byte{0x30, 0x75}, 3*bw*bh)
+		os.WriteFile(argv[len(argv)-6], blocks, 0o644)
+		os.WriteFile(argv[len(argv)-1], blocks, 0o644)
 		return bench.Measurement{}, nil
 	}
 	out := argv[len(argv)-1]
