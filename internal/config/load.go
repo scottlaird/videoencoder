@@ -228,4 +228,20 @@ func (r *Resolved) resolvePaths() {
 	for label, src := range r.Sources {
 		r.Sources[label] = abs(src)
 	}
+	for _, t := range r.Publish.Targets {
+		if t == nil {
+			continue
+		}
+		if t.Dir != "" {
+			t.PerVideo = strings.Contains(t.Dir, "{name}")
+			t.Dir = abs(t.Dir)
+		}
+		if t.S3 != nil {
+			t.PerVideo = strings.Contains(t.S3.Prefix, "{name}")
+			t.S3.Prefix = strings.ReplaceAll(t.S3.Prefix, "{name}", r.Name)
+			if t.S3.Prefix != "" && !strings.HasSuffix(t.S3.Prefix, "/") {
+				t.S3.Prefix += "/"
+			}
+		}
+	}
 }

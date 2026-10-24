@@ -34,6 +34,7 @@ type Config struct {
 	Streamdir  string                `yaml:"streamdir"`
 	Thumbnails Thumbnails            `yaml:"thumbnails"`
 	Poster     Poster                `yaml:"poster"`
+	Publish    Publish               `yaml:"publish"`
 	Encoders   map[string]*Encoder   `yaml:"encoders"`
 	Renditions map[string]*Rendition `yaml:"renditions"`
 }
@@ -52,6 +53,31 @@ type Thumbnails struct {
 	Height   uint64  `yaml:"height"`
 	Columns  uint64  `yaml:"columns"`
 	Rows     uint64  `yaml:"rows"`
+}
+
+// Publish says where finished streams go.
+type Publish struct {
+	// To names the targets published to after each render.
+	To      []string                  `yaml:"to"`
+	Targets map[string]*PublishTarget `yaml:"targets"`
+}
+
+// PublishTarget is a local directory or an S3 bucket; exactly one is set.
+type PublishTarget struct {
+	Dir string    `yaml:"dir"`
+	S3  *S3Target `yaml:"s3"`
+	// PerVideo is set when the dir or prefix contains {name}, so the
+	// location holds only this video and pruning it is safe.
+	PerVideo bool `yaml:"-"`
+}
+
+// S3Target is an S3-compatible bucket.
+type S3Target struct {
+	Endpoint string `yaml:"endpoint"`
+	Bucket   string `yaml:"bucket"`
+	Prefix   string `yaml:"prefix"`
+	Region   string `yaml:"region"`
+	Profile  string `yaml:"profile"`
 }
 
 // Poster says how to make the video's still images.
@@ -149,6 +175,19 @@ func (c *Config) Validate() error {
 	for _, f := range c.Poster.Formats {
 		if !slices.Contains(PosterFormats, f) {
 			return fmt.Errorf("poster: unknown format %q (want one of %v)", f, PosterFormats)
+		}
+	}
+	for name, t := range c.Publish.Targets {
+		if t == nil || (t.Dir == "") == (t.S3 == nil) {
+			return fmt.Errorf("publish target %q: set exactly one of dir and s3", name)
+		}
+		if t.S3 != nil && t.S3.Bucket == "" {
+			return fmt.Errorf("publish target %q: s3.bucket is required", name)
+		}
+	}
+	for _, name := range c.Publish.To {
+		if _, ok := c.Publish.Targets[name]; !ok {
+			return fmt.Errorf("publish.to: no target named %q", name)
 		}
 	}
 	if len(c.Renditions) == 0 {

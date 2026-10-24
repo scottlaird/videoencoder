@@ -4,6 +4,7 @@
 //	videoencoder [flags] [dir | name.video.yaml ...]
 //	videoencoder [flags] video.mov [other-version.mov ...]
 //	videoencoder plan [flags] [same arguments]
+//	videoencoder publish [flags] [same arguments]
 //
 // With directories (default "."), it renders every video defined under
 // them by a <name>.video.yaml sidecar or a videos: entry in a
@@ -11,6 +12,8 @@
 // (e.g. HDR and SDR), all offered in one stream; audio comes from the
 // first, and posters from the first of each tone. "plan" prints each video's merged config, with
 // where each value came from, and which renditions would be rebuilt.
+// After rendering, the stream is published to the config's publish.to
+// targets; "publish" does only that, for streams already rendered.
 package main
 
 import (
@@ -40,7 +43,9 @@ import (
 )
 
 type options struct {
-	plan       bool
+	mode       string // "render", "plan" or "publish"
+	publish    bool   // publish after rendering
+	prune      bool
 	rebuild    string // glob over slots, such as "*/av1-*"
 	globalPath string
 	overrides  map[string]any
@@ -48,13 +53,16 @@ type options struct {
 }
 
 func parseArgs(args []string, stderr io.Writer) (options, error) {
-	o := options{overrides: map[string]any{}}
-	if len(args) > 0 && args[0] == "plan" {
-		o.plan, args = true, args[1:]
+	o := options{mode: "render", overrides: map[string]any{}}
+	if len(args) > 0 && (args[0] == "plan" || args[0] == "publish") {
+		o.mode, args = args[0], args[1:]
 	}
 	fs := flag.NewFlagSet("videoencoder", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&o.globalPath, "config", config.DefaultGlobalPath(), "global config file")
+	fs.BoolVar(&o.publish, "publish", true, "publish to the publish.to targets after rendering")
+	fs.BoolVar(&o.prune, "prune", false, "when publishing, delete objects that are no longer part of the stream")
+	to := fs.String("to", "", "override publish.to: comma-separated target names")
 	fs.StringVar(&o.rebuild, "rebuild", "", `rebuild matching outputs even if up to date: "*" for all, "av1-*", "hdr/h264-1080", "audio", "poster/*"`)
 	outdir := fs.String("outdir", "", "override outdir: directory for intermediate renditions")
 	streamdir := fs.String("streamdir", "", "override streamdir: directory for the finished stream")
@@ -70,6 +78,14 @@ func parseArgs(args []string, stderr io.Writer) (options, error) {
 			o.overrides["streamdir"] = absOrSame(*streamdir)
 		case "thumbnails":
 			o.overrides["thumbnails"] = map[string]any{"enabled": *thumbnails}
+		case "to":
+			names := []string{}
+			for _, n := range strings.Split(*to, ",") {
+				if n = strings.TrimSpace(n); n != "" {
+					names = append(names, n)
+				}
+			}
+			o.overrides["publish"] = map[string]any{"to": names}
 		}
 	})
 	o.paths = fs.Args()
@@ -150,10 +166,16 @@ func run(ctx context.Context, o options, d deps) error {
 		if err != nil {
 			return err
 		}
-		if o.plan {
+		switch o.mode {
+		case "plan":
 			err = printPlan(ctx, r, d)
-		} else {
+		case "publish":
+			err = publishVideo(ctx, r, o.prune)
+		default:
 			err = render(ctx, r, d, o.rebuild)
+			if err == nil && o.publish {
+				err = publishVideo(ctx, r, o.prune)
+			}
 		}
 		if err != nil {
 			return fmt.Errorf("%s: %w", it.video.Name, err)

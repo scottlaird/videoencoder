@@ -284,26 +284,46 @@ everything else.
 
 ### Publishing
 
-Publish targets are a local directory or S3, using
-`github.com/minio/minio-go/v7` (approved 2026-10-24). Publishing syncs
-the staging directory to the target:
+Publish targets are a local directory or an S3-compatible bucket
+(`github.com/minio/minio-go/v7`, approved 2026-10-24, pure Go):
 
-- List the remote prefix, which returns sizes and ETags. Upload a
-  file only if it's missing or its size/MD5 differs. Files up to
-  5 GiB use a single PUT, where the ETag is the MD5 on SeaweedFS,
-  MinIO and AWS alike. Larger files use multipart upload, and we
-  store their SHA-256 in object metadata and compare against that.
-- **Manifests go last**, after every segment they reference has been
-  uploaded. A player never sees a manifest that points at a missing
-  object.
-- Objects that are no longer referenced are left alone by default.
-  `--prune` deletes them, but only after the new manifests are up.
-  Old rendition names are cheap to keep, and keeping them means
-  players already streaming the old manifest still work.
+```yaml
+publish:
+  to: [seaweed]                     # used after every render; --to overrides
+  targets:
+    www:     {dir: /srv/www/videos/{name}}
+    seaweed: {s3: {bucket: video, prefix: "{name}/"}}   # endpoint: "" means $S3_ENDPOINT_URL
+```
 
-Changing the quality of AV1 2160p re-encodes that one rendition and
-reruns packager. With the timestamps zeroed, the upload is the new
-`av1-2160.<key>.mp4` plus the manifests and nothing else.
+Credentials never go in config. They come from `AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY`, or from `~/.aws/credentials` (`s3.profile`).
+
+After rendering, or on `videoencoder publish`, the files recorded as
+the video's stream are synced to each target:
+
+- A file is uploaded only if it's missing or different. Files up to
+  16 MiB (manifests, playlists, posters, tiles) are compared by MD5,
+  which is the ETag for single-part uploads on SeaweedFS, MinIO and AWS
+  alike. Larger files are compared by name and size. Their names carry
+  the build key and packaging is deterministic, so same name + size
+  means same content, and we never hash gigabytes on every publish.
+- **Manifests go last** (`dash.mpd`, `hls.m3u8`, `poster.json`), after
+  everything they reference, so a player never sees a manifest that
+  points at a missing object.
+- Key-named objects get `Cache-Control: public, max-age=31536000,
+  immutable`; manifests and other fixed names get `no-cache`. Each
+  object gets its proper `Content-Type`.
+- Nothing is deleted by default. `--prune` deletes objects under the
+  target's prefix that aren't part of the current stream, but only
+  after the new manifests are up, and only if the target's `dir` or
+  `prefix` contains `{name}`. A prefix shared by several videos can't
+  be pruned by any one of them.
+
+Tested against SeaweedFS (2026-10-24) with a 6K slice. Changing only the
+4K AV1 quality re-encoded that one rendition and uploaded 4 of 46
+files: the new media file and its playlist, plus the two manifests.
+`--prune` then removed exactly the old pair. Re-running with no changes
+uploads only `dash.mpd`, whose AdaptationSet ids packager shuffles.
 
 ### Temporal (later)
 
@@ -483,9 +503,11 @@ workers.
    `plan`.
 4. **Build keys and state.json**, with keyed output names.
 5. **Posters**, then **seek thumbnails** (the manifest
-   post-processor).
-6. **Publish**: local directory first, then S3.
+   post-processor), then deterministic packaging.
+6. **Publish**: local directory and S3.
 7. **Temporal**, with explicit approval for the SDK.
+
+Steps 1–6 are done (PRs #5–#11).
 
 Each step is its own PR. Steps 3–6 stack on step 1, and step 2 is
 based on step 1.

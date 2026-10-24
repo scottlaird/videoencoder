@@ -42,6 +42,24 @@ AVIFs when there's an HDR source), listed in `poster.json`, and seek
 thumbnails, tiled JPEGs added to both `dash.mpd` and `hls.m3u8` (turn
 them off with `thumbnails: {enabled: false}` or `--thumbnails=false`).
 
+### Publishing
+
+With `publish.to` set, each render ends by copying the stream to a
+local directory or an S3-compatible bucket (SeaweedFS, MinIO, AWS).
+Only files that are new or changed are uploaded, and manifests go
+last.  `videoencoder publish` publishes without rendering, `--to`
+picks targets, and `--prune` deletes objects that are no longer part
+of the stream.  S3 credentials come from the usual `AWS_*` variables
+or `~/.aws/credentials`, and the endpoint from `s3.endpoint` or
+`$S3_ENDPOINT_URL`.
+
+```yaml
+publish:
+  to: [seaweed]
+  targets:
+    seaweed: {s3: {bucket: video, prefix: "{name}/"}}
+```
+
 ### Configuration
 
 Settings are YAML, merged from several layers, lowest priority first:
@@ -51,7 +69,7 @@ Settings are YAML, merged from several layers, lowest priority first:
 3. every `videoencoder.yaml` from `/` down to the video's directory,
 4. the video's entry under `videos:` in its directory's `videoencoder.yaml`,
 5. the video's sidecar, `<name>.video.yaml`,
-6. `--outdir`, `--streamdir` and `--thumbnails` on the command line.
+6. `--outdir`, `--streamdir`, `--thumbnails` and `--to` on the command line.
 
 Maps merge key by key, other values replace, and `null` deletes an
 inherited key.  Renditions and encoders are maps keyed by name, so a

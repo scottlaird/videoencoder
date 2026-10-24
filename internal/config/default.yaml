@@ -65,3 +65,20 @@ renditions:
   av1-2160:  {encoder: av1,  height: 2160, quality: 32, bitrate: 4M}
   av1-3240:  {encoder: av1,  height: 3240, quality: 32, bitrate: 5M}
   av1-4320:  {encoder: av1,  height: 4320, quality: 32, bitrate: 8M}
+
+# Where finished streams are copied after rendering: a local directory
+# or an S3-compatible bucket. "to" names the targets used by default.
+# Credentials come from AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY or
+# ~/.aws/credentials (s3.profile), never from config; an empty
+# s3.endpoint means $S3_ENDPOINT_URL. --prune deletes objects that are
+# no longer part of the stream, and is only allowed when the target's
+# dir or prefix contains {name}, so it can't touch other videos.
+#
+#   publish:
+#     to: [seaweed]
+#     targets:
+#       www:     {dir: /srv/www/videos/{name}}
+#       seaweed: {s3: {bucket: video, prefix: "{name}/"}}
+publish:
+  to: []
+  targets: {}

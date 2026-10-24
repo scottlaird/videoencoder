@@ -199,6 +199,16 @@ func TestLoadErrors(t *testing.T) {
 			wantErr: "poster.offset",
 		},
 		{
+			name:    "publish to an unknown target",
+			files:   map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\npublish: {to: [nas]}"},
+			wantErr: `no target named "nas"`,
+		},
+		{
+			name:    "target with both dir and s3",
+			files:   map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\npublish: {targets: {x: {dir: /d, s3: {bucket: b}}}}"},
+			wantErr: "exactly one of dir and s3",
+		},
+		{
 			name:    "bad bitrate",
 			files:   map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\nrenditions: {av1-720: {bitrate: fast}}"},
 			wantErr: "bad bitrate",
@@ -324,5 +334,32 @@ func TestParseOffset(t *testing.T) {
 		if (err != nil) != tt.wantErr || got != tt.want {
 			t.Errorf("ParseOffset(%q) = %v, %v; want %v, err %v", tt.in, got, err, tt.want, tt.wantErr)
 		}
+	}
+}
+
+func TestPublishTargets(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "v"+SidecarSuffix), `
+sources: {a: a.mov}
+publish:
+  to: [www, s3, shared]
+  targets:
+    www: {dir: "www/{name}"}
+    s3: {s3: {bucket: video, prefix: "streams/{name}"}}
+    shared: {s3: {bucket: video, prefix: all}}
+`)
+	r, err := (&Loader{}).Load(Video{Name: "v", Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tg := r.Publish.Targets
+	if tg["www"].Dir != filepath.Join(dir, "www", "v") || !tg["www"].PerVideo {
+		t.Errorf("www = %+v", tg["www"])
+	}
+	if tg["s3"].S3.Prefix != "streams/v/" || !tg["s3"].PerVideo {
+		t.Errorf("s3 = %+v %+v", tg["s3"], tg["s3"].S3)
+	}
+	if tg["shared"].S3.Prefix != "all/" || tg["shared"].PerVideo {
+		t.Errorf("shared = %+v %+v; a prefix without {name} must not be PerVideo", tg["shared"], tg["shared"].S3)
 	}
 }

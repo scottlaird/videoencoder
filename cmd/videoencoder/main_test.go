@@ -44,21 +44,23 @@ func TestParseArgs(t *testing.T) {
 	abs := func(p string) string { a, _ := filepath.Abs(p); return a }
 	tests := []struct {
 		args      []string
-		plan      bool
+		mode      string
 		paths     []string
 		overrides map[string]any
 		wantErr   bool
 	}{
-		{args: nil, paths: []string{"."}, overrides: map[string]any{}},
-		{args: []string{"plan"}, plan: true, paths: []string{"."}, overrides: map[string]any{}},
+		{args: nil, mode: "render", paths: []string{"."}, overrides: map[string]any{}},
+		{args: []string{"plan"}, mode: "plan", paths: []string{"."}, overrides: map[string]any{}},
+		{args: []string{"publish", "--to", "a, b"}, mode: "publish", paths: []string{"."}, overrides: map[string]any{"publish": map[string]any{"to": []string{"a", "b"}}}},
 		{
 			args:      []string{"--outdir", "t", "--thumbnails", "hdr.mov", "sdr.mov"},
+			mode:      "render",
 			paths:     []string{"hdr.mov", "sdr.mov"},
 			overrides: map[string]any{"outdir": abs("t"), "thumbnails": map[string]any{"enabled": true}},
 		},
 		{
 			args:      []string{"plan", "--streamdir", "/s", "proj"},
-			plan:      true,
+			mode:      "plan",
 			paths:     []string{"proj"},
 			overrides: map[string]any{"streamdir": "/s"},
 		},
@@ -73,7 +75,7 @@ func TestParseArgs(t *testing.T) {
 		if tt.wantErr {
 			continue
 		}
-		if got.plan != tt.plan || !slices.Equal(got.paths, tt.paths) || len(got.overrides) != len(tt.overrides) {
+		if got.mode != tt.mode || !slices.Equal(got.paths, tt.paths) || len(got.overrides) != len(tt.overrides) {
 			t.Errorf("parseArgs(%q) = %+v", tt.args, got)
 			continue
 		}
@@ -252,7 +254,7 @@ videos:
 	writeFile("clip.video.yaml", "renditions: {av1-1080: {quality: 40}}\n")
 
 	var out bytes.Buffer
-	o.plan = true
+	o.mode = "plan"
 	d.stdout = &out
 	if err := run(context.Background(), o, d); err != nil {
 		t.Fatalf("plan: %v", err)
@@ -271,7 +273,7 @@ videos:
 		}
 	}
 
-	o.plan = false
+	o.mode = "render"
 	runner.calls = map[string]int{}
 	if err := run(context.Background(), o, d); err != nil {
 		t.Fatalf("second run: %v", err)
@@ -407,6 +409,71 @@ renditions: {h264-480: null, h264-720: null, h265-480: null, h265-720: null, h26
 	}
 	if vd.Tone() != probe.HDR {
 		t.Errorf("HDR poster has transfer %q, want PQ", vd.ColorTransfer)
+	}
+}
+
+// TestPublishDir renders into a directory target, then republishes
+// after a change and checks that only the change is copied and --prune
+// removes what it replaced.
+func TestPublishDir(t *testing.T) {
+	requireTools(t, "ffmpeg", "ffprobe", "packager")
+	dir := t.TempDir()
+	makeClip(t, filepath.Join(dir, "clip.mov"))
+	www := filepath.Join(dir, "www")
+	writeSidecar := func(quality int) {
+		t.Helper()
+		content := fmt.Sprintf(`
+sources: {main: clip.mov}
+renditions: {h264-480: null, h264-720: null, h265-480: null, h265-720: null, h265-1080: null,
+  h265-1440: null, h265-2160: null, av1-480: null, av1-720: null, av1-1440: null,
+  av1-2160: null, av1-3240: null, av1-4320: null, av1-1080: {quality: %d}}
+publish:
+  to: [www]
+  targets: {www: {dir: "www/{name}"}, shared: {dir: www}}
+`, quality)
+		if err := os.WriteFile(filepath.Join(dir, "clip.video.yaml"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeSidecar(35)
+	o, err := parseArgs([]string{"--config", "", dir}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, _ := testDeps(io.Discard)
+	if err := run(context.Background(), o, d); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	pub := filepath.Join(www, "clip")
+	for _, pattern := range []string{"dash.mpd", "hls.m3u8", "poster.json", "av1-1080.main.*.mp4", "thumbs.*/tile-1.jpg"} {
+		if m, _ := filepath.Glob(filepath.Join(pub, pattern)); len(m) != 1 {
+			t.Errorf("published %s: %q", pattern, m)
+		}
+	}
+	old, _ := filepath.Glob(filepath.Join(pub, "av1-1080.main.*.mp4"))
+
+	writeSidecar(36)
+	if err := run(context.Background(), o, d); err != nil {
+		t.Fatalf("second render: %v", err)
+	}
+	if _, err := os.Stat(old[0]); err != nil {
+		t.Error("without --prune, the replaced rendition should stay published")
+	}
+	o.mode, o.prune = "publish", true
+	if err := run(context.Background(), o, d); err != nil {
+		t.Fatalf("publish --prune: %v", err)
+	}
+	if _, err := os.Stat(old[0]); err == nil {
+		t.Error("--prune left the replaced rendition")
+	}
+	if m, _ := filepath.Glob(filepath.Join(pub, "av1-1080.main.*.mp4")); len(m) != 1 {
+		t.Errorf("after prune: %q", m)
+	}
+
+	// Pruning a target without {name} is refused.
+	o.overrides["publish"] = map[string]any{"to": []string{"shared"}}
+	if err := run(context.Background(), o, d); err == nil || !strings.Contains(err.Error(), "{name}") {
+		t.Errorf("prune to a shared target: %v, want a refusal", err)
 	}
 }
 
