@@ -591,6 +591,48 @@ renditions: {h264-480: null, h264-720: null, h265-480: null, h265-720: null, h26
 	}
 }
 
+// TestPortablePixelFormats renders a 10-bit 4:2:2 source, like ProRes
+// from an editor, and checks that every rendition is 4:2:0 in a format
+// browsers decode.
+func TestPortablePixelFormats(t *testing.T) {
+	requireTools(t, "ffmpeg", "ffprobe", "packager")
+	dir := t.TempDir()
+	src := filepath.Join(dir, "edit.mov")
+	gen := exec.Command("ffmpeg", "-loglevel", "error", "-y",
+		"-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30:duration=2",
+		"-f", "lavfi", "-i", "sine=duration=2",
+		"-vf", "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709",
+		"-c:v", "prores_ks", "-profile:v", "3", "-pix_fmt", "yuv422p10le", "-c:a", "aac", "-shortest", src)
+	if out, err := gen.CombinedOutput(); err != nil {
+		t.Fatalf("generating clip: %v\n%s", err, out)
+	}
+	o, err := parseArgs([]string{"--config", "", "--thumbnails=false", src}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, _ := testDeps(io.Discard)
+	if err := run(context.Background(), o, d); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	want := map[string]string{"h264": "yuv420p", "h265": "yuv420p10le", "av1": "yuv420p10le"}
+	for codec, pixFmt := range want {
+		files, _ := filepath.Glob(filepath.Join(dir, "stream", "edit", codec+"-*.mp4"))
+		if len(files) == 0 {
+			t.Errorf("no %s rendition", codec)
+		}
+		for _, f := range files {
+			out, err := exec.Command("ffprobe", "-v", "error", "-select_streams", "v",
+				"-show_entries", "stream=pix_fmt", "-of", "csv=p=0", f).Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(string(out)), ",")); got != pixFmt {
+				t.Errorf("%s: pixel format %s, want %s", filepath.Base(f), got, pixFmt)
+			}
+		}
+	}
+}
+
 func TestRunMissingSource(t *testing.T) {
 	requireTools(t, "ffprobe")
 	dir := t.TempDir()

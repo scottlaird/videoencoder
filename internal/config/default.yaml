@@ -42,21 +42,26 @@ poster:
   hdr: false
 
 encoders:
+  # Pixel formats are explicit: encoders otherwise keep the source's,
+  # and 4:2:2 or 10-bit H.264 (and 4:2:2 HEVC) play almost nowhere.
   h264:
     codec: libx264
     quality_flag: -crf
-    args: [-preset, faster]
+    # 8-bit 4:2:0 High profile: what browsers and hardware decode.
+    args: [-preset, faster, -pix_fmt, yuv420p, -profile:v, high]
     cap_bitrate: true
   h265:
     codec: libx265
     quality_flag: -crf
-    # main422-10 and hvc1 are needed for macOS playback.
-    args: [-preset, faster, -profile:v, main422-10, -tag:v, hvc1]
+    # Main 10, 4:2:0. hvc1, not ffmpeg's default hev1, for Apple players.
+    args: [-preset, faster, -pix_fmt, yuv420p10le, -profile:v, main10, -tag:v, hvc1]
     cap_bitrate: true
   av1:
     codec: libsvtav1
     quality_flag: -crf
-    args: [-preset, "5"]
+    # 10-bit compresses better than 8-bit even from 8-bit sources, and
+    # every AV1 decoder supports it.
+    args: [-preset, "5", -pix_fmt, yuv420p10le]
 
 # How "videoencoder tune" picks rendition qualities: it encodes
 # duration seconds of the first source from start, searching each
