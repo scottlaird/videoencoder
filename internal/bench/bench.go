@@ -314,16 +314,8 @@ func (b *Bench) scoreAll(ctx context.Context, batch []*pending, record func(*pen
 }
 
 func (b *Bench) score(ctx context.Context, p *pending) (Metrics, error) {
-	logPath := filepath.Join(b.scratchDir(), p.key+".vmaf.json")
-	colourLogPath := filepath.Join(b.scratchDir(), p.key+".ciede.json")
-	defer os.Remove(logPath)
-	defer os.Remove(colourLogPath)
 	vd := p.t.sample.vd
-	argv := scoreArgv(p.out, p.t.sample.path, vd.Width, vd.Height, b.Cfg.VMAFThreads, logPath, colourLogPath)
-	if _, err := b.Exec.Exec(ctx, argv); err != nil {
-		return Metrics{}, fmt.Errorf("scoring: %w", err)
-	}
-	return readLogs(logPath, colourLogPath)
+	return Score(ctx, b.Exec, p.out, p.t.sample.path, vd.Width, vd.Height, b.Cfg.VMAFThreads, b.scratchDir(), p.key, "")
 }
 
 func (b *Bench) record(results *Results, p *pending) error {

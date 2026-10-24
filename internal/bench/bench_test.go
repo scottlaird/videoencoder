@@ -140,7 +140,7 @@ func TestParseColourLog(t *testing.T) {
 }
 
 func TestScoreArgvEscaping(t *testing.T) {
-	argv := scoreArgv("d.mp4", "r.mov", 3840, 2160, 8, "/tmp/a:b/log.json", "/tmp/c.json")
+	argv := scoreArgv("d.mp4", "r.mov", 3840, 2160, 8, "/tmp/a:b/log.json", "/tmp/c.json", "")
 	graph := argv[slices.Index(argv, "-filter_complex")+1]
 	for _, want := range []string{
 		`log_path=/tmp/a\:b/log.json`, "log_path=/tmp/c.json", "version=vmaf_4k_v0.6.1\\:name=vmaf|",
@@ -149,6 +149,14 @@ func TestScoreArgvEscaping(t *testing.T) {
 		if !strings.Contains(graph, want) {
 			t.Errorf("filtergraph %q lacks %q", graph, want)
 		}
+	}
+}
+
+func TestScoreArgvPrefilter(t *testing.T) {
+	argv := scoreArgv("d.mp4", "r.mov", 1920, 1080, 4, "/l.json", "/c.json", "tonemap=hable")
+	graph := argv[slices.Index(argv, "-filter_complex")+1]
+	if strings.Count(graph, "tonemap=hable,") != 2 {
+		t.Errorf("prefilter isn't applied to both inputs: %q", graph)
 	}
 }
 

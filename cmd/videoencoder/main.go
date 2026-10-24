@@ -5,6 +5,7 @@
 //	videoencoder [flags] video.mov [other-version.mov ...]
 //	videoencoder plan [flags] [same arguments]
 //	videoencoder publish [flags] [same arguments]
+//	videoencoder tune [flags] [same arguments]
 //
 // With directories (default "."), it renders every video defined under
 // them by a <name>.video.yaml sidecar or a videos: entry in a
@@ -14,6 +15,9 @@
 // where each value came from, and which renditions would be rebuilt.
 // After rendering, the stream is published to the config's publish.to
 // targets; "publish" does only that, for streams already rendered.
+// "tune" encodes a short sample of each video to find the quality
+// setting each rendition needs to reach a target VMAF, and writes the
+// results into the video's sidecar.
 package main
 
 import (
@@ -34,6 +38,7 @@ import (
 
 	"go.yaml.in/yaml/v4"
 
+	"github.com/scottlaird/videoencoder/internal/bench"
 	"github.com/scottlaird/videoencoder/internal/config"
 	"github.com/scottlaird/videoencoder/internal/ffmpeg"
 	"github.com/scottlaird/videoencoder/internal/pack"
@@ -43,7 +48,7 @@ import (
 )
 
 type options struct {
-	mode       string // "render", "plan" or "publish"
+	mode       string // "render", "plan", "publish" or "tune"
 	publish    bool   // publish after rendering
 	prune      bool
 	rebuild    string // glob over slots, such as "*/av1-*"
@@ -54,7 +59,7 @@ type options struct {
 
 func parseArgs(args []string, stderr io.Writer) (options, error) {
 	o := options{mode: "render", overrides: map[string]any{}}
-	if len(args) > 0 && (args[0] == "plan" || args[0] == "publish") {
+	if len(args) > 0 && slices.Contains([]string{"plan", "publish", "tune"}, args[0]) {
 		o.mode, args = args[0], args[1:]
 	}
 	fs := flag.NewFlagSet("videoencoder", flag.ContinueOnError)
@@ -107,6 +112,7 @@ func absOrSame(p string) string {
 
 type deps struct {
 	runner ffmpeg.Runner
+	exec   bench.Executor // for measured commands: tune's encodes and scorings
 	prober probe.Prober
 	stdout io.Writer
 }
@@ -115,6 +121,7 @@ type deps struct {
 type item struct {
 	loader config.Loader
 	video  config.Video
+	adHoc  bool // given as media files, not defined by config
 }
 
 // items resolves the command-line paths into videos. Directories and
@@ -140,7 +147,7 @@ func items(paths []string, base config.Loader) ([]item, error) {
 			slog.Warn("No videos defined", "path", p)
 		}
 		for _, v := range found {
-			out = append(out, item{base, v})
+			out = append(out, item{loader: base, video: v})
 		}
 	}
 	if len(files) > 0 {
@@ -151,7 +158,7 @@ func items(paths []string, base config.Loader) ([]item, error) {
 		l := base
 		l.Overrides = maps.Clone(base.Overrides)
 		maps.Copy(l.Overrides, sources)
-		out = append(out, item{l, v})
+		out = append(out, item{loader: l, video: v, adHoc: true})
 	}
 	return out, nil
 }
@@ -171,6 +178,8 @@ func run(ctx context.Context, o options, d deps) error {
 			err = printPlan(ctx, r, d)
 		case "publish":
 			err = publishVideo(ctx, r, o.prune)
+		case "tune":
+			err = tuneVideo(ctx, r, it.adHoc, d)
 		default:
 			err = render(ctx, r, d, o.rebuild)
 			if err == nil && o.publish {
@@ -444,6 +453,7 @@ func main() {
 
 	d := deps{
 		runner: ffmpeg.ExecRunner{Stdout: os.Stdout, Stderr: os.Stderr},
+		exec:   bench.ExecExecutor{Stderr: os.Stderr},
 		prober: probe.FFProbe{},
 		stdout: os.Stdout,
 	}

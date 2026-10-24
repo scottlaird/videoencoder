@@ -234,7 +234,7 @@ func (g *GainMapPoster) SourceID() string { return g.SDR.ID + "+" + g.HDR.ID }
 func (g *GainMapPoster) SDRFilter() string {
 	f := fmt.Sprintf("scale=%d:%d:flags=lanczos,format=rgb24", g.Width, g.Height)
 	if g.ToneMap {
-		f = tonemapSDR + "," + f
+		f = ToneMapSDR + "," + f
 	}
 	return f
 }
@@ -290,8 +290,8 @@ func posterWidths(p config.Poster, vd probe.VideoData) []uint64 {
 	return slices.Compact(widths)
 }
 
-// tonemapSDR converts HDR (PQ or HLG) to BT.709 SDR.
-const tonemapSDR = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv"
+// ToneMapSDR converts HDR (PQ or HLG) to BT.709 SDR.
+const ToneMapSDR = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv"
 
 // Posters returns the jobs for p's poster images in tone, taken from
 // src (whose video is vd). An SDR poster from an HDR source is tone
@@ -328,7 +328,7 @@ func Posters(p config.Poster, src Source, vd probe.VideoData, tone probe.Tone, o
 func posterArgs(tone probe.Tone, fromHDR bool, format string, w, h uint64) []string {
 	var filters []string
 	if tone == probe.SDR && fromHDR {
-		filters = append(filters, tonemapSDR)
+		filters = append(filters, ToneMapSDR)
 	}
 	filters = append(filters, fmt.Sprintf("scale=%d:%d:flags=lanczos", w, h))
 	pixFmt := map[bool]string{false: "yuv420p", true: "yuv420p10le"}[tone == probe.HDR]

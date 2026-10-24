@@ -1,10 +1,12 @@
 package bench
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 )
@@ -36,6 +38,13 @@ func vmafModel(height uint64) string {
 	return "vmaf_v0.6.1"
 }
 
+// frameIndexPTS renumbers frames 0, 1, 2… so libvmaf pairs them by
+// position rather than by timestamp. Containers round timestamps
+// differently (Matroska to the millisecond, so frame 2 of 30 fps video
+// is at 67 ms there and 66.67 ms in MP4), and pairing by timestamp then
+// compares every third frame against the wrong reference frame.
+const frameIndexPTS = "settb=AVTB,setpts=N"
+
 // colourFrameStep and the half-resolution scale make CIEDE2000, which
 // costs several times as much as VMAF per pixel, affordable. Colour
 // casts are broad and persistent, so every sixth frame at chroma
@@ -48,18 +57,25 @@ const colourFrameStep = 6
 // frames. The distorted video is scaled to the reference size first,
 // and both are converted to one pixel format, since libvmaf needs
 // matching inputs.
-func scoreArgv(distorted, reference string, width, height uint64, threads int, logPath, colourLogPath string) []string {
+//
+// prefilter, if not "", is applied to both inputs first; for HDR, a
+// tone map to SDR, since VMAF and CIEDE2000 are only meaningful there.
+func scoreArgv(distorted, reference string, width, height uint64, threads int, logPath, colourLogPath, prefilter string) []string {
 	model := vmafModel(height)
+	pre := ""
+	if prefilter != "" {
+		pre = prefilter + ","
+	}
 	sample := fmt.Sprintf("select='not(mod(n,%d))',scale=%d:%d:flags=area", colourFrameStep, (width/2)&^1, (height/2)&^1)
 	graph := fmt.Sprintf(
-		"[0:v]scale=%d:%d:flags=bicubic,format=yuv444p10le,setpts=PTS-STARTPTS,split[d][dc];"+
-			"[1:v]format=yuv444p10le,setpts=PTS-STARTPTS,split[r][rc];"+
+		"[0:v]%sscale=%d:%d:flags=bicubic,format=yuv444p10le,"+frameIndexPTS+",split[d][dc];"+
+			"[1:v]%sformat=yuv444p10le,"+frameIndexPTS+",split[r][rc];"+
 			"[d][r]libvmaf=log_fmt=json:log_path=%s:n_threads=%d"+
 			":model='version=%s\\:name=vmaf|version=%sneg\\:name=vmaf_neg'"+
 			":feature='name=psnr'[quality];"+
 			"[dc]%s[ds];[rc]%s[rs];"+
 			"[ds][rs]libvmaf=log_fmt=json:log_path=%s:n_threads=%d:feature='name=ciede'[colour]",
-		width, height, escapeFilterValue(logPath), threads, model, model,
+		pre, width, height, pre, escapeFilterValue(logPath), threads, model, model,
 		sample, sample, escapeFilterValue(colourLogPath), threads)
 	return []string{
 		"ffmpeg", "-hide_banner", "-loglevel", "error", "-nostats",
@@ -68,6 +84,21 @@ func scoreArgv(distorted, reference string, width, height uint64, threads int, l
 		"-map", "[quality]", "-f", "null", "-",
 		"-map", "[colour]", "-f", "null", "-",
 	}
+}
+
+// Score measures distorted against reference, which must be width x
+// height (distorted is scaled to match). Scratch logs go in tmpDir,
+// named after name. See scoreArgv for prefilter.
+func Score(ctx context.Context, e Executor, distorted, reference string, width, height uint64, threads int, tmpDir, name, prefilter string) (Metrics, error) {
+	logPath := filepath.Join(tmpDir, name+".vmaf.json")
+	colourLogPath := filepath.Join(tmpDir, name+".ciede.json")
+	defer os.Remove(logPath)
+	defer os.Remove(colourLogPath)
+	argv := scoreArgv(distorted, reference, width, height, threads, logPath, colourLogPath, prefilter)
+	if _, err := e.Exec(ctx, argv); err != nil {
+		return Metrics{}, fmt.Errorf("scoring: %w", err)
+	}
+	return readLogs(logPath, colourLogPath)
 }
 
 // escapeFilterValue escapes s for use as an option value inside an

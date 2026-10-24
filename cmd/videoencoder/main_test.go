@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/scottlaird/videoencoder/internal/bench"
+	"github.com/scottlaird/videoencoder/internal/config"
 	"github.com/scottlaird/videoencoder/internal/ffmpeg"
 	"github.com/scottlaird/videoencoder/internal/probe"
 )
@@ -127,7 +129,7 @@ func makeClip(t *testing.T, path string) {
 
 func testDeps(stdout io.Writer) (deps, *countingRunner) {
 	r := &countingRunner{next: ffmpeg.ExecRunner{Stderr: io.Discard}, calls: map[string]int{}}
-	return deps{runner: r, prober: probe.FFProbe{}, stdout: stdout}, r
+	return deps{runner: r, exec: bench.ExecExecutor{Stderr: io.Discard}, prober: probe.FFProbe{}, stdout: stdout}, r
 }
 
 // TestAdHocEndToEnd encodes a clip given directly on the command line,
@@ -541,6 +543,51 @@ func TestSilentSource(t *testing.T) {
 	}
 	if m, _ := filepath.Glob(filepath.Join(stream, "audio.*")); len(m) != 0 {
 		t.Errorf("silent video has audio outputs %q", m)
+	}
+}
+
+// TestTuneEndToEnd tunes an ad hoc clip with real ffmpeg and libvmaf
+// and checks that the sidecar it writes is used by the next render.
+func TestTuneEndToEnd(t *testing.T) {
+	requireTools(t, "ffmpeg", "ffprobe", "packager")
+	dir := t.TempDir()
+	src := filepath.Join(dir, "clip.mov")
+	makeClip(t, src)
+	// Two av1 renditions, so one anchor each end and nothing between.
+	if err := os.WriteFile(filepath.Join(dir, "videoencoder.yaml"), []byte(`
+tune: {duration: 1s, target_vmaf: 90}
+renditions: {h264-480: null, h264-720: null, h265-480: null, h265-720: null, h265-1080: null,
+  h265-1440: null, h265-2160: null, av1-720: null, av1-1080: null, av1-1440: null, av1-2160: null,
+  av1-3240: null, av1-4320: null}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o, err := parseArgs([]string{"tune", "--config", "", src}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	d, _ := testDeps(&out)
+	if err := run(context.Background(), o, d); err != nil {
+		t.Fatalf("tune: %v\n%s", err, out.String())
+	}
+	sidecar, err := os.ReadFile(filepath.Join(dir, "clip"+config.SidecarSuffix))
+	if err != nil {
+		t.Fatalf("no sidecar: %v\n%s", err, out.String())
+	}
+	for _, want := range []string{"sources:", "av1-480:", "h264-1080:", "bitrate:", "tuned "} {
+		if !strings.Contains(string(sidecar), want) {
+			t.Errorf("sidecar lacks %q:\n%s", want, sidecar)
+		}
+	}
+	// The tuned values are what the next render uses.
+	o.mode = "plan"
+	out.Reset()
+	if err := run(context.Background(), o, d); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "clip.video.yaml") {
+		t.Errorf("plan doesn't show values from the tuned sidecar:\n%s", out.String())
 	}
 }
 
