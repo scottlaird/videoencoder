@@ -140,6 +140,7 @@ a flagset or a sample only runs the new combinations.
 # bench.yaml
 samples: samples        # directory of ~30s clips
 workdir: work
+scales: [1080]          # test at 1080p; taller samples are downscaled once
 target_vmaf: 95
 min_ciede2000: 0        # set to catch colour casts, which VMAF can't see
 flagsets:
@@ -157,7 +158,8 @@ encbench prune          # delete kept encodes of removed samples/flagsets
 ```
 
 The best encode for each sample and flagset is kept under
-`work/keep/` for comparing by eye.  See `DESIGN.md` for details.
+`work/keep/` for comparing by eye.  HDR samples are tone-mapped to SDR
+on both sides for scoring, since VMAF is an SDR metric.  See `DESIGN.md` for details.
 
 ## TODO
 

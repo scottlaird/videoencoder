@@ -488,6 +488,23 @@ for one encode. The encodes run one after another, then all of them
 are scored in parallel. In the tests (a 300-step CRF range) a search
 with no seed took 7 encodes, and seeded ones took 3–4.
 
+### Sample sizes and HDR
+
+`scales: [1080]` tests every sample at those heights. A taller sample
+is downscaled once (Lanczos, ProRes 422 HQ, video only, colour tags
+kept) into `work/samples/<name>@<height>p.mov`. A sample no taller
+than a scale is used as it is, so an existing 1080p sample keeps its
+results. A copy's identity is derived from its source's identity and
+the height, not from the copy's bytes, so remaking it doesn't
+invalidate anything. Large originals (8K ProRes) are then decoded only
+once, and VMAF runs at sizes its models were trained for.
+
+HDR (PQ/HLG) samples are encoded as they are, but both sides are
+tone-mapped to SDR (`zscale` + `tonemap=hable`) before scoring.
+VMAF and CIEDE2000 are only calibrated for SDR, so this is a proxy.
+It still catches artifacts and colour shifts. An HDR/SDR pair of the
+same footage gives a check on how far the proxy can be trusted.
+
 ### Caching and incrementality
 
 Every encode is keyed by a hash of (the sample's identity, the
@@ -500,6 +517,11 @@ log and reuses whatever it finds. So:
   the other samples' answers as seeds;
 - renaming a flagset reruns nothing, since the key comes from its
   args, not its name. Editing its args makes a new flagset.
+- a pair the log already settles is skipped outright: one with a
+  passing setting whose next step fails, or a pass or fail at the end
+  of the range. Searching it again would start from a seed that may
+  have moved (seeds come from other samples' answers), and a different
+  path needs encodes the log doesn't have.
 
 ### Measurement
 

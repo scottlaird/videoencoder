@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/scottlaird/videoencoder/internal/fileid"
+	"github.com/scottlaird/videoencoder/internal/plan"
 	"github.com/scottlaird/videoencoder/internal/probe"
 )
 
@@ -37,6 +38,9 @@ type sample struct {
 	path string
 	id   string
 	vd   probe.VideoData
+	// prefilter is applied to both sides before scoring: a tone map to
+	// SDR for HDR samples, since VMAF and CIEDE2000 are SDR metrics.
+	prefilter string
 }
 
 // task is the search for one flagset on one sample.
@@ -135,12 +139,86 @@ func (b *Bench) loadSamples(ctx context.Context) ([]*sample, error) {
 		if s.vd, err = b.Prober.Probe(ctx, s.path); err != nil {
 			return nil, err
 		}
-		samples = append(samples, s)
+		if s.vd.Tone() == probe.HDR {
+			s.prefilter = plan.ToneMapSDR
+		}
+		scaled, err := b.scaledSamples(ctx, s)
+		if err != nil {
+			return nil, err
+		}
+		samples = append(samples, scaled...)
 	}
 	if len(samples) == 0 {
 		return nil, fmt.Errorf("no sample videos in %s", b.Cfg.Samples)
 	}
 	return samples, nil
+}
+
+// scaledSamples returns the versions of s to test: s itself if no
+// scales are configured, otherwise one per scale, downscaled copies
+// for scales smaller than s and s itself for the rest (once). A copy is
+// named "<name>@<height>p.mov", made once with ProRes HQ, and keeps an
+// identity derived from s's, so remaking it doesn't invalidate results.
+func (b *Bench) scaledSamples(ctx context.Context, s *sample) ([]*sample, error) {
+	if len(b.Cfg.Scales) == 0 {
+		return []*sample{s}, nil
+	}
+	var out []*sample
+	usedOriginal := false
+	for _, h := range b.Cfg.Scales {
+		if h >= s.vd.Height {
+			if !usedOriginal {
+				out = append(out, s)
+				usedOriginal = true
+			}
+			continue
+		}
+		w := uint64(float64(s.vd.Width)*float64(h)/float64(s.vd.Height)+0.5) &^ 1
+		base := strings.TrimSuffix(s.name, filepath.Ext(s.name))
+		c := &sample{
+			name:      fmt.Sprintf("%s@%dp.mov", base, h),
+			id:        hashKey("scaled/v1", s.id, fmt.Sprint(h)),
+			prefilter: s.prefilter,
+		}
+		c.path = filepath.Join(b.Cfg.Workdir, "samples", c.name)
+		c.vd = s.vd
+		c.vd.Width, c.vd.Height = w, h
+		if _, err := os.Stat(c.path); err != nil {
+			if b.DryRun {
+				slog.Info("Would make sample", "sample", c.name)
+				out = append(out, c)
+				continue
+			}
+			if err := b.downscale(ctx, s.path, c.path, w, h); err != nil {
+				return nil, fmt.Errorf("making %s: %w", c.name, err)
+			}
+		}
+		vd, err := b.Prober.Probe(ctx, c.path)
+		if err != nil {
+			return nil, err
+		}
+		c.vd = vd
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+// downscale writes src at w x h as ProRes 422 HQ, video only, keeping
+// its bit depth, chroma and colour tags.
+func (b *Bench) downscale(ctx context.Context, src, dst string, w, h uint64) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	slog.Info("Making sample", "from", filepath.Base(src), "to", filepath.Base(dst))
+	partial := strings.TrimSuffix(dst, ".mov") + ".partial.mov"
+	_, err := b.Exec.Exec(ctx, []string{"ffmpeg", "-hide_banner", "-loglevel", "error", "-nostats", "-y",
+		"-i", src, "-map", "0:v:0", "-vf", fmt.Sprintf("scale=%d:%d:flags=lanczos", w, h),
+		"-c:v", "prores_ks", "-profile:v", "3", "-pix_fmt", "yuv422p10le", partial})
+	if err != nil {
+		os.Remove(partial)
+		return err
+	}
+	return os.Rename(partial, dst)
 }
 
 func isVideo(name string) bool {
@@ -168,6 +246,9 @@ func (b *Bench) tasks(samples []*sample, results *Results) []*task {
 			}
 			fs := b.Cfg.Flagsets[name]
 			fkey := flagsetKey(fs)
+			if settled(b.Cfg, fs, fkey, s, results) {
+				continue
+			}
 			seed := b.seed(fs, fkey, s, results)
 			tasks = append(tasks, &task{
 				sample:  s,
@@ -180,6 +261,36 @@ func (b *Bench) tasks(samples []*sample, results *Results) []*task {
 		}
 	}
 	return tasks
+}
+
+// settled reports whether the log already answers the search for fs on
+// s: a passing setting whose next step fails, or a pass or fail at the
+// end of the range. Without this, a finished pair would be searched
+// again whenever its seed moved (say, because samples were added), and
+// a different path needs encodes the log doesn't have.
+func settled(c *Config, fs *Flagset, fkey string, s *sample, results *Results) bool {
+	q := fs.Quality
+	pass := map[int]bool{}
+	for _, r := range results.Rows {
+		if r.Sample == s.name && r.FlagsetKey == fkey {
+			pass[q.qualityToIndex(r.Quality)] = c.margin(r.Metrics) >= 0
+		}
+	}
+	best := -1
+	for i, ok := range pass {
+		if ok && i > best {
+			best = i
+		}
+	}
+	switch {
+	case best == q.steps():
+		return true
+	case best >= 0:
+		failed, logged := pass[best+1]
+		return logged && !failed
+	}
+	failed, logged := pass[0]
+	return logged && !failed
 }
 
 // seed guesses where a search should start: the median answer of the
@@ -315,7 +426,7 @@ func (b *Bench) scoreAll(ctx context.Context, batch []*pending, record func(*pen
 
 func (b *Bench) score(ctx context.Context, p *pending) (Metrics, error) {
 	vd := p.t.sample.vd
-	return Score(ctx, b.Exec, p.out, p.t.sample.path, vd.Width, vd.Height, b.Cfg.VMAFThreads, b.scratchDir(), p.key, "")
+	return Score(ctx, b.Exec, p.out, p.t.sample.path, vd.Width, vd.Height, b.Cfg.VMAFThreads, b.scratchDir(), p.key, p.t.sample.prefilter)
 }
 
 func (b *Bench) record(results *Results, p *pending) error {
