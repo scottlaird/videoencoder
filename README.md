@@ -13,26 +13,29 @@ Requirements:
 
 ## Usage
 
-- Compile via `go build`.
+- Install via `go install ./cmd/videoencoder` (or `go build ./cmd/videoencoder`).
 - Make sure that `ffmpeg`, `ffprobe`, and `packager` are installed.
-- Run `video-encoder file.mov` to encode.
+- Run `videoencoder file.mov` to encode.
 
 By default, intermediate transcoded videos are stored in
 `./transcodes`, and the output lives in `./stream`, but these can be
-changed via `--outdir` and `--streamdir`.
+changed via `--outdir` and `--streamdir`.  Both are created if they
+don't exist.
 
-`video-encoder` will recognize when source files, destination files,
+`videoencoder` will recognize when source files, destination files,
 or transcoding settings change, and will rebuild/re-transcode as few
-files as possible.
+files as possible.  Outputs are written under a `.partial` name and
+renamed when ffmpeg finishes, so an interrupted run never leaves a
+truncated file that looks complete.
 
-By default, `video-encoder` will transcode to H.264 up to 1080p, H.265
+By default, `videoencoder` will transcode to H.264 up to 1080p, H.265
 up to 4k, and AVC1 up to 8k.  This is currently configued via source
 code; a config file will follow at some point.
 
-`video-encoder` can handle both SDR and HDR videos with no additional
+`videoencoder` can handle both SDR and HDR videos with no additional
 flags.  It can also combine SDR and HDR versions of the same source
 into a single SDR+HDR stream, where the client can choose which flavor
-to stream.  To do this, run `video-encoder hdr.mov sdr.mov`.  The two
+to stream.  To do this, run `videoencoder hdr.mov sdr.mov`.  The two
 videos should be the same length and ideally the same resolution.
 They will be individually transcoded and then bundled into the same
 DASH and HLS manifests for streaming.
@@ -40,7 +43,7 @@ DASH and HLS manifests for streaming.
 ## TODO
 
 - Add a configuration file for storing transcoding settings and flags.
-  Right now, this requires re-compiling `video-encoder`.
+  Right now, this requires re-compiling `videoencoder`.
 - Optimize the default transcoding settings.
 
 ## Notes
