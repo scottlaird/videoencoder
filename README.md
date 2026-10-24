@@ -40,6 +40,38 @@ videos should be the same length and ideally the same resolution.
 They will be individually transcoded and then bundled into the same
 DASH and HLS manifests for streaming.
 
+## encbench
+
+`encbench` finds, for each candidate set of encoder flags, the quality
+setting (CRF or equivalent) that just reaches a target VMAF on a set of
+sample clips, and records the size, encode time and quality of each
+answer.  It searches rather than sweeping, typically 3–8 encodes per
+flagset and sample, and logs every encode in `results.csv`, so adding
+a flagset or a sample only runs the new combinations.
+
+```yaml
+# bench.yaml
+samples: samples        # directory of ~30s clips
+workdir: work
+target_vmaf: 95
+min_ciede2000: 0        # set to catch colour casts, which VMAF can't see
+flagsets:
+  x265-slow:
+    args: [-c:v, libx265, -preset, slow]
+  svtav1-p5:
+    args: [-c:v, libsvtav1, -preset, "5"]
+```
+
+```
+go install ./cmd/encbench
+encbench run            # -n for a dry run; -sample/-flagset globs to limit
+encbench report         # Markdown tables of the answers
+encbench prune          # delete kept encodes of removed samples/flagsets
+```
+
+The best encode for each sample and flagset is kept under
+`work/keep/` for comparing by eye.  See `DESIGN.md` for details.
+
 ## TODO
 
 - Add a configuration file for storing transcoding settings and flags.
