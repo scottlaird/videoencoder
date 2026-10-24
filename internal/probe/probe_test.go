@@ -54,6 +54,11 @@ func TestFromStreams(t *testing.T) {
 		{
 			name:    "audio first, then cover art, then video",
 			streams: []*ffprobe.Stream{audio, cover, video},
+			want:    VideoData{Width: 3840, Height: 2160, FPS: 30000.0 / 1001, ColorTransfer: "smpte2084", ColorPrimaries: "bt2020", HasAudio: true},
+		},
+		{
+			name:    "silent",
+			streams: []*ffprobe.Stream{video},
 			want:    VideoData{Width: 3840, Height: 2160, FPS: 30000.0 / 1001, ColorTransfer: "smpte2084", ColorPrimaries: "bt2020"},
 		},
 		{name: "audio only", streams: []*ffprobe.Stream{audio}, wantErr: true},

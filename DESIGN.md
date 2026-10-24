@@ -53,12 +53,20 @@ Layers are merged from lowest to highest priority:
    root to the video's directory, shallowest first. A project
    directory can override settings for all the videos beneath it.
 3. The video's own settings. These can be an entry under `videos:`
-   in a project's `videoencoder.yaml`, a sidecar `<name>.video.yaml`
-   next to the sources, or both. If both exist, the sidecar is merged
-   on top of the project entry.
+   in the `videoencoder.yaml` of the video's own directory, a sidecar
+   `<name>.video.yaml` next to the sources, or both. If both exist,
+   the sidecar is merged on top of the project entry. A `videos:`
+   entry in a parent directory's file defines a different video, one
+   that lives in that directory, so it doesn't apply.
+4. Command-line overrides (`--outdir`, `--streamdir`,
+   `--thumbnails`).
 
-The built-in defaults (today's hard-coded ladder) sit under layer 1, so
-it works with no config at all.
+The built-in defaults sit under layer 1 so it works with no config at
+all. They were the hard-coded ladder and are now
+`internal/config/default.yaml`, embedded in the binary. A video's
+directory is where its sidecar or project entry lives. For a bare
+`videoencoder foo.mov`, it's the first file's directory, and the video
+is named after that file.
 
 **Merge rules.** Maps merge key by key, recursively. Scalars and lists
 replace. An explicit `null` deletes the inherited key. Anything a lower
@@ -110,11 +118,12 @@ renditions:
 Running `videoencoder` with no arguments in a directory renders every
 video defined under it, whether by a sidecar or a `videos:` entry, and
 counts each video once. `videoencoder foo.video.yaml` renders just
-that one. You still need command-line flags for one-off overrides and
-for a bare `videoencoder foo.mov` with no job file, but they are never
-required to re-render. `videoencoder plan` prints the merged config,
-with the layer each value came from, plus the list of renditions to
-build and why. That's the debugging tool for "why did this rebuild?"
+that one. Command-line flags are only for one-off overrides and for a
+bare `videoencoder foo.mov`; they're never needed to re-render.
+`videoencoder plan` prints the merged config, with the layer each
+value came from as a line comment, plus every rendition and whether
+it would be rebuilt and why. That's the tool for answering "why did
+this rebuild?"
 
 Unknown keys are an error, using strict decoding of each layer. A typo
 in a project override should fail, not do nothing.
@@ -125,33 +134,54 @@ Credentials are never stored in config. S3 keys come from the usual
 
 ### Planning and incremental rebuilds
 
-`plan` turns (merged config, probe data) into a list of renditions.
-Each rendition has:
+`plan` turns (merged config, probe data) into a list of jobs. Each
+job has:
 
-- a **build key**: the SHA-256 of the canonical argument vector (with
-  paths made relative), plus the source file's identity (size,
-  mtime, and a hash of its first and last MiB), plus a
-  schema version;
-- an output name derived from the rendition name and a short key
-  prefix, e.g. `av1-2160.7c3e1a.mp4`.
+- a **slot**, saying what the output is for: `<source label>/<rendition>`
+  (e.g. `hdr/av1-2160`), `audio`, `poster` or `thumbs`;
+- a **build key**: SHA-256 over a schema version, the source's identity
+  and every ffmpeg argument except the input path, so moving a source
+  doesn't rebuild anything. Source identity is its size, a hash of its
+  first and last MiB (`internal/fileid`) and its mtime in seconds. The
+  mtime makes a re-export of identical size rebuild, which errs toward
+  rebuilding when in doubt;
+- an output named after the slot and the first 10 hex digits of the
+  key: `av1-2160.hdr.7c3e1a09bd.mp4`, `audio.<key>.mp4`,
+  `poster.<key>.jpg`, `thumbs.<key>/`.
 
 Putting the key in the filename means a changed setting produces a
-*new* object instead of overwriting the old one. That helps S3: an
-unchanged rendition keeps its name and ETag, so the sync skips it, and
-nothing that is already published is ever overwritten in place.
+*new* file instead of overwriting the old one. That helps S3: an
+unchanged rendition keeps its name and content, so the sync skips it,
+and nothing already published is ever overwritten in place.
 
-A single `state.Needs(key, path)` replaces both `MaybeExecute` and
-`IsEncodeNeeded`. It returns a rebuild reason whenever the output is
-missing, whatever the state file says, which fixes the crash on a
-`.status` file whose output is gone. State lives in one
-`state.json` per video work directory, not one `.status` file per
-output. Outputs are written to `name.partial` and renamed on success,
-so an interrupted ffmpeg run never looks finished. Every output
-directory is created with `MkdirAll` up front.
+Outputs are written to a `.partial` name (or a `.partial` directory
+for image sequences) and renamed when ffmpeg succeeds. So **an output
+is up to date exactly when the file with its key-name exists**, and
+there are no per-output status files: the old `MaybeExecute` and
+`IsEncodeNeeded` checks are gone, and with them the crash on a
+`.status` file whose output was missing.
+
+Each video keeps `<name>.state.json` in its outdir. It records, per
+slot, the key last built there, plus the list of files last written
+to the stream directory. That's used for two things:
+
+- explaining a rebuild in `plan`: *new*, *source changed*, *settings
+  changed* or *output file is missing*;
+- deleting exactly what a rebuild replaces: the previous file for a
+  rebuilt slot, the files of slots no longer in the config, and stream
+  files no longer produced. Only files this video's manifest recorded
+  are ever deleted, so videos can safely share an outdir or streamdir.
+  The deletions happen only after the new stream is complete.
+
+Packager writes each input to the stream directory under its own name,
+with an HLS playlist named to match (`playlist_name=`). So the stream's
+contents are known exactly, without guessing packager's
+`stream_N.m3u8` numbering.
 
 The ffmpeg version is deliberately **not** part of the key. A
-`brew upgrade` shouldn't re-render the whole library. `--rebuild` and
-`--rebuild=av1-*` force it.
+`brew upgrade` shouldn't re-render the whole library. `--rebuild` takes
+a glob over slots to force rebuilds: `*` for everything, `av1-*` for
+every source's AV1, `sdr/h264-1080`, or `poster`.
 
 The single-decode, multi-output ffmpeg invocation stays. Every stale
 rendition of one source is built in one ffmpeg process, because
@@ -159,52 +189,137 @@ decoding (especially 6K H.265) is a large share of the cost.
 
 ### Posters
 
-The "album" still image. For each source tone that is present, we
-write `poster-{sdr,hdr}-{width}.{fmt}`, for example
-`poster-sdr-640.avif` and `poster-hdr-1920.avif`:
+The "album" still image. For each tone present, we write
+`poster-{sdr,hdr}-<width>.<key>.<format>` at each configured width up
+to the source's width, for example `poster-sdr-640.<key>.avif` and
+`poster-hdr-1920.<key>.avif`:
 
-- The frame is taken at `poster.offset` with an accurate seek (`-ss`
-  after `-i`, which is slower but frame-exact). It's decoded once and
-  then scaled to each width.
-- SDR: AVIF and JPEG (and WebP if configured).
-- HDR: AVIF only, 10-bit, tagged PQ/BT.2020. JPEG can't carry it
-  without gain maps, which are a later step.
-- If a video has only an HDR source, the SDR poster is tone-mapped
-  with `zscale`+`tonemap` (or `libplacebo`), so every page always
-  has an SDR poster.
-- We also write a small `poster.json` listing every variant with its
-  width, height, format and tone, so a page template can build
-  `<picture>`/`srcset` without guessing names.
+```yaml
+poster:
+  offset: 1s            # seconds, "1.5s", or "MM:SS.ms"
+  widths: [320, 640, 1280, 1920, 3840]
+  formats: [avif, jpg]  # also webp
+```
 
-Later: merge the SDR and HDR posters into one gain-mapped AVIF/JPEG.
+- The frame is found by seeking before the input (`-ss` before `-i`),
+  which is frame-accurate when transcoding and doesn't decode the 100 GB
+  that precede it. It's decoded once, and each variant is one output of
+  the same ffmpeg process, so posters get the same build keys,
+  atomic writes and cleanup as renditions. An offset past the end of a
+  source is an error.
+- SDR posters come in every configured format. AVIF uses libaom with
+  `-still-picture 1`.
+- HDR posters are AVIF only, 10-bit, tagged PQ/BT.2020; JPEG and WebP
+  can't carry HDR without gain maps.
+- SDR comes from the first SDR source. If there's no SDR source, it's
+  tone-mapped from the HDR one (`zscale` + `tonemap=hable`), so every
+  video has an SDR poster.
+- `poster.json` lists every variant with its file, tone, format, width
+  and height, so a page can build `<picture>`/`srcset` markup without
+  guessing names. For pages that still use the single poster earlier
+  versions wrote, `thumbnail.jpg` is a copy of the largest SDR JPEG
+  that's at most 1920 wide.
+
+**Gain-mapped posters.** With an HDR source, each width also gets
+`poster-gainmap-<width>.<key>.{jpg,avif}` (`poster.gainmap_formats`,
+default both). These are SDR images that HDR displays brighten to the
+HDR rendition. They're listed in `poster.json` with tone `gainmap`,
+alongside the separate SDR and HDR posters.
+
+- The inputs come from ffmpeg at the poster offset and size. The SDR
+  base is 8-bit RGB from the SDR source, or tone-mapped from the HDR
+  one. The HDR rendition is converted to linear float with BT.709
+  primaries, scaled so 203 nits (BT.2408 reference white) is 1.0,
+  matching SDR white.
+- **JPEG, in pure Go** (`internal/gainmap`):
+  - The gain map is single-channel, computed on luminance as
+    `log2((Y_hdr + 1/64) / (Y_sdr + 1/64))`, normalized to its range
+    and quantized to 8 bits.
+  - Both images are encoded with `image/jpeg` and joined by an MPF
+    index.
+  - The metadata is written twice: as ISO 21496-1 binary (a version
+    marker in the primary, parameters in the gain map image, laid out
+    as libultrahdr writes it) and as hdrgm XMP (the container directory
+    in the primary, parameters in the gain map). Readers that know
+    either form work, and readers that know neither see an SDR JPEG.
+  - Checked against libultrahdr's `ultrahdr_app`: it recognizes the
+    file and reads the same parameters from either form alone. Its
+    linear decode reproduces the HDR luminance we computed the map from
+    to within 8%.
+- **AVIF:** ffmpeg writes SDR and HDR (PQ/BT.2020, 16-bit) PNGs, and
+  libavif's `avifgainmaputil combine` makes the file. That tool is
+  needed only when `avif` is in `gainmap_formats`, and its absence is
+  reported before any encoding starts.
+- **Settings, measured.** On a real HDR frame (Big Four, 1280×720,
+  sunlit snow 1.8 stops over SDR white), I decoded each variant to
+  linear light (libultrahdr for JPEG, `avifgainmaputil tonemap` for
+  AVIF) and measured luminance error in stops against the true HDR
+  frame:
+
+  | variant | bytes | mean | p99 |
+  |:--|--:|--:|--:|
+  | JPEG base 100, map 100, full size (method floor) | 1534695 | 0.017 | 0.097 |
+  | JPEG base 85, map 85, full size | 465487 | 0.103 | 0.436 |
+  | **JPEG base 85, map 70, full size** (chosen) | 391542 | 0.106 | 0.450 |
+  | JPEG base 85, map 70, ½ size | 298324 | 0.127 | 0.567 |
+  | JPEG base 85, map 70, ¼ size | 271604 | 0.141 | 0.653 |
+  | AVIF q75, map 75, 3-channel (libavif default shape) | 478194 | 0.073 | 0.279 |
+  | **AVIF q55, map 50, 1-channel** (chosen) | 200881 | 0.144 | 0.607 |
+  | AVIF q60, map 60, 1-channel, ½ size | 185231 | 0.148 | 0.657 |
+  | plain HDR AVIF poster (for comparison) | 66174 | 0.183 | 0.779 |
+
+  Most of the error comes from compressing the SDR base, which is
+  the loss any JPEG of the scene has anyway. So the bases are set to
+  match the plain SDR posters' size (JPEG quality 85, AVIF `-q 55`),
+  and the map's own quality barely matters. Downscaling the map does
+  matter: with a global tone curve the gain follows image detail, so a
+  smaller map smears it, and maps are kept full size. A single-channel
+  map costs nothing in accuracy. Every chosen variant is more accurate
+  than the plain HDR AVIF. At 1280 wide that's about 390 KB for JPEG
+  (vs 262 KB plain SDR) and 200 KB for AVIF (vs 113 KB).
+- Both formats fully apply the gain at a display headroom of 4 stops
+  (16× SDR white), libavif's default. Viewers scale the gain by the
+  fraction of that headroom the display has. Advertising an image's
+  full, sometimes 7+ stop, range instead would make it look dim on
+  real HDR displays.
 
 ### Seek thumbnails
 
-Shaka Packager 3.9 has no thumbnail support. The existing
-`--add_thumbnail_adaptation_set` flag doesn't exist in packager and
-would make it fail with `--thumbnails`. So thumbnails become a
-post-processing step:
+Shaka Packager 3.9 has no thumbnail support. The old
+`--add_thumbnail_adaptation_set` flag isn't a packager flag, so
+`--thumbnails` made packager fail. Thumbnails are now a separate output
+plus a post-processing step, on by default:
 
-1. ffmpeg: `fps=1/5,scale=-2:180,tile=5x5` produces
-   `thumbs/tile-%d.jpg`. Each tile covers 25 × 5 s = 125 s.
-2. DASH: we parse `dash.mpd` with `encoding/xml` and append one
-   `AdaptationSet contentType="image" mimeType="image/jpeg"`. It holds
-   a `SegmentTemplate` (`media="thumbs/tile-$Number$.jpg"`,
-   `duration` = the tile's time span, `startNumber=1`), one
-   `Representation` whose `width`/`height` are the whole tile image's,
-   and `EssentialProperty
+```yaml
+thumbnails: {enabled: true, interval: 5, height: 180, columns: 5, rows: 5}
+```
+
+1. ffmpeg, in the same process as the first source's renditions so the
+   decode is shared, runs `select='isnan(prev_selected_t)+gte(t-prev_selected_t,5)',
+   scale=…:180,format=yuvj420p,tile=5x5` into `thumbs.<key>/tile-%d.jpg`.
+   `select` is used rather than `fps=1/5` because `fps` writes nothing
+   for a video shorter than one interval. Each tile covers 25 × 5 s =
+   125 s.
+2. DASH: before `</Period>` in `dash.mpd` we insert an
+   `AdaptationSet contentType="image" mimeType="image/jpeg"` with a
+   `SegmentTemplate` (`media="thumbs.<key>/tile-$Number$.jpg"`,
+   `duration="125"`, `startNumber="1"`), one `Representation` whose
+   `width`/`height` are the whole grid's, and `EssentialProperty
    schemeIdUri="http://dashif.org/thumbnail_tile" value="5x5"`. This
-   is the DASH-IF IOP form that Shaka Player and dash.js read.
+   is the DASH-IF IOP form that Shaka Player and dash.js read. It's a
+   text insertion, not an XML round trip, since `encoding/xml` would
+   mangle packager's namespaces; the tests check that the result still
+   parses.
 3. HLS: we append `#EXT-X-IMAGE-STREAM-INF` to `hls.m3u8` and write
-   an image playlist using `#EXT-X-IMAGES-ONLY` and
-   `#EXT-X-TILES:RESOLUTION=…,LAYOUT=5x5,DURATION=5`. That's the
-   Roku/Apple image-media-playlist form, which Shaka Player also
-   reads.
-4. Optionally a WebVTT sprite track (`#xywh=`) for players that only
-   know that format.
+   `thumbnails.m3u8`, an `#EXT-X-IMAGES-ONLY` playlist with
+   `#EXT-X-TILES:RESOLUTION=320x180,LAYOUT=5x5,DURATION=5.000` per
+   tile. That's the Roku/Apple image-playlist form, which Shaka Player
+   also reads.
 
-All four steps are deterministic, so they rerun cheaply whenever the
-manifests change.
+4. WebVTT: `thumbnails.vtt` has one cue per thumbnail, pointing into
+   its tile with a `#xywh=x,y,w,h` fragment, the form Video.js, Plyr
+   and most players without DASH/HLS image-track support use. The last
+   cue ends at the end of the video.
 
 ### Packaging
 
@@ -213,41 +328,65 @@ with two changes: packager writes into a staging directory, and the
 thumbnail post-processor runs before publish. Audio comes from the
 first source, which is fine since the sources differ only in color.
 
-Packager rewrites every output on every run, and its output is **not**
-byte-deterministic. I tested this on 2026-10-24 with packager 3.9 and
-unchanged inputs:
+Packager rewrites every output on every run, and its output isn't
+byte-deterministic on its own. I tested this on 2026-10-24 with packager
+3.9 and unchanged inputs:
 
-- Every media file differs in exactly 6 bytes, the wall-clock creation
-  and modification times in `mvhd`/`tkhd`/`mdhd`. A small
-  post-processor rewrites those to a fixed value, the source's mtime,
-  which makes the media files deterministic. It needs no new
-  dependency, since MP4 boxes are easy to walk.
+- Every media file differs in exactly 6 bytes: the wall-clock creation
+  and modification times in `mvhd`/`tkhd`/`mdhd`. After packaging,
+  `internal/mp4.ZeroTimes` sets those to zero in place, walking the
+  boxes with no new dependency and moving nothing. With that, unchanged
+  renditions are byte-identical across runs, and an end-to-end test
+  checks it with real packager runs.
 - `dash.mpd` assigns AdaptationSet ids in thread order, so they
-  shuffle between runs. Manifests are tiny and are always uploaded
-  last anyway, so this doesn't matter.
+  shuffle between runs. Manifests are tiny and always uploaded last
+  anyway, so that's left alone.
+
+Packager runs with `--quiet`; its per-file INFO logging buried
+everything else.
 
 ### Publishing
 
-Publish targets are a local directory or S3, using
-`github.com/minio/minio-go/v7` (approved 2026-10-24). Publishing syncs
-the staging directory to the target:
+Publish targets are a local directory or an S3-compatible bucket
+(`github.com/minio/minio-go/v7`, approved 2026-10-24, pure Go):
 
-- List the remote prefix, which returns sizes and ETags. Upload a
-  file only if it's missing or its size/MD5 differs. Files up to
-  5 GiB use a single PUT, where the ETag is the MD5 on SeaweedFS,
-  MinIO and AWS alike. Larger files use multipart upload, and we
-  store their SHA-256 in object metadata and compare against that.
-- **Manifests go last**, after every segment they reference has been
-  uploaded. A player never sees a manifest that points at a missing
-  object.
-- Objects that are no longer referenced are left alone by default.
-  `--prune` deletes them, but only after the new manifests are up.
-  Old rendition names are cheap to keep, and keeping them means
-  players already streaming the old manifest still work.
+```yaml
+publish:
+  to: [seaweed]                     # used after every render; --to overrides
+  targets:
+    www:     {dir: /srv/www/videos/{name}}
+    seaweed: {s3: {bucket: video, prefix: "{name}/"}}   # endpoint: "" means $S3_ENDPOINT_URL
+```
 
-Changing the quality of AV1 2160p re-encodes that one rendition and
-reruns packager. With the timestamps normalized, the upload is the new
-`av1-2160.<key>.mp4` plus the manifests and nothing else.
+Credentials never go in config. They come from `AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY`, or from `~/.aws/credentials` (`s3.profile`).
+
+After rendering, or on `videoencoder publish`, the files recorded as
+the video's stream are synced to each target:
+
+- A file is uploaded only if it's missing or different. Files up to
+  16 MiB (manifests, playlists, posters, tiles) are compared by MD5,
+  which is the ETag for single-part uploads on SeaweedFS, MinIO and AWS
+  alike. Larger files are compared by name and size. Their names carry
+  the build key and packaging is deterministic, so same name + size
+  means same content, and we never hash gigabytes on every publish.
+- **Manifests go last** (`dash.mpd`, `hls.m3u8`, `poster.json`), after
+  everything they reference, so a player never sees a manifest that
+  points at a missing object.
+- Key-named objects get `Cache-Control: public, max-age=31536000,
+  immutable`; manifests and other fixed names get `no-cache`. Each
+  object gets its proper `Content-Type`.
+- Nothing is deleted by default. `--prune` deletes objects under the
+  target's prefix that aren't part of the current stream, but only
+  after the new manifests are up, and only if the target's `dir` or
+  `prefix` contains `{name}`. A prefix shared by several videos can't
+  be pruned by any one of them.
+
+Tested against SeaweedFS (2026-10-24) with a 6K slice. Changing only the
+4K AV1 quality re-encoded that one rendition and uploaded 4 of 46
+files: the new media file and its playlist, plus the two manifests.
+`--prune` then removed exactly the old pair. Re-running with no changes
+uploads only `dash.mpd`, whose AdaptationSet ids packager shuffles.
 
 ### Temporal (later)
 
@@ -427,9 +566,11 @@ workers.
    `plan`.
 4. **Build keys and state.json**, with keyed output names.
 5. **Posters**, then **seek thumbnails** (the manifest
-   post-processor).
-6. **Publish**: local directory first, then S3.
+   post-processor), then deterministic packaging.
+6. **Publish**: local directory and S3.
 7. **Temporal**, with explicit approval for the SDK.
+
+Steps 1–6 are done (PRs #5–#11).
 
 Each step is its own PR. Steps 3–6 stack on step 1, and step 2 is
 based on step 1.

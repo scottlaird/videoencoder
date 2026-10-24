@@ -5,6 +5,7 @@ package probe
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,8 @@ type VideoData struct {
 	ColorPrimaries string
 	// Duration is the container's duration.
 	Duration time.Duration
+	// HasAudio is set if the file has any audio stream.
+	HasAudio bool
 }
 
 // Tone is the dynamic range of a video, as used for DASH labels.
@@ -73,6 +76,7 @@ func (FFProbe) Probe(ctx context.Context, filename string) (VideoData, error) {
 }
 
 func fromStreams(filename string, streams []*ffprobe.Stream) (VideoData, error) {
+	hasAudio := slices.ContainsFunc(streams, func(s *ffprobe.Stream) bool { return s.CodecType == "audio" })
 	for _, s := range streams {
 		if s.CodecType != "video" || s.Disposition.AttachedPic != 0 {
 			continue
@@ -87,6 +91,7 @@ func fromStreams(filename string, streams []*ffprobe.Stream) (VideoData, error) 
 			FPS:            fps,
 			ColorTransfer:  s.ColorTransfer,
 			ColorPrimaries: s.ColorPrimaries,
+			HasAudio:       hasAudio,
 		}, nil
 	}
 	return VideoData{}, fmt.Errorf("probing %q: no video stream", filename)

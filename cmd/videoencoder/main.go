@@ -1,11 +1,19 @@
-// Command videoencoder turns a video into a DASH/HLS stream, rebuilding
+// Command videoencoder turns videos into DASH/HLS streams, rebuilding
 // only renditions whose source or settings changed.
 //
+//	videoencoder [flags] [dir | name.video.yaml ...]
 //	videoencoder [flags] video.mov [other-version.mov ...]
+//	videoencoder plan [flags] [same arguments]
+//	videoencoder publish [flags] [same arguments]
 //
-// Extra files are other versions of the same video (e.g. SDR next to
-// HDR); every version is encoded and offered in one stream. Audio and
-// the poster come from the first file.
+// With directories (default "."), it renders every video defined under
+// them by a <name>.video.yaml sidecar or a videos: entry in a
+// videoencoder.yaml. With media files, they are versions of one video
+// (e.g. HDR and SDR), all offered in one stream; audio comes from the
+// first, and posters from the first of each tone. "plan" prints each video's merged config, with
+// where each value came from, and which renditions would be rebuilt.
+// After rendering, the stream is published to the config's publish.to
+// targets; "publish" does only that, for streams already rendered.
 package main
 
 import (
@@ -15,114 +23,408 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
+	"slices"
+	"strings"
+	"syscall"
 
+	"go.yaml.in/yaml/v4"
+
+	"github.com/scottlaird/videoencoder/internal/config"
 	"github.com/scottlaird/videoencoder/internal/ffmpeg"
 	"github.com/scottlaird/videoencoder/internal/pack"
 	"github.com/scottlaird/videoencoder/internal/plan"
 	"github.com/scottlaird/videoencoder/internal/probe"
+	"github.com/scottlaird/videoencoder/internal/state"
 )
 
 type options struct {
-	outdir     string
-	streamdir  string
-	thumbnails bool
-	sources    []string
+	mode       string // "render", "plan" or "publish"
+	publish    bool   // publish after rendering
+	prune      bool
+	rebuild    string // glob over slots, such as "*/av1-*"
+	globalPath string
+	overrides  map[string]any
+	paths      []string
 }
 
-var errUsage = errors.New("usage: videoencoder [flags] video.mov [other-version.mov ...]")
-
 func parseArgs(args []string, stderr io.Writer) (options, error) {
-	var o options
+	o := options{mode: "render", overrides: map[string]any{}}
+	if len(args) > 0 && (args[0] == "plan" || args[0] == "publish") {
+		o.mode, args = args[0], args[1:]
+	}
 	fs := flag.NewFlagSet("videoencoder", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&o.outdir, "outdir", "transcodes", "output directory for transcodes")
-	fs.StringVar(&o.streamdir, "streamdir", "stream", "output directory for streaming video")
-	fs.BoolVar(&o.thumbnails, "thumbnails", false, "generate seek thumbnails (not yet supported by shaka-packager)")
+	fs.StringVar(&o.globalPath, "config", config.DefaultGlobalPath(), "global config file")
+	fs.BoolVar(&o.publish, "publish", true, "publish to the publish.to targets after rendering")
+	fs.BoolVar(&o.prune, "prune", false, "when publishing, delete objects that are no longer part of the stream")
+	to := fs.String("to", "", "override publish.to: comma-separated target names")
+	fs.StringVar(&o.rebuild, "rebuild", "", `rebuild matching outputs even if up to date: "*" for all, "av1-*", "hdr/h264-1080", "audio", "poster/*"`)
+	outdir := fs.String("outdir", "", "override outdir: directory for intermediate renditions")
+	streamdir := fs.String("streamdir", "", "override streamdir: directory for the finished stream")
+	thumbnails := fs.Bool("thumbnails", true, "override thumbnails.enabled: add seek thumbnails to the stream")
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}
-	o.sources = fs.Args()
-	if len(o.sources) == 0 {
-		return o, errUsage
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "outdir":
+			o.overrides["outdir"] = absOrSame(*outdir)
+		case "streamdir":
+			o.overrides["streamdir"] = absOrSame(*streamdir)
+		case "thumbnails":
+			o.overrides["thumbnails"] = map[string]any{"enabled": *thumbnails}
+		case "to":
+			names := []string{}
+			for _, n := range strings.Split(*to, ",") {
+				if n = strings.TrimSpace(n); n != "" {
+					names = append(names, n)
+				}
+			}
+			o.overrides["publish"] = map[string]any{"to": names}
+		}
+	})
+	o.paths = fs.Args()
+	if len(o.paths) == 0 {
+		o.paths = []string{"."}
 	}
 	return o, nil
+}
+
+// absOrSame makes a command-line path absolute, since config paths are
+// otherwise relative to each video's directory, not the working
+// directory.
+func absOrSame(p string) string {
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
 }
 
 type deps struct {
 	runner ffmpeg.Runner
 	prober probe.Prober
+	stdout io.Writer
+}
+
+// item is one video to process, with the loader for its config.
+type item struct {
+	loader config.Loader
+	video  config.Video
+}
+
+// items resolves the command-line paths into videos. Directories and
+// sidecars are searched for configured videos; any other files are
+// sources of one ad hoc video.
+func items(paths []string, base config.Loader) ([]item, error) {
+	var out []item
+	var files []string
+	for _, p := range paths {
+		st, err := os.Stat(p)
+		if err != nil {
+			return nil, err
+		}
+		if !st.IsDir() && !strings.HasSuffix(p, config.SidecarSuffix) {
+			files = append(files, p)
+			continue
+		}
+		found, err := config.Discover(p)
+		if err != nil {
+			return nil, err
+		}
+		if len(found) == 0 {
+			slog.Warn("No videos defined", "path", p)
+		}
+		for _, v := range found {
+			out = append(out, item{base, v})
+		}
+	}
+	if len(files) > 0 {
+		v, sources, err := config.AdHoc(files)
+		if err != nil {
+			return nil, err
+		}
+		l := base
+		l.Overrides = maps.Clone(base.Overrides)
+		maps.Copy(l.Overrides, sources)
+		out = append(out, item{l, v})
+	}
+	return out, nil
 }
 
 func run(ctx context.Context, o options, d deps) error {
-	first := o.sources[0]
-	vd, err := d.prober.Probe(ctx, first)
+	its, err := items(o.paths, config.Loader{GlobalPath: o.globalPath, Overrides: o.overrides})
 	if err != nil {
 		return err
 	}
-	slog.Info("Source", "file", first, "video", fmt.Sprintf("%+v", vd))
-
-	targets := plan.DefaultTargets(o.thumbnails).Filter(vd)
-	for _, t := range targets {
-		slog.Info("Target", "codec", t.Codec, "width", t.Width, "height", t.Height)
-	}
-
-	var videos []string
-	for seq, src := range o.sources {
-		var batch ffmpeg.Batch
-		for _, t := range targets {
-			job, err := t.Job(src, o.outdir, seq)
-			if err != nil {
-				return err
-			}
-			if _, err := batch.AddIfNeeded(job); err != nil {
-				return err
-			}
-			if t.Codec != "jpg" {
-				videos = append(videos, job.Output)
+	for _, it := range its {
+		r, err := it.loader.Load(it.video)
+		if err != nil {
+			return err
+		}
+		switch o.mode {
+		case "plan":
+			err = printPlan(ctx, r, d)
+		case "publish":
+			err = publishVideo(ctx, r, o.prune)
+		default:
+			err = render(ctx, r, d, o.rebuild)
+			if err == nil && o.publish {
+				err = publishVideo(ctx, r, o.prune)
 			}
 		}
-		if err := batch.Run(ctx, d.runner); err != nil {
-			return fmt.Errorf("encoding %q: %w", src, err)
+		if err != nil {
+			return fmt.Errorf("%s: %w", it.video.Name, err)
 		}
 	}
-
-	audio := plan.AudioJob(first, o.outdir)
-	if err := ffmpeg.RunIfNeeded(ctx, d.runner, audio); err != nil {
-		return fmt.Errorf("extracting audio: %w", err)
-	}
-	poster := plan.PosterJob(first, o.outdir)
-	if err := ffmpeg.RunIfNeeded(ctx, d.runner, poster); err != nil {
-		return fmt.Errorf("making poster: %w", err)
-	}
-
-	p := &pack.Packager{Runner: d.runner, Prober: d.prober, Thumbnails: o.thumbnails}
-	mpd, err := p.Package(ctx, o.streamdir, videos, audio.Output)
-	if err != nil {
-		return fmt.Errorf("packaging: %w", err)
-	}
-
-	streamPoster := filepath.Join(o.streamdir, filepath.Base(poster.Output))
-	if err := copySmallFile(poster.Output, streamPoster); err != nil {
-		return err
-	}
-
-	slog.Info("Done", "manifest", mpd, "poster", streamPoster)
 	return nil
 }
 
-// copySmallFile copies by reading the whole file into memory, so it is
-// only for small files such as posters.
-func copySmallFile(src, dst string) error {
-	b, err := os.ReadFile(src)
+// built is everything a video's outputs are made from.
+type built struct {
+	vd        probe.VideoData // of the first source
+	sources   []plan.Source   // in encoding order; the first supplies audio
+	vds       []probe.VideoData
+	targets   plan.Targets
+	perSource [][]*ffmpeg.Job // rendition jobs, in target order
+	audio     *ffmpeg.Job     // nil for a silent video
+	posters   []plan.Poster
+	gainmaps  []plan.GainMapPoster
+	thumbs    *ffmpeg.Job // nil unless thumbnails are on
+	manifest  *state.Manifest
+	desc      map[*ffmpeg.Job]string // for plan output
+}
+
+// all returns every job, in a stable order.
+func (b *built) all() []*ffmpeg.Job {
+	var js []*ffmpeg.Job
+	for _, s := range b.perSource {
+		js = append(js, s...)
+	}
+	if b.audio != nil {
+		js = append(js, b.audio)
+	}
+	for _, p := range b.posters {
+		js = append(js, p.Job)
+	}
+	if b.thumbs != nil {
+		js = append(js, b.thumbs)
+	}
+	return js
+}
+
+func prepare(ctx context.Context, r *config.Resolved, d deps) (*built, error) {
+	b := &built{desc: map[*ffmpeg.Job]string{}}
+	for _, label := range r.SourceLabels() {
+		src, err := plan.NewSource(label, r.Sources[label])
+		if err != nil {
+			return nil, err
+		}
+		vd, err := d.prober.Probe(ctx, src.Path)
+		if err != nil {
+			return nil, err
+		}
+		if off, _ := config.ParseOffset(r.Poster.Offset); vd.Duration > 0 && off >= vd.Duration {
+			return nil, fmt.Errorf("poster.offset %s is past the end of %s (%v)", r.Poster.Offset, src.Path, vd.Duration)
+		}
+		b.sources = append(b.sources, src)
+		b.vds = append(b.vds, vd)
+	}
+	first := b.sources[0]
+	b.vd = b.vds[0]
+	var err error
+	ladder, err := plan.FromConfig(&r.Config)
 	if err != nil {
-		return fmt.Errorf("copying %q: %w", src, err)
+		return nil, err
 	}
-	if err := os.WriteFile(dst, b, 0o644); err != nil {
-		return fmt.Errorf("copying %q: %w", src, err)
+	b.targets = ladder.Filter(b.vd)
+	for _, src := range b.sources {
+		var js []*ffmpeg.Job
+		for _, t := range b.targets {
+			j := t.Job(src, r.Outdir)
+			b.desc[j] = fmt.Sprintf("%s/%s %dx%d", src.Label, t.Name, t.Width, t.Height)
+			js = append(js, j)
+		}
+		b.perSource = append(b.perSource, js)
 	}
+	if b.vd.HasAudio {
+		b.audio = plan.AudioJob(first, r.Outdir)
+	}
+	b.posters, b.gainmaps = posters(r.Poster, b.sources, b.vds, r.Outdir)
+	if err := checkGainMapTools(b.gainmaps); err != nil {
+		return nil, err
+	}
+	for _, p := range b.posters {
+		b.desc[p.Job] = fmt.Sprintf("%s %dx%d from %s", p.Job.Slot, p.Width, p.Height, p.Source)
+	}
+	if r.Thumbnails.Enabled {
+		b.thumbs = plan.SeekThumbnailJob(r.Thumbnails, b.vd, first, r.Outdir)
+	}
+	b.manifest, err = state.Load(r.Outdir, r.Name)
+	return b, err
+}
+
+// forced reports whether the --rebuild glob matches j's slot. A glob
+// without a "/" matches the part after the source label, so "av1-*"
+// covers every source's AV1 renditions and "*" covers everything.
+func forced(rebuild string, j *ffmpeg.Job) bool {
+	if rebuild == "" {
+		return false
+	}
+	name := j.Slot
+	if !strings.Contains(rebuild, "/") {
+		name = path.Base(name)
+	}
+	ok, _ := path.Match(rebuild, name)
+	return ok
+}
+
+func render(ctx context.Context, r *config.Resolved, d deps, rebuild string) error {
+	b, err := prepare(ctx, r, d)
+	if err != nil {
+		return err
+	}
+	slog.Info("Source", "video", r.Name, "file", b.sources[0].Path, "video", fmt.Sprintf("%+v", b.vd))
+
+	var videos []string
+	for i, js := range b.perSource {
+		batch := ffmpeg.Batch{Manifest: b.manifest}
+		if i == 0 && b.thumbs != nil {
+			js = append(slices.Clone(js), b.thumbs)
+		}
+		for _, j := range js {
+			if forced(rebuild, j) {
+				batch.Add(j)
+			} else if _, err := batch.AddIfNeeded(j); err != nil {
+				return err
+			}
+			if j != b.thumbs {
+				videos = append(videos, j.Output)
+			}
+		}
+		if err := batch.Run(ctx, d.runner); err != nil {
+			return fmt.Errorf("encoding %q: %w", b.sources[i].Path, err)
+		}
+	}
+	audio := ""
+	if b.audio != nil {
+		if err := ffmpeg.RunIfNeeded(ctx, d.runner, b.manifest, b.audio, forced(rebuild, b.audio)); err != nil {
+			return fmt.Errorf("extracting audio: %w", err)
+		}
+		audio = b.audio.Output
+	}
+	if err := runPosters(ctx, d, b, rebuild); err != nil {
+		return fmt.Errorf("making posters: %w", err)
+	}
+	if err := buildGainMaps(ctx, d, b, rebuild); err != nil {
+		return fmt.Errorf("making gain-mapped posters: %w", err)
+	}
+
+	p := &pack.Packager{Runner: d.runner, Prober: d.prober}
+	mpd, files, err := p.Package(ctx, r.Streamdir, videos, audio)
+	if err != nil {
+		return fmt.Errorf("packaging: %w", err)
+	}
+	if b.thumbs != nil {
+		thumbFiles, err := publishThumbnails(r, b)
+		if err != nil {
+			return fmt.Errorf("adding seek thumbnails: %w", err)
+		}
+		files = append(files, thumbFiles...)
+	}
+	posterFiles, err := publishPosters(r.Streamdir, r.Poster.Offset, b.posters, b.gainmaps)
+	if err != nil {
+		return fmt.Errorf("publishing posters: %w", err)
+	}
+	files = append(files, posterFiles...)
+
+	// Only now that the new stream is complete, drop what it replaced.
+	var slots []string
+	for _, j := range b.all() {
+		slots = append(slots, j.Slot)
+	}
+	for _, g := range b.gainmaps {
+		slots = append(slots, g.Slot)
+	}
+	if err := errors.Join(
+		b.manifest.SetStream(r.Streamdir, files),
+		b.manifest.Prune(slots),
+		b.manifest.Save(),
+	); err != nil {
+		return err
+	}
+	slog.Info("Done", "video", r.Name, "manifest", mpd)
+	return nil
+}
+
+// runPosters builds the stale posters, one ffmpeg per source.
+func runPosters(ctx context.Context, d deps, b *built, rebuild string) error {
+	batches := map[string]*ffmpeg.Batch{}
+	for _, p := range b.posters {
+		batch, ok := batches[p.Job.Input]
+		if !ok {
+			batch = &ffmpeg.Batch{Manifest: b.manifest}
+			batches[p.Job.Input] = batch
+		}
+		if forced(rebuild, p.Job) {
+			batch.Add(p.Job)
+		} else if _, err := batch.AddIfNeeded(p.Job); err != nil {
+			return err
+		}
+	}
+	for _, src := range b.sources {
+		if batch, ok := batches[src.Path]; ok {
+			if err := batch.Run(ctx, d.runner); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func printPlan(ctx context.Context, r *config.Resolved, d deps) error {
+	w := d.stdout
+	fmt.Fprintf(w, "# %s in %s\n", r.Name, r.Dir)
+	merged, err := yaml.Dump(r.Merged)
+	if err != nil {
+		return err
+	}
+	w.Write(merged)
+
+	b, err := prepare(ctx, r, d)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(w, "# outputs:")
+	for _, j := range b.all() {
+		desc, ok := b.desc[j]
+		if !ok {
+			desc = j.Slot
+		}
+		_, err := os.Stat(j.Result())
+		reason := b.manifest.Explain(j.Slot, j.Key, j.Source, err == nil)
+		if reason == state.UpToDate {
+			reason = "up to date"
+		} else {
+			reason = "build: " + reason
+		}
+		fmt.Fprintf(w, "#   %s -> %s: %s\n", desc, filepath.Base(j.Result()), reason)
+	}
+	for _, g := range b.gainmaps {
+		_, err := os.Stat(g.Output)
+		reason := b.manifest.Explain(g.Slot, g.Key, g.SourceID(), err == nil)
+		if reason == state.UpToDate {
+			reason = "up to date"
+		} else {
+			reason = "build: " + reason
+		}
+		fmt.Fprintf(w, "#   %s -> %s: %s\n", gainMapDesc(g), filepath.Base(g.Output), reason)
+	}
+	fmt.Fprintln(w)
 	return nil
 }
 
@@ -136,12 +438,13 @@ func main() {
 		os.Exit(2)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	d := deps{
 		runner: ffmpeg.ExecRunner{Stdout: os.Stdout, Stderr: os.Stderr},
 		prober: probe.FFProbe{},
+		stdout: os.Stdout,
 	}
 	if err := run(ctx, o, d); err != nil {
 		fmt.Fprintln(os.Stderr, "videoencoder:", err)

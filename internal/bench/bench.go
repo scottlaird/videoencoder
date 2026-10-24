@@ -2,11 +2,8 @@ package bench
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path"
@@ -15,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/scottlaird/videoencoder/internal/fileid"
 	"github.com/scottlaird/videoencoder/internal/probe"
 )
 
@@ -131,7 +129,7 @@ func (b *Bench) loadSamples(ctx context.Context) ([]*sample, error) {
 			continue
 		}
 		s := &sample{name: name, path: filepath.Join(b.Cfg.Samples, name)}
-		if s.id, err = fileID(s.path); err != nil {
+		if s.id, err = fileid.Content(s.path); err != nil {
 			return nil, err
 		}
 		if s.vd, err = b.Prober.Probe(ctx, s.path); err != nil {
@@ -159,36 +157,6 @@ func matches(pattern, name string) bool {
 	}
 	ok, _ := path.Match(pattern, name)
 	return ok
-}
-
-// fileID identifies a sample by its size and a hash of its first and
-// last MiB, which is cheap even for large files and changes whenever
-// the sample is replaced.
-func fileID(p string) (string, error) {
-	f, err := os.Open(p)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		return "", err
-	}
-	const chunk = 1 << 20
-	h := sha256.New()
-	fmt.Fprintf(h, "%d\n", st.Size())
-	if _, err := io.CopyN(h, f, chunk); err != nil && err != io.EOF {
-		return "", err
-	}
-	if st.Size() > 2*chunk {
-		if _, err := f.Seek(-chunk, io.SeekEnd); err != nil {
-			return "", err
-		}
-		if _, err := io.Copy(h, f); err != nil {
-			return "", err
-		}
-	}
-	return hex.EncodeToString(h.Sum(nil))[:16], nil
 }
 
 func (b *Bench) tasks(samples []*sample, results *Results) []*task {

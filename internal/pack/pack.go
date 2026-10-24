@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/scottlaird/videoencoder/internal/ffmpeg"
+	"github.com/scottlaird/videoencoder/internal/mp4"
 	"github.com/scottlaird/videoencoder/internal/probe"
 )
 
@@ -16,32 +18,60 @@ import (
 type Packager struct {
 	Runner ffmpeg.Runner
 	Prober probe.Prober
-	// Thumbnails asks packager for a seek-thumbnail adaptation set.
-	// Packager 3.9 doesn't support this, so the run will fail.
-	Thumbnails bool
 }
 
 // Package writes dash.mpd, hls.m3u8 and the segmented media into
 // streamdir, and returns the path of the DASH manifest. Each video is
-// labelled HDR or SDR so players can offer the choice.
-func (p *Packager) Package(ctx context.Context, streamdir string, videos []string, audio string) (string, error) {
+// labelled HDR or SDR so players can offer the choice. audio may be ""
+// for a silent video.
+//
+// Every media file and playlist is named after its input, so it also
+// returns the names of every file it wrote in streamdir. Packager
+// stamps media files with the wall clock; those times are zeroed, so
+// repackaging the same inputs gives byte-identical media.
+func (p *Packager) Package(ctx context.Context, streamdir string, videos []string, audio string) (string, []string, error) {
 	if err := os.MkdirAll(streamdir, 0o755); err != nil {
-		return "", fmt.Errorf("creating stream directory: %w", err)
+		return "", nil, fmt.Errorf("creating stream directory: %w", err)
 	}
 	argv, err := p.argv(ctx, streamdir, videos, audio)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if err := p.Runner.Run(ctx, argv); err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return filepath.Join(streamdir, "dash.mpd"), nil
+	inputs := videos
+	if audio != "" {
+		inputs = append([]string{audio}, videos...)
+	}
+	for _, in := range inputs {
+		if err := mp4.ZeroTimes(filepath.Join(streamdir, filepath.Base(in))); err != nil {
+			return "", nil, fmt.Errorf("normalizing %s: %w", filepath.Base(in), err)
+		}
+	}
+	return filepath.Join(streamdir, "dash.mpd"), streamFiles(inputs), nil
+}
+
+// streamFiles returns the names Package writes for inputs.
+func streamFiles(inputs []string) []string {
+	names := []string{"dash.mpd", "hls.m3u8"}
+	for _, in := range inputs {
+		base := filepath.Base(in)
+		names = append(names, base, playlistName(base))
+	}
+	return names
+}
+
+func playlistName(base string) string {
+	return strings.TrimSuffix(base, filepath.Ext(base)) + ".m3u8"
 }
 
 func (p *Packager) argv(ctx context.Context, streamdir string, videos []string, audio string) ([]string, error) {
-	argv := []string{
-		"packager",
-		fmt.Sprintf("in=%s,stream=audio,output=%s", audio, filepath.Join(streamdir, filepath.Base(audio))),
+	argv := []string{"packager"}
+	if audio != "" {
+		abase := filepath.Base(audio)
+		argv = append(argv, fmt.Sprintf("in=%s,stream=audio,output=%s,playlist_name=%s",
+			audio, filepath.Join(streamdir, abase), playlistName(abase)))
 	}
 
 	for _, v := range videos {
@@ -49,8 +79,9 @@ func (p *Packager) argv(ctx context.Context, streamdir string, videos []string, 
 		if err != nil {
 			return nil, err
 		}
-		argv = append(argv, fmt.Sprintf("in=%s,stream=video,output=%s,dash_label=%s",
-			v, filepath.Join(streamdir, filepath.Base(v)), vd.Tone()))
+		base := filepath.Base(v)
+		argv = append(argv, fmt.Sprintf("in=%s,stream=video,output=%s,playlist_name=%s,dash_label=%s",
+			v, filepath.Join(streamdir, base), playlistName(base), vd.Tone()))
 	}
 
 	argv = append(argv,
@@ -61,12 +92,7 @@ func (p *Packager) argv(ctx context.Context, streamdir string, videos []string, 
 		"--hls_master_playlist_output="+filepath.Join(streamdir, "hls.m3u8"),
 		"--allow_approximate_segment_timeline",
 		"--default_language=en",
+		"--quiet",
 	)
-	if p.Thumbnails {
-		argv = append(argv,
-			"--add_thumbnail_adaptation_set",
-			fmt.Sprintf("mimeType=image/jpg:bandwidth=10000,height=180,media=%s/thumbnails-$Number$.jpg,timescale=1,duration=1", streamdir),
-		)
-	}
 	return argv, nil
 }

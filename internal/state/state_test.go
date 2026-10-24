@@ -4,97 +4,105 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
-func TestNeeds(t *testing.T) {
-	const cmd = "ffmpeg -i in.mov out.mp4"
-	old := time.Now().Add(-time.Hour)
-	now := time.Now()
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
 
+func TestExplain(t *testing.T) {
+	m := &Manifest{Entries: map[string]Entry{
+		"main/av1-1080": {Key: "k1", Source: "s1"},
+	}}
 	tests := []struct {
-		name       string
-		status     string // "" means no status file
-		output     bool
-		inputTime  time.Time
-		outputTime time.Time
-		want       string
+		name   string
+		slot   string
+		key    string
+		source string
+		exists bool
+		want   string
 	}{
-		{name: "never built", output: true, inputTime: old, outputTime: now, want: NoStatus},
-		{name: "settings changed", status: "ffmpeg -crf 20", output: true, inputTime: old, outputTime: now, want: CommandChanged},
-		{name: "status but no output", status: cmd, inputTime: old, want: OutputMissing},
-		{name: "input touched since", status: cmd, output: true, inputTime: now, outputTime: old, want: InputNewer},
-		{name: "same mtime is fresh", status: cmd, output: true, inputTime: old, outputTime: old, want: ""},
-		{name: "up to date", status: cmd, output: true, inputTime: old, outputTime: now, want: ""},
+		{"exists", "main/av1-1080", "k2", "s2", true, UpToDate},
+		{"never built", "main/av1-2160", "k1", "s1", false, New},
+		{"same key, file gone", "main/av1-1080", "k1", "s1", false, OutputMissing},
+		{"source changed", "main/av1-1080", "k2", "s2", false, SourceChanged},
+		{"settings changed", "main/av1-1080", "k2", "s1", false, SettingsChange},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			dir := t.TempDir()
-			in := filepath.Join(dir, "in.mov")
-			out := filepath.Join(dir, "out.mp4")
-			touch(t, in, tt.inputTime)
-			if tt.output {
-				touch(t, out, tt.outputTime)
-			}
-			if tt.status != "" {
-				if err := os.WriteFile(out+".status", []byte(tt.status), 0o644); err != nil {
-					t.Fatal(err)
-				}
-			}
-
-			got, err := Needs(in, out, cmd)
-			if err != nil {
-				t.Fatalf("Needs() error = %v", err)
-			}
-			if got != tt.want {
-				t.Errorf("Needs() = %q, want %q", got, tt.want)
-			}
-		})
+		if got := m.Explain(tt.slot, tt.key, tt.source, tt.exists); got != tt.want {
+			t.Errorf("%s: Explain() = %q, want %q", tt.name, got, tt.want)
+		}
 	}
 }
 
-func TestNeedsMissingInput(t *testing.T) {
+func TestRecordPruneAndReload(t *testing.T) {
 	dir := t.TempDir()
-	out := filepath.Join(dir, "out.mp4")
-	touch(t, out, time.Now())
-	if err := Record(out, "cmd"); err != nil {
+	touch := func(name string) {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m, err := Load(dir, "v")
+	if err != nil || len(m.Entries) != 0 {
+		t.Fatalf("Load(empty) = %+v, %v", m, err)
+	}
+
+	touch("a.k1.mp4")
+	touch("b.k1.mp4")
+	for slot, out := range map[string]string{"a": "a.k1.mp4", "b": "b.k1.mp4"} {
+		if err := m.Record(slot, Entry{Key: "k1", Output: out}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Rebuilding slot a with a new key deletes the old file.
+	touch("a.k2.mp4")
+	if err := m.Record("a", Entry{Key: "k2", Output: "a.k2.mp4"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Needs(filepath.Join(dir, "gone.mov"), out, "cmd"); err == nil {
-		t.Error("Needs() with a missing input: got nil error, want one")
+	if exists(filepath.Join(dir, "a.k1.mp4")) || !exists(filepath.Join(dir, "a.k2.mp4")) {
+		t.Error("Record didn't replace a.k1.mp4 with a.k2.mp4")
+	}
+
+	// Pruning to just a deletes b.
+	if err := m.Prune([]string{"a"}); err != nil {
+		t.Fatal(err)
+	}
+	if exists(filepath.Join(dir, "b.k1.mp4")) {
+		t.Error("Prune left b.k1.mp4")
+	}
+	if err := m.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	again, err := Load(dir, "v")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Entries) != 1 || again.Entries["a"].Key != "k2" {
+		t.Errorf("reloaded entries = %+v", again.Entries)
 	}
 }
 
-func TestRecordAndClear(t *testing.T) {
-	dir := t.TempDir()
-	in := filepath.Join(dir, "in.mov")
-	out := filepath.Join(dir, "out.mp4")
-	touch(t, in, time.Now().Add(-time.Hour))
-	touch(t, out, time.Now())
-
-	if err := Record(out, "cmd"); err != nil {
+func TestSetStream(t *testing.T) {
+	stream := t.TempDir()
+	for _, f := range []string{"a.mp4", "b.mp4", "other-video.mp4"} {
+		if err := os.WriteFile(filepath.Join(stream, f), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := &Manifest{Stream: []string{"a.mp4", "b.mp4", "gone.mp4"}}
+	if err := m.SetStream(stream, []string{"c.mp4", "a.mp4"}); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := Needs(in, out, "cmd"); got != "" {
-		t.Errorf("after Record: Needs() = %q, want up to date", got)
+	if exists(filepath.Join(stream, "b.mp4")) {
+		t.Error("b.mp4, dropped from the stream, wasn't deleted")
 	}
-	if err := Clear(out); err != nil {
-		t.Fatal(err)
+	if !exists(filepath.Join(stream, "a.mp4")) || !exists(filepath.Join(stream, "other-video.mp4")) {
+		t.Error("deleted a file still in the stream, or one this video never wrote")
 	}
-	if got, _ := Needs(in, out, "cmd"); got != NoStatus {
-		t.Errorf("after Clear: Needs() = %q, want %q", got, NoStatus)
-	}
-	if err := Clear(out); err != nil {
-		t.Errorf("second Clear() = %v, want nil", err)
-	}
-}
-
-func touch(t *testing.T, path string, mtime time.Time) {
-	t.Helper()
-	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chtimes(path, mtime, mtime); err != nil {
-		t.Fatal(err)
+	if got := m.Stream; len(got) != 2 || got[0] != "a.mp4" || got[1] != "c.mp4" {
+		t.Errorf("Stream = %v, want [a.mp4 c.mp4]", got)
 	}
 }

@@ -10,32 +10,102 @@ Requirements:
 
 - ffmpeg + ffprobe
 - [Shaka Packager](https://github.com/shaka-project/shaka-packager), installed in the path as `packager`.
+- For gain-mapped AVIF posters of HDR videos, `avifgainmaputil` from
+  [libavif](https://github.com/AOMediaCodec/libavif) (`brew install
+  libavif`).  Gain-mapped JPEGs need nothing extra.
 
 ## Usage
 
 - Install via `go install ./cmd/videoencoder` (or `go build ./cmd/videoencoder`).
 - Make sure that `ffmpeg`, `ffprobe`, and `packager` are installed.
-- Run `videoencoder file.mov` to encode.
-
-By default, intermediate transcoded videos are stored in
-`./transcodes`, and the output lives in `./stream`, but these can be
-changed via `--outdir` and `--streamdir`.  Both are created if they
-don't exist.
+- Run `videoencoder file.mov` to encode one file, or describe your
+  videos in config files (below) and run `videoencoder` in their
+  directory.
 
 `videoencoder` will recognize when source files, destination files,
 or transcoding settings change, and will rebuild/re-transcode as few
-files as possible.  Outputs are written under a `.partial` name and
-renamed when ffmpeg finishes, so an interrupted run never leaves a
-truncated file that looks complete.
+files as possible.  Each output's name includes a hash of its source
+and settings (`av1-2160.hdr.7c3e1a09bd.mp4`), so changing one
+rendition's settings produces one new file and leaves every other
+file, and its name, alone.  Outputs are written under a `.partial`
+name and renamed when ffmpeg finishes, so an interrupted run never
+leaves a truncated file that looks complete.  Replaced and removed
+outputs are deleted once the new stream is complete.  `--rebuild GLOB`
+forces a rebuild (`'*'`, `'av1-*'`, `sdr/h264-1080`, `poster`), for
+example after upgrading ffmpeg.
 
 By default, `videoencoder` will transcode to H.264 up to 1080p, H.265
-up to 4k, and AVC1 up to 8k.  This is currently configued via source
-code; a config file will follow at some point.
+up to 4k, and AV1 up to 8k, never above the source's resolution.
+Intermediate renditions go in `transcodes/<name>/` and the stream in
+`stream/<name>/`, next to the video.
+
+Each stream also gets posters, still images taken at `poster.offset`
+in several widths and formats (`poster-sdr-640.<key>.avif`, plus HDR
+AVIFs and gain-mapped JPEG and AVIF posters when there's an HDR
+source), listed in `poster.json`, and seek
+thumbnails, tiled JPEGs added to `dash.mpd` and `hls.m3u8` and listed
+in a `thumbnails.vtt` WebVTT track (turn
+them off with `thumbnails: {enabled: false}` or `--thumbnails=false`).
+
+### Publishing
+
+With `publish.to` set, each render ends by copying the stream to a
+local directory or an S3-compatible bucket (SeaweedFS, MinIO, AWS).
+Only files that are new or changed are uploaded, and manifests go
+last.  `videoencoder publish` publishes without rendering, `--to`
+picks targets, and `--prune` deletes objects that are no longer part
+of the stream.  S3 credentials come from the usual `AWS_*` variables
+or `~/.aws/credentials`, and the endpoint from `s3.endpoint` or
+`$S3_ENDPOINT_URL`.
+
+```yaml
+publish:
+  to: [seaweed]
+  targets:
+    seaweed: {s3: {bucket: video, prefix: "{name}/"}}
+```
+
+### Configuration
+
+Settings are YAML, merged from several layers, lowest priority first:
+
+1. the built-in defaults ([`internal/config/default.yaml`](internal/config/default.yaml)),
+2. `~/.config/videoencoder/config.yaml` (or `--config`),
+3. every `videoencoder.yaml` from `/` down to the video's directory,
+4. the video's entry under `videos:` in its directory's `videoencoder.yaml`,
+5. the video's sidecar, `<name>.video.yaml`,
+6. `--outdir`, `--streamdir`, `--thumbnails` and `--to` on the command line.
+
+Maps merge key by key, other values replace, and `null` deletes an
+inherited key.  Renditions and encoders are maps keyed by name, so a
+layer can change or drop one rendition:
+
+```yaml
+# trip/videoencoder.yaml: applies to every video in trip/ and below
+renditions:
+  av1-4320: null              # no 8K for this project
+videos:
+  hike:
+    sources: {hdr: hike-hdr.mov, sdr: hike-sdr.mov}
+
+# trip/hike.video.yaml: just this video
+renditions:
+  av1-2160: {quality: 30}     # only this rendition re-encodes
+```
+
+`videoencoder` (or `videoencoder dir`) renders every video defined
+under a directory, and `videoencoder plan` prints each video's merged
+config, annotated with the file each value came from, plus which
+renditions would be rebuilt and why.  Relative paths are relative to
+the video's directory, and `{name}` in `outdir`/`streamdir` is the
+video's name.
 
 `videoencoder` can handle both SDR and HDR videos with no additional
 flags.  It can also combine SDR and HDR versions of the same source
 into a single SDR+HDR stream, where the client can choose which flavor
-to stream.  To do this, run `videoencoder hdr.mov sdr.mov`.  The two
+to stream.  To do this, run `videoencoder hdr.mov sdr.mov`, or list
+both under `sources:`.  Sources are encoded in label order, and the
+first supplies the audio and poster.  The two
 videos should be the same length and ideally the same resolution.
 They will be individually transcoded and then bundled into the same
 DASH and HLS manifests for streaming.
@@ -74,8 +144,6 @@ The best encode for each sample and flagset is kept under
 
 ## TODO
 
-- Add a configuration file for storing transcoding settings and flags.
-  Right now, this requires re-compiling `videoencoder`.
 - Optimize the default transcoding settings.
 
 ## Notes

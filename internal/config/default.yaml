@@ -1,0 +1,91 @@
+# Built-in defaults: the lowest config layer. Every layer uses this
+# same schema; maps merge key by key, scalars and lists replace, and
+# null deletes an inherited key.
+
+# Where intermediate renditions and the finished stream go. Relative
+# paths are relative to the video's directory; {name} is the video's
+# name.
+outdir: transcodes/{name}
+streamdir: stream/{name}
+
+# Seek thumbnails: a frame every interval seconds, height pixels high,
+# tiled columns x rows to a JPEG, and added to dash.mpd (as a DASH-IF
+# thumbnail AdaptationSet) and hls.m3u8 (as an image playlist).
+thumbnails:
+  enabled: true
+  interval: 5
+  height: 180
+  columns: 5
+  rows: 5
+
+# The still image that represents the video. It is taken at offset (a
+# time in seconds, "1.5s", or "MM:SS.ms") and written at each width up
+# to the source's, in each format: poster-<tone>-<width>.<key>.<format>
+# plus a poster.json index. SDR posters come from an SDR source, or are
+# tone-mapped from an HDR one; HDR posters come from an HDR source and
+# are AVIF only, since JPEG and WebP can't carry HDR.
+#
+# With an HDR source, gainmap_formats also get gain-mapped posters,
+# poster-gainmap-<width>.<key>.<format>: an SDR image that HDR displays
+# brighten to the HDR rendition. JPEGs are Ultra HDR (ISO 21496-1 and
+# hdrgm XMP), written by videoencoder itself; AVIFs need avifgainmaputil
+# from libavif.
+poster:
+  offset: 1s
+  widths: [320, 640, 1280, 1920, 3840]
+  formats: [avif, jpg]
+  gainmap_formats: [jpg, avif]
+
+encoders:
+  h264:
+    codec: libx264
+    quality_flag: -crf
+    args: [-preset, faster]
+    cap_bitrate: true
+  h265:
+    codec: libx265
+    quality_flag: -crf
+    # main422-10 and hvc1 are needed for macOS playback.
+    args: [-preset, faster, -profile:v, main422-10, -tag:v, hvc1]
+    cap_bitrate: true
+  av1:
+    codec: libsvtav1
+    quality_flag: -crf
+    args: [-preset, "5"]
+
+# Renditions taller than the source are dropped. If an encoder's
+# tallest rendition is shorter than the source, that encoder also gets
+# one rendition at the source's own resolution.
+renditions:
+  h264-480:  {encoder: h264, height: 480,  quality: 18, bitrate: 1M}
+  h264-720:  {encoder: h264, height: 720,  quality: 18, bitrate: 2M}
+  h264-1080: {encoder: h264, height: 1080, quality: 18, bitrate: 4M}
+  h265-480:  {encoder: h265, height: 480,  quality: 20, bitrate: 800k}
+  h265-720:  {encoder: h265, height: 720,  quality: 20, bitrate: 1M}
+  h265-1080: {encoder: h265, height: 1080, quality: 20, bitrate: 2M}
+  h265-1440: {encoder: h265, height: 1440, quality: 20, bitrate: 3M}
+  h265-2160: {encoder: h265, height: 2160, quality: 20, bitrate: 4M}
+  av1-480:   {encoder: av1,  height: 480,  quality: 28, bitrate: 700k}
+  av1-720:   {encoder: av1,  height: 720,  quality: 30, bitrate: 1M}
+  av1-1080:  {encoder: av1,  height: 1080, quality: 31, bitrate: 2M}
+  av1-1440:  {encoder: av1,  height: 1440, quality: 32, bitrate: 3M}
+  av1-2160:  {encoder: av1,  height: 2160, quality: 32, bitrate: 4M}
+  av1-3240:  {encoder: av1,  height: 3240, quality: 32, bitrate: 5M}
+  av1-4320:  {encoder: av1,  height: 4320, quality: 32, bitrate: 8M}
+
+# Where finished streams are copied after rendering: a local directory
+# or an S3-compatible bucket. "to" names the targets used by default.
+# Credentials come from AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY or
+# ~/.aws/credentials (s3.profile), never from config; an empty
+# s3.endpoint means $S3_ENDPOINT_URL. --prune deletes objects that are
+# no longer part of the stream, and is only allowed when the target's
+# dir or prefix contains {name}, so it can't touch other videos.
+#
+#   publish:
+#     to: [seaweed]
+#     targets:
+#       www:     {dir: /srv/www/videos/{name}}
+#       seaweed: {s3: {bucket: video, prefix: "{name}/"}}
+publish:
+  to: []
+  targets: {}

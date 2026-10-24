@@ -23,6 +23,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/scottlaird/videoencoder/internal/bench"
 	"github.com/scottlaird/videoencoder/internal/probe"
@@ -37,7 +38,7 @@ commands:
 `
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		if !errors.Is(err, flag.ErrHelp) {
