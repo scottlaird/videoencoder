@@ -76,7 +76,7 @@ func Bests(c *Config, results *Results) []Best {
 var bestColumns = []string{
 	"sample", "flagset", "encoder", "args", "quality_flag", "quality", "outcome", "encodes",
 	"bytes", "kbps", "wall_s", "user_s", "vmaf", "vmaf_neg", "vmaf_p1", "psnr_cb", "psnr_cr", "ciede2000",
-	"colour_shift_p99", "colour_shift_p999",
+	"color_shift_p99", "color_shift_p999",
 }
 
 // WriteBest rewrites best.csv from the log.
@@ -93,7 +93,7 @@ func WriteBest(path string, c *Config, results *Results) error {
 			b.Sample, b.Name, b.Encoder, b.Args, b.QualityFlag, ftoa(b.Quality), b.Outcome.String(),
 			strconv.Itoa(b.Encodes), strconv.FormatInt(b.Bytes, 10), ftoa(b.Kbps), ftoa(b.WallS), ftoa(b.UserS),
 			ftoa(m.VMAF), ftoa(m.VMAFNeg), ftoa(m.VMAFP1), ftoa(m.PSNRCb), ftoa(m.PSNRCr), ftoa(m.CIEDE2000),
-			ftoa(m.ColourShiftP99), ftoa(m.ColourShiftP999),
+			ftoa(m.ColorShiftP99), ftoa(m.ColorShiftP999),
 		})
 	}
 	w.Flush()
@@ -111,7 +111,7 @@ func Report(w io.Writer, c *Config, results *Results) {
 		if b.Sample != sample {
 			sample = b.Sample
 			fmt.Fprintf(w, "\n### %s\n\n", sample)
-			fmt.Fprintln(w, "| flags | kbps | wall s | user s | vmaf | vmaf_neg | vmaf p1 | ciede2000 | colour shift p99.9 | encodes |")
+			fmt.Fprintln(w, "| flags | kbps | wall s | user s | vmaf | vmaf_neg | vmaf p1 | ciede2000 | color shift p99.9 | encodes |")
 			fmt.Fprintln(w, "|:--|--:|--:|--:|--:|--:|--:|--:|--:|--:|")
 		}
 		flags := fmt.Sprintf("`%s %s %s`", b.Args, b.QualityFlag, ftoa(b.Quality))
@@ -120,6 +120,6 @@ func Report(w io.Writer, c *Config, results *Results) {
 		}
 		m := b.Metrics
 		fmt.Fprintf(w, "| %s | %.0f | %.2f | %.2f | %.3f | %.3f | %.3f | %.2f | %.2f | %d |\n",
-			flags, b.Kbps, b.WallS, b.UserS, m.VMAF, m.VMAFNeg, m.VMAFP1, m.CIEDE2000, m.ColourShiftP999, b.Encodes)
+			flags, b.Kbps, b.WallS, b.UserS, m.VMAF, m.VMAFNeg, m.VMAFP1, m.CIEDE2000, m.ColorShiftP999, b.Encodes)
 	}
 }

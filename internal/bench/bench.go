@@ -204,7 +204,7 @@ func (b *Bench) scaledSamples(ctx context.Context, s *sample) ([]*sample, error)
 }
 
 // downscale writes src at w x h as ProRes 422 HQ, video only, keeping
-// its bit depth, chroma and colour tags.
+// its bit depth, chroma and color tags.
 func (b *Bench) downscale(ctx context.Context, src, dst string, w, h uint64) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
@@ -483,7 +483,7 @@ func (b *Bench) record(results *Results, p *pending) error {
 	}
 	margin := b.Cfg.margin(m)
 	slog.Info("Scored", "sample", t.sample.name, "flagset", t.name, "quality", p.quality,
-		"kbps", int(row.Kbps), "vmaf", m.VMAF, "ciede2000", m.CIEDE2000, "colour_shift", m.ColourShiftP99, "pass", margin >= 0)
+		"kbps", int(row.Kbps), "vmaf", m.VMAF, "ciede2000", m.CIEDE2000, "color_shift", m.ColorShiftP99, "pass", margin >= 0)
 	t.search.Observe(p.i, margin >= 0, margin)
 	return nil
 }

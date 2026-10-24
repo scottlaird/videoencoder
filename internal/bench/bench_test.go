@@ -121,7 +121,7 @@ func TestParseVMAFLog(t *testing.T) {
 	}
 }
 
-func TestParseColourLog(t *testing.T) {
+func TestParseColorLog(t *testing.T) {
 	tests := []struct {
 		log     string
 		want    float64
@@ -133,9 +133,9 @@ func TestParseColourLog(t *testing.T) {
 		{log: `not json`, wantErr: true},
 	}
 	for _, tt := range tests {
-		got, err := parseColourLog([]byte(tt.log))
+		got, err := parseColorLog([]byte(tt.log))
 		if (err != nil) != tt.wantErr || (!tt.wantErr && got != tt.want) {
-			t.Errorf("parseColourLog(%s) = %v, %v; want %v, err %v", tt.log, got, err, tt.want, tt.wantErr)
+			t.Errorf("parseColorLog(%s) = %v, %v; want %v, err %v", tt.log, got, err, tt.want, tt.wantErr)
 		}
 	}
 }
@@ -230,11 +230,11 @@ func (f *fakeFFmpeg) Exec(_ context.Context, argv []string) (Measurement, error)
 		vmaf := 95 + (f.cutoff-q)*0.5
 		log := fmt.Sprintf(`{"frames":[{"metrics":{"vmaf":%v}}],"pooled_metrics":{"vmaf":{"mean":%v,"harmonic_mean":%v},"vmaf_neg":{"mean":%v},"psnr_y":{"mean":45},"psnr_cb":{"mean":48},"psnr_cr":{"mean":48}}}`,
 			vmaf, vmaf, vmaf, vmaf-1)
-		colour := fmt.Sprintf(`{"pooled_metrics":{"ciede2000":{"mean":%v}}}`, f.ciede)
+		color := fmt.Sprintf(`{"pooled_metrics":{"ciede2000":{"mean":%v}}}`, f.ciede)
 		dist, ref := blockImages(argv, f.tint)
 		return Measurement{Wall: time.Second}, errors.Join(
 			os.WriteFile(logs[0], []byte(log), 0o644),
-			os.WriteFile(logs[1], []byte(colour), 0o644),
+			os.WriteFile(logs[1], []byte(color), 0o644),
 			os.WriteFile(argv[len(argv)-6], dist, 0o644),
 			os.WriteFile(argv[len(argv)-1], ref, 0o644))
 	}
@@ -379,21 +379,21 @@ func TestBenchRun(t *testing.T) {
 	}
 }
 
-func TestBenchColourLimit(t *testing.T) {
+func TestBenchColorLimit(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "samples", "a.mov"), "sample a")
 	c := benchConfig(t, dir, "  x: {args: [-c:v, libx265]}\n")
 	c.MinCIEDE2000 = 50
 
 	fake := newFake(18.7)
-	fake.ciede = 45 // a colour cast at every quality: nothing passes
+	fake.ciede = 45 // a color cast at every quality: nothing passes
 	b := &Bench{Cfg: c, Exec: fake, Prober: fakeProber{}}
 	if err := b.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	results, _ := LoadResults(filepath.Join(dir, "work", "results.csv"))
 	if bests := Bests(c, results); len(bests) != 0 {
-		t.Errorf("got answers %+v despite the colour limit", bests)
+		t.Errorf("got answers %+v despite the color limit", bests)
 	}
 }
 
@@ -508,7 +508,7 @@ func TestContainerArgs(t *testing.T) {
 	}
 }
 
-// blockImages returns two frames of grey block averages sized as the
+// blockImages returns two frames of gray block averages sized as the
 // scoring command asks, the distorted one with tint added to red.
 func blockImages(argv []string, tint uint16) (dist, ref []byte) {
 	graph := argv[slices.Index(argv, "-filter_complex")+1]
@@ -525,7 +525,7 @@ func blockImages(argv []string, tint uint16) (dist, ref []byte) {
 	return dist, ref
 }
 
-func TestColourShift(t *testing.T) {
+func TestColorShift(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name string, px [][3]uint16) string {
 		var b []byte
@@ -540,32 +540,32 @@ func TestColourShift(t *testing.T) {
 		}
 		return path
 	}
-	grey := [3]uint16{30000, 30000, 30000}
+	gray := [3]uint16{30000, 30000, 30000}
 	// 2x2 blocks, one frame: one block gets a strong magenta cast.
-	ref := write("ref", [][3]uint16{grey, grey, grey, grey})
-	dist := write("dist", [][3]uint16{grey, grey, grey, {33000, 29000, 33000}})
-	got, _, err := ColourShift(dist, ref, 2, 2)
+	ref := write("ref", [][3]uint16{gray, gray, gray, gray})
+	dist := write("dist", [][3]uint16{gray, gray, gray, {33000, 29000, 33000}})
+	got, _, err := ColorShift(dist, ref, 2, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got < 5 {
-		t.Errorf("ColourShift = %.2f; want the cast block's shift (several a*b* units) at p99", got)
+		t.Errorf("ColorShift = %.2f; want the cast block's shift (several a*b* units) at p99", got)
 	}
-	if same, _, _ := ColourShift(ref, ref, 2, 2); same != 0 {
-		t.Errorf("ColourShift(ref, ref) = %v, want 0", same)
+	if same, _, _ := ColorShift(ref, ref, 2, 2); same != 0 {
+		t.Errorf("ColorShift(ref, ref) = %v, want 0", same)
 	}
 	// An extra frame on one side is ignored.
-	long := write("long", [][3]uint16{grey, grey, grey, {33000, 29000, 33000}, grey, grey, grey, grey})
-	if a, _, err := ColourShift(long, ref, 2, 2); err != nil || a != got {
-		t.Errorf("ColourShift with an extra frame = %v, %v; want %v", a, err, got)
+	long := write("long", [][3]uint16{gray, gray, gray, {33000, 29000, 33000}, gray, gray, gray, gray})
+	if a, _, err := ColorShift(long, ref, 2, 2); err != nil || a != got {
+		t.Errorf("ColorShift with an extra frame = %v, %v; want %v", a, err, got)
 	}
-	ragged := write("ragged", [][3]uint16{grey})
-	if _, _, err := ColourShift(ragged, ref, 2, 2); err == nil {
-		t.Error("ColourShift with a partial frame: nil error")
+	ragged := write("ragged", [][3]uint16{gray})
+	if _, _, err := ColorShift(ragged, ref, 2, 2); err == nil {
+		t.Error("ColorShift with a partial frame: nil error")
 	}
 }
 
-func TestBenchColourShiftLimit(t *testing.T) {
+func TestBenchColorShiftLimit(t *testing.T) {
 	for _, tc := range []struct {
 		tint    uint16
 		answers int
@@ -573,7 +573,7 @@ func TestBenchColourShiftLimit(t *testing.T) {
 		dir := t.TempDir()
 		writeFile(t, filepath.Join(dir, "samples", "a.mov"), "sample a")
 		c := benchConfig(t, dir, "  x: {args: [-c:v, libx265]}\n")
-		c.MaxColourShift = 3.9
+		c.MaxColorShift = 3.9
 		fake := newFake(18.7)
 		fake.tint = tc.tint
 		b := &Bench{Cfg: c, Exec: fake, Prober: fakeProber{}}
@@ -603,11 +603,11 @@ func TestResultsUpgrade(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if old, _ := r.Lookup("k1"); old.Scorer != "v2" || !math.IsNaN(old.Metrics.ColourShiftP999) {
+	if old, _ := r.Lookup("k1"); old.Scorer != "v2" || !math.IsNaN(old.Metrics.ColorShiftP999) {
 		t.Errorf("old row = %+v", old)
 	}
-	if nw, _ := r.Lookup("k2"); nw.Scorer != "v3" || nw.Metrics.ColourShiftP999 != 3.2 {
-		t.Errorf("appended row = scorer %q shift %v", nw.Scorer, nw.Metrics.ColourShiftP999)
+	if nw, _ := r.Lookup("k2"); nw.Scorer != "v3" || nw.Metrics.ColorShiftP999 != 3.2 {
+		t.Errorf("appended row = scorer %q shift %v", nw.Scorer, nw.Metrics.ColorShiftP999)
 	}
 	data, _ := os.ReadFile(path)
 	if first := strings.SplitN(string(data), "\n", 2)[0]; first != strings.Join(resultColumns, ",") {
@@ -623,9 +623,40 @@ func TestResultsUpgrade(t *testing.T) {
 	}
 }
 
+func TestOldSpellings(t *testing.T) {
+	dir := t.TempDir()
+	// A log whose header has the first spelling of the color columns.
+	header := strings.Join(resultColumns, ",")
+	header = strings.ReplaceAll(header, "color_shift", "colour_shift")
+	row := "a.mov,libx265,x,-c:v libx265,-crf,20,k1,f1,100,26.6,1,1,0,0,96,96,95,95,45,48,48,50,8.1,h,2026-10-24T00:00:00Z,1.5,3.2,v3"
+	path := filepath.Join(dir, "results.csv")
+	if err := os.WriteFile(path, []byte(header+"\n"+row+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := LoadResults(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.Lookup("k1"); got.Metrics.ColorShiftP999 != 3.2 || got.Scorer != "v3" {
+		t.Errorf("row read as %+v", got)
+	}
+	data, _ := os.ReadFile(path)
+	if strings.Contains(string(data), "colour") {
+		t.Errorf("header not rewritten with the current spelling:\n%s", data)
+	}
+
+	// And the config key.
+	cfg := filepath.Join(dir, "bench.yaml")
+	writeFile(t, cfg, "samples: s\nmax_colour_shift: 3.9\nflagsets: {a: {args: [-c:v, libx265]}}")
+	c, err := LoadConfig(cfg)
+	if err != nil || c.MaxColorShift != 3.9 {
+		t.Errorf("max_colour_shift: %v, %v", c, err)
+	}
+}
+
 func TestOldScorerRowsIgnored(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "results.csv")
-	// A row as written before colour_shift_p99 and scorer existed.
+	// A row as written before color_shift_p99 and scorer existed.
 	old := strings.Join(resultColumns[:len(resultColumns)-3], ",") + "\n" +
 		"a.mov,libx265,x,-c:v libx265,-crf,20,k1,f1,100,26.6,1,1,0,0,96,96,95,95,45,48,48,50,8.1,h,2026-10-24T00:00:00Z\n"
 	if err := os.WriteFile(path, []byte(old), 0o644); err != nil {
@@ -635,8 +666,8 @@ func TestOldScorerRowsIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if row := r.Rows[0]; row.Scorer != "v2" || !math.IsNaN(row.Metrics.ColourShiftP99) || !math.IsNaN(row.Metrics.ColourShiftP999) {
-		t.Errorf("old row: scorer %q, colour shift %v", row.Scorer, row.Metrics.ColourShiftP99)
+	if row := r.Rows[0]; row.Scorer != "v2" || !math.IsNaN(row.Metrics.ColorShiftP99) || !math.IsNaN(row.Metrics.ColorShiftP999) {
+		t.Errorf("old row: scorer %q, color shift %v", row.Scorer, row.Metrics.ColorShiftP99)
 	}
 	c := &Config{TargetVMAF: 95, Flagsets: map[string]*Flagset{"x": {Args: []string{"-c:v", "libx265"}, Quality: Quality{Flag: "-crf"}}}}
 	if len(bestByPair(c, r)) != 0 {

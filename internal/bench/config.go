@@ -26,20 +26,22 @@ type Config struct {
 	// than a scale is used as it is. Empty means native size only.
 	Scales []uint64 `yaml:"scales"`
 	// An encode passes when its mean VMAF reaches TargetVMAF (default
-	// 95) and it meets the optional colour limits. VMAF ignores chroma,
-	// so a colour cast only fails an encode through MinCIEDE2000 (a
+	// 95) and it meets the optional color limits. VMAF ignores chroma,
+	// so a color cast only fails an encode through MinCIEDE2000 (a
 	// higher-is-better score; ~50 is a barely visible shift) or
 	// MinChromaPSNR (the worse of the Cb and Cr PSNRs, in dB).
 	TargetVMAF    float64 `yaml:"target_vmaf"`
 	MinCIEDE2000  float64 `yaml:"min_ciede2000"`
 	MinChromaPSNR float64 `yaml:"min_chroma_psnr"`
-	// MaxColourShift fails encodes whose block colour shift at the
-	// 99.9th percentile (Metrics.ColourShiftP999) exceeds it: a local
-	// colour cast that the frame averages above miss. 0 means no
+	// MaxColorShift fails encodes whose block color shift at the
+	// 99.9th percentile (Metrics.ColorShiftP999) exceeds it: a local
+	// color cast that the frame averages above miss. 0 means no
 	// limit. On the Pyramid Creek HDR sample, encodes that looked fine
 	// measured at most 3.44 and those with a visible cast at least
 	// 4.32, so 3.9 is a reasonable starting point.
-	MaxColourShift float64 `yaml:"max_colour_shift"`
+	MaxColorShift float64 `yaml:"max_color_shift"`
+	// OldMaxColorShift is max_color_shift's first spelling, still read.
+	OldMaxColorShift float64 `yaml:"max_colour_shift"`
 	// VMAFThreads is passed to libvmaf's n_threads; VMAFJobs is how many
 	// scorings run at once.
 	VMAFThreads int                 `yaml:"vmaf_threads"`
@@ -151,6 +153,9 @@ func (c *Config) finish(base string) error {
 	if c.TargetVMAF == 0 {
 		c.TargetVMAF = 95
 	}
+	if c.MaxColorShift == 0 {
+		c.MaxColorShift = c.OldMaxColorShift
+	}
 	if c.VMAFThreads == 0 {
 		c.VMAFThreads = 4
 	}
@@ -227,11 +232,11 @@ func (c *Config) margin(m Metrics) float64 {
 	if c.MinChromaPSNR > 0 {
 		margin = min(margin, min(m.PSNRCb, m.PSNRCr)-c.MinChromaPSNR)
 	}
-	if c.MaxColourShift > 0 {
-		if math.IsNaN(m.ColourShiftP999) {
+	if c.MaxColorShift > 0 {
+		if math.IsNaN(m.ColorShiftP999) {
 			return math.Inf(-1)
 		}
-		margin = min(margin, c.MaxColourShift-m.ColourShiftP999)
+		margin = min(margin, c.MaxColorShift-m.ColorShiftP999)
 	}
 	return margin
 }

@@ -167,13 +167,13 @@ func gainMapXMP(m Metadata) []byte {
 }
 
 // isoMetadata encodes m as ISO 21496-1 version 0 binary metadata: a
-// single channel, computed in the base image's colour space, every
+// single channel, computed in the base image's color space, every
 // value a fraction.
 func isoMetadata(m Metadata) ([]byte, error) {
 	be := binary.BigEndian
 	b := be.AppendUint16(nil, 0) // minimum version
 	b = be.AppendUint16(b, 0)    // writer version
-	b = append(b, 0x40)          // flags: one channel, use base colour space
+	b = append(b, 0x40)          // flags: one channel, use base color space
 	for _, v := range []float64{m.HDRCapacityMin, m.HDRCapacityMax} {
 		n, d, err := unsignedFraction(v)
 		if err != nil {

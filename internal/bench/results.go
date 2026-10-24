@@ -45,11 +45,11 @@ var resultColumns = []string{
 	"sample", "encoder", "flagset", "args", "quality_flag", "quality",
 	"key", "flagset_key", "bytes", "kbps", "wall_s", "user_s", "sys_s", "max_rss_kb",
 	"vmaf", "vmaf_hmean", "vmaf_p1", "vmaf_neg", "psnr_y", "psnr_cb", "psnr_cr", "ciede2000",
-	"ffmpeg_version", "host", "time", "colour_shift_p99", "colour_shift_p999", "scorer",
+	"ffmpeg_version", "host", "time", "color_shift_p99", "color_shift_p999", "scorer",
 }
 
 // scorer is the current scoring method: v2 added CIEDE2000 on sampled
-// frames; v3 the block colour shift.
+// frames; v3 the block color shift.
 const scorer = "v3"
 
 func ftoa(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }
@@ -63,7 +63,7 @@ func (r *Row) record() []string {
 		ftoa(m.VMAF), ftoa(m.VMAFHMean), ftoa(m.VMAFP1), ftoa(m.VMAFNeg),
 		ftoa(m.PSNRY), ftoa(m.PSNRCb), ftoa(m.PSNRCr), ftoa(m.CIEDE2000),
 		r.FFmpegVersion, r.Host, r.Time.UTC().Format(time.RFC3339),
-		ftoa(m.ColourShiftP99), ftoa(m.ColourShiftP999), r.Scorer,
+		ftoa(m.ColorShiftP99), ftoa(m.ColorShiftP999), r.Scorer,
 	}
 }
 
@@ -127,8 +127,8 @@ func parseRow(col map[string]int, rec []string) (Row, error) {
 	r.Time = t
 	// Columns added later are absent from older rows.
 	for name, dst := range map[string]*float64{
-		"colour_shift_p99":  &r.Metrics.ColourShiftP99,
-		"colour_shift_p999": &r.Metrics.ColourShiftP999,
+		"color_shift_p99":  &r.Metrics.ColorShiftP99,
+		"color_shift_p999": &r.Metrics.ColorShiftP999,
 	} {
 		*dst = math.NaN()
 		if i, ok := col[name]; ok && i < len(rec) {
@@ -177,6 +177,12 @@ func LoadResults(path string) (*Results, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
+	asWritten := slices.Clone(header)
+	for i, h := range header {
+		if n, ok := renamedColumns[h]; ok {
+			header[i] = n
+		}
+	}
 	col := columnIndex(header)
 	current := columnIndex(resultColumns)
 	upgradable := len(header) <= len(resultColumns) && slices.Equal(header, resultColumns[:len(header)])
@@ -198,15 +204,21 @@ func LoadResults(path string) (*Results, error) {
 		}
 		r.add(row)
 	}
-	if !slices.Equal(header, resultColumns) {
+	if !slices.Equal(asWritten, resultColumns) {
 		if !upgradable {
-			return nil, fmt.Errorf("%s: unrecognised columns %q", path, header)
+			return nil, fmt.Errorf("%s: unrecognized columns %q", path, header)
 		}
 		if err := r.rewrite(); err != nil {
 			return nil, fmt.Errorf("upgrading %s: %w", path, err)
 		}
 	}
 	return r, nil
+}
+
+// renamedColumns maps old column names to current ones.
+var renamedColumns = map[string]string{
+	"colour_shift_p99":  "color_shift_p99",
+	"colour_shift_p999": "color_shift_p999",
 }
 
 func columnIndex(names []string) map[string]int {

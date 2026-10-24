@@ -7,13 +7,13 @@ import (
 	"os"
 )
 
-// ColourShift reads the block-average images scoreArgv wrote (16-bit
+// ColorShift reads the block-average images scoreArgv wrote (16-bit
 // little-endian RGB, bw x bh per frame, sRGB-encoded) and returns the
 // 99th and 99.9th-percentile a*b* distances between corresponding
 // blocks. Frames are paired by position; if one side has more (an
 // encode can end a frame or two differently), the extra are ignored,
 // as libvmaf does.
-func ColourShift(distPath, refPath string, bw, bh uint64) (p99, p999 float64, err error) {
+func ColorShift(distPath, refPath string, bw, bh uint64) (p99, p999 float64, err error) {
 	dist, err := os.ReadFile(distPath)
 	if err != nil {
 		return 0, 0, err
