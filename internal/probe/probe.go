@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/vansante/go-ffprobe.v2"
 )
@@ -17,6 +18,8 @@ type VideoData struct {
 	FPS            float64
 	ColorTransfer  string
 	ColorPrimaries string
+	// Duration is the container's duration.
+	Duration time.Duration
 }
 
 // Tone is the dynamic range of a video, as used for DASH labels.
@@ -59,7 +62,14 @@ func (FFProbe) Probe(ctx context.Context, filename string) (VideoData, error) {
 	if err != nil {
 		return VideoData{}, fmt.Errorf("probing %q: %w", filename, err)
 	}
-	return fromStreams(filename, data.Streams)
+	vd, err := fromStreams(filename, data.Streams)
+	if err != nil {
+		return VideoData{}, err
+	}
+	if data.Format != nil {
+		vd.Duration = data.Format.Duration()
+	}
+	return vd, nil
 }
 
 func fromStreams(filename string, streams []*ffprobe.Stream) (VideoData, error) {

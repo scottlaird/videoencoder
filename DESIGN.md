@@ -213,11 +213,18 @@ with two changes: packager writes into a staging directory, and the
 thumbnail post-processor runs before publish. Audio comes from the
 first source, which is fine since the sources differ only in color.
 
-Packager rewrites every output on every run. The question for S3 is
-whether unchanged inputs give byte-identical outputs. I'll test this
-first. If they don't, we key packaged files by their input build key
-and only republish the ones whose key changed, rather than trusting
-their content hash.
+Packager rewrites every output on every run, and its output is **not**
+byte-deterministic. I tested this on 2026-10-24 with packager 3.9 and
+unchanged inputs:
+
+- Every media file differs in exactly 6 bytes, the wall-clock creation
+  and modification times in `mvhd`/`tkhd`/`mdhd`. A small
+  post-processor rewrites those to a fixed value, the source's mtime,
+  which makes the media files deterministic. It needs no new
+  dependency, since MP4 boxes are easy to walk.
+- `dash.mpd` assigns AdaptationSet ids in thread order, so they
+  shuffle between runs. Manifests are tiny and are always uploaded
+  last anyway, so this doesn't matter.
 
 ### Publishing
 
@@ -239,8 +246,8 @@ the staging directory to the target:
   players already streaming the old manifest still work.
 
 Changing the quality of AV1 2160p re-encodes that one rendition and
-reruns packager. If packager's output is deterministic, the upload is
-the new `av1-2160.<key>.mp4` plus the manifests and nothing else.
+reruns packager. With the timestamps normalized, the upload is the new
+`av1-2160.<key>.mp4` plus the manifests and nothing else.
 
 ### Temporal (later)
 
@@ -276,10 +283,13 @@ when we get there.
 
 ```yaml
 # bench.yaml
-samples: samples/           # every *.mov/*.mp4 here is a sample clip
+samples: samples/           # every video file here is a sample clip
+workdir: work               # results.csv, best.csv, keep/, tmp/
 target_vmaf: 95
-models: [vmaf_v0.6.1, vmaf_v0.6.1neg]   # first one drives the search
-keep: best                  # keep the passing encode closest to target
+min_ciede2000: 0            # optional colour limits, see Measurement
+min_chroma_psnr: 0
+vmaf_threads: 4             # libvmaf n_threads
+vmaf_jobs: 3                # scorings run at once
 flagsets:
   x265-slow-fastdecode:
     args: [-g, "600", -keyint_min, "600", -c:v, libx265, -preset, slow, -tune, fastdecode]
@@ -293,10 +303,11 @@ flagsets:
 ```
 
 `quality` falls back to per-encoder defaults: x264/x265 `-crf`
-0–51 in steps of 0.1, SVT-AV1 `-crf` 1–63 integers, NVENC `-cq:v`,
-VideoToolbox `-q:v` where *higher* means better. Each default
-records which direction is "better", so the search works for all of
-them.
+10–40 in steps of 0.1, SVT-AV1 and libaom `-crf` 10–63 in whole
+steps, NVENC `-cq:v`, and VideoToolbox `-q:v`, where *higher* means
+better. Each default records which direction is "better", so the
+search works for all of them. Each also has a typical answer to start
+from (`quality.seed`).
 
 ### Search
 
@@ -317,12 +328,14 @@ and there's a little noise. The goal for each (sample, flagset) is the
    to pick the next q (regula falsi), falling back to bisection if
    interpolation stalls. Round to `step`. Stop when the bracket is
    one step wide.
-4. **Confirm**: the answer is the passing end of the final bracket.
-   If two neighbouring q values produce byte-identical files (a
-   plateau), we record that and move on.
+4. **Answer**: the passing end of the final bracket. Plateaus need no
+   special handling, because the bracket narrows through them like
+   anywhere else.
 
-That's typically 5–8 encodes per (sample, flagset) instead of the
-50–100 a linear sweep at 0.1 needs.
+Searches advance in rounds. Each round, every unfinished search asks
+for one encode. The encodes run one after another, then all of them
+are scored in parallel. In the tests (a 300-step CRF range) a search
+with no seed took 7 encodes, and seeded ones took 3–4.
 
 ### Caching and incrementality
 
@@ -349,6 +362,23 @@ log and reuses whatever it finds. So:
   harmonic mean and the 1st-percentile frame score. The
   1st-percentile score catches the "one ugly second" that a mean
   hides, which is one of the ways VMAF misleads.
+- **VMAF ignores chroma entirely.** A 20° hue rotation of a test
+  pattern still scores VMAF 99.9. So the same libvmaf pass also
+  computes per-plane PSNR (`psnr_y/cb/cr`) and CIEDE2000, where higher
+  is better: about 51 for a 2° hue shift, 43 for 5°. `min_ciede2000`
+  and `min_chroma_psnr` make colour error fail an encode. This is aimed
+  at the AV1 colour cast in the water of the North Cascades video, which
+  more quality only partly fixes. Both inputs are converted to
+  `yuv444p10le` before scoring, so chroma subsampling loss counts too.
+- CIEDE2000 costs about 9× as much as VMAF per frame. On a 3 s test,
+  VMAF took 3.1 s, both VMAF models 5.5 s, and adding CIEDE2000 28 s.
+  So it runs in a second branch of the same filtergraph, on every
+  sixth frame at half resolution, the chroma's own resolution in
+  4:2:0, for about 1/24 the cost. A colour cast is broad and
+  persistent, so sampling doesn't miss it. Chroma PSNR is nearly free
+  and stays on every frame.
+- Each score is logged the moment it finishes, so an interrupted
+  round loses only the scorings still running.
 - Encodes below the reference resolution are scaled back up
   (bicubic) before scoring. 2160p samples use the `vmaf_4k` model.
 - Hosts are recorded. Timings from different machines are compared
@@ -357,13 +387,19 @@ log and reuses whatever it finds. So:
 ### Output
 
 - `results.csv`: append-only, one row per encode. Columns: `sample`,
-  `encoder`, `flagset`, `args`, `quality`, `key`, `bytes`, `kbps`,
-  `wall_s`, `user_s`, `sys_s`, `max_rss_kb`, `vmaf`, `vmaf_hmean`,
-  `vmaf_p1`, `vmaf_neg`, `ffmpeg_version`, `host`, `time`. It's one
-  file for everything, with sample and encoder as the leading
-  columns, which keeps cross-sample queries easy.
+  `encoder`, `flagset`, `args`, `quality_flag`, `quality`, `key`,
+  `flagset_key`, `bytes`, `kbps`, `wall_s`, `user_s`, `sys_s`,
+  `max_rss_kb`, `vmaf`, `vmaf_hmean`, `vmaf_p1`, `vmaf_neg`,
+  `psnr_y`, `psnr_cb`, `psnr_cr`, `ciede2000`, `ffmpeg_version`,
+  `host`, `time`. It's one file for everything, with sample and
+  encoder as the leading columns, which keeps cross-sample queries
+  easy. Encodes are video only (`-map 0:v:0 … -an`), so sizes don't
+  include audio, which the March 2025 numbers did.
 - `best.csv`: regenerated on every run, one row per
   (sample, flagset) holding the answer. Sorted by sample, then size.
+  It's derived from the log under the *current* pass criteria, so
+  changing `target_vmaf` re-ranks results without re-encoding
+  anything that was already measured.
 - `keep/<sample>/<flagset>.q<quality>.mp4`: the best encode of each
   (sample, flagset), kept for viewing by eye. Every other encode is
   deleted once it has been scored. `encbench prune` deletes keepers
