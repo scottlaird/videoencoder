@@ -15,12 +15,9 @@ Requirements:
 
 - Install via `go install ./cmd/videoencoder` (or `go build ./cmd/videoencoder`).
 - Make sure that `ffmpeg`, `ffprobe`, and `packager` are installed.
-- Run `videoencoder file.mov` to encode.
-
-By default, intermediate transcoded videos are stored in
-`./transcodes`, and the output lives in `./stream`, but these can be
-changed via `--outdir` and `--streamdir`.  Both are created if they
-don't exist.
+- Run `videoencoder file.mov` to encode one file, or describe your
+  videos in config files (below) and run `videoencoder` in their
+  directory.
 
 `videoencoder` will recognize when source files, destination files,
 or transcoding settings change, and will rebuild/re-transcode as few
@@ -29,13 +26,51 @@ renamed when ffmpeg finishes, so an interrupted run never leaves a
 truncated file that looks complete.
 
 By default, `videoencoder` will transcode to H.264 up to 1080p, H.265
-up to 4k, and AVC1 up to 8k.  This is currently configued via source
-code; a config file will follow at some point.
+up to 4k, and AV1 up to 8k, never above the source's resolution.
+Intermediate renditions go in `transcodes/<name>/` and the stream in
+`stream/<name>/`, next to the video.
+
+### Configuration
+
+Settings are YAML, merged from several layers, lowest priority first:
+
+1. the built-in defaults ([`internal/config/default.yaml`](internal/config/default.yaml)),
+2. `~/.config/videoencoder/config.yaml` (or `--config`),
+3. every `videoencoder.yaml` from `/` down to the video's directory,
+4. the video's entry under `videos:` in its directory's `videoencoder.yaml`,
+5. the video's sidecar, `<name>.video.yaml`,
+6. `--outdir`, `--streamdir` and `--thumbnails` on the command line.
+
+Maps merge key by key, other values replace, and `null` deletes an
+inherited key.  Renditions and encoders are maps keyed by name, so a
+layer can change or drop one rendition:
+
+```yaml
+# trip/videoencoder.yaml: applies to every video in trip/ and below
+renditions:
+  av1-4320: null              # no 8K for this project
+videos:
+  hike:
+    sources: {hdr: hike-hdr.mov, sdr: hike-sdr.mov}
+
+# trip/hike.video.yaml: just this video
+renditions:
+  av1-2160: {quality: 30}     # only this rendition re-encodes
+```
+
+`videoencoder` (or `videoencoder dir`) renders every video defined
+under a directory, and `videoencoder plan` prints each video's merged
+config, annotated with the file each value came from, plus which
+renditions would be rebuilt and why.  Relative paths are relative to
+the video's directory, and `{name}` in `outdir`/`streamdir` is the
+video's name.
 
 `videoencoder` can handle both SDR and HDR videos with no additional
 flags.  It can also combine SDR and HDR versions of the same source
 into a single SDR+HDR stream, where the client can choose which flavor
-to stream.  To do this, run `videoencoder hdr.mov sdr.mov`.  The two
+to stream.  To do this, run `videoencoder hdr.mov sdr.mov`, or list
+both under `sources:`.  Sources are encoded in label order, and the
+first supplies the audio and poster.  The two
 videos should be the same length and ideally the same resolution.
 They will be individually transcoded and then bundled into the same
 DASH and HLS manifests for streaming.
@@ -74,8 +109,6 @@ The best encode for each sample and flagset is kept under
 
 ## TODO
 
-- Add a configuration file for storing transcoding settings and flags.
-  Right now, this requires re-compiling `videoencoder`.
 - Optimize the default transcoding settings.
 
 ## Notes

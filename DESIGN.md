@@ -53,12 +53,20 @@ Layers are merged from lowest to highest priority:
    root to the video's directory, shallowest first. A project
    directory can override settings for all the videos beneath it.
 3. The video's own settings. These can be an entry under `videos:`
-   in a project's `videoencoder.yaml`, a sidecar `<name>.video.yaml`
-   next to the sources, or both. If both exist, the sidecar is merged
-   on top of the project entry.
+   in the `videoencoder.yaml` of the video's own directory, a sidecar
+   `<name>.video.yaml` next to the sources, or both. If both exist,
+   the sidecar is merged on top of the project entry. A `videos:`
+   entry in a parent directory's file defines a different video, one
+   that lives in that directory, so it doesn't apply.
+4. Command-line overrides (`--outdir`, `--streamdir`,
+   `--thumbnails`).
 
-The built-in defaults (today's hard-coded ladder) sit under layer 1, so
-it works with no config at all.
+The built-in defaults sit under layer 1 so it works with no config at
+all. They were the hard-coded ladder and are now
+`internal/config/default.yaml`, embedded in the binary. A video's
+directory is where its sidecar or project entry lives. For a bare
+`videoencoder foo.mov`, it's the first file's directory, and the video
+is named after that file.
 
 **Merge rules.** Maps merge key by key, recursively. Scalars and lists
 replace. An explicit `null` deletes the inherited key. Anything a lower
@@ -110,11 +118,12 @@ renditions:
 Running `videoencoder` with no arguments in a directory renders every
 video defined under it, whether by a sidecar or a `videos:` entry, and
 counts each video once. `videoencoder foo.video.yaml` renders just
-that one. You still need command-line flags for one-off overrides and
-for a bare `videoencoder foo.mov` with no job file, but they are never
-required to re-render. `videoencoder plan` prints the merged config,
-with the layer each value came from, plus the list of renditions to
-build and why. That's the debugging tool for "why did this rebuild?"
+that one. Command-line flags are only for one-off overrides and for a
+bare `videoencoder foo.mov`; they're never needed to re-render.
+`videoencoder plan` prints the merged config, with the layer each
+value came from as a line comment, plus every rendition and whether
+it would be rebuilt and why. That's the tool for answering "why did
+this rebuild?"
 
 Unknown keys are an error, using strict decoding of each layer. A typo
 in a project override should fail, not do nothing.

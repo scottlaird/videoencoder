@@ -1,0 +1,49 @@
+# Built-in defaults: the lowest config layer. Every layer uses this
+# same schema; maps merge key by key, scalars and lists replace, and
+# null deletes an inherited key.
+
+# Where intermediate renditions and the finished stream go. Relative
+# paths are relative to the video's directory; {name} is the video's
+# name.
+outdir: transcodes/{name}
+streamdir: stream/{name}
+
+# Seek-thumbnail JPEGs. Not yet supported by shaka-packager.
+thumbnails: false
+
+encoders:
+  h264:
+    codec: libx264
+    quality_flag: -crf
+    args: [-preset, faster]
+    cap_bitrate: true
+  h265:
+    codec: libx265
+    quality_flag: -crf
+    # main422-10 and hvc1 are needed for macOS playback.
+    args: [-preset, faster, -profile:v, main422-10, -tag:v, hvc1]
+    cap_bitrate: true
+  av1:
+    codec: libsvtav1
+    quality_flag: -crf
+    args: [-preset, "5"]
+
+# Renditions taller than the source are dropped. If an encoder's
+# tallest rendition is shorter than the source, that encoder also gets
+# one rendition at the source's own resolution.
+renditions:
+  h264-480:  {encoder: h264, height: 480,  quality: 18, bitrate: 1M}
+  h264-720:  {encoder: h264, height: 720,  quality: 18, bitrate: 2M}
+  h264-1080: {encoder: h264, height: 1080, quality: 18, bitrate: 4M}
+  h265-480:  {encoder: h265, height: 480,  quality: 20, bitrate: 800k}
+  h265-720:  {encoder: h265, height: 720,  quality: 20, bitrate: 1M}
+  h265-1080: {encoder: h265, height: 1080, quality: 20, bitrate: 2M}
+  h265-1440: {encoder: h265, height: 1440, quality: 20, bitrate: 3M}
+  h265-2160: {encoder: h265, height: 2160, quality: 20, bitrate: 4M}
+  av1-480:   {encoder: av1,  height: 480,  quality: 28, bitrate: 700k}
+  av1-720:   {encoder: av1,  height: 720,  quality: 30, bitrate: 1M}
+  av1-1080:  {encoder: av1,  height: 1080, quality: 31, bitrate: 2M}
+  av1-1440:  {encoder: av1,  height: 1440, quality: 32, bitrate: 3M}
+  av1-2160:  {encoder: av1,  height: 2160, quality: 32, bitrate: 4M}
+  av1-3240:  {encoder: av1,  height: 3240, quality: 32, bitrate: 5M}
+  av1-4320:  {encoder: av1,  height: 4320, quality: 32, bitrate: 8M}

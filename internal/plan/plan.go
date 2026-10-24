@@ -5,68 +5,70 @@ package plan
 import (
 	"fmt"
 	"path/filepath"
+	"strconv"
 
+	"github.com/scottlaird/videoencoder/internal/config"
 	"github.com/scottlaird/videoencoder/internal/ffmpeg"
 	"github.com/scottlaird/videoencoder/internal/probe"
 )
 
 // Target is one rendition to encode. Width is filled in by Filter.
 type Target struct {
+	Name          string // rendition name
+	EncoderName   string
+	Encoder       config.Encoder
 	Width, Height uint64
-	Codec         string
+	Quality       float64
 	Bitrate       uint64
-	CodecQuality  uint64
+	Args          []string
 }
 
 type Targets []*Target
 
-// DefaultTargets is the built-in rendition ladder. With thumbnails, it
-// adds a 180p JPEG sequence for seek thumbnails.
-func DefaultTargets(thumbnails bool) Targets {
-	t := Targets{
-		{Height: 480, Codec: "h264", Bitrate: 1000000, CodecQuality: 18},
-		{Height: 720, Codec: "h264", Bitrate: 2000000, CodecQuality: 18},
-		{Height: 1080, Codec: "h264", Bitrate: 4000000, CodecQuality: 18},
-		{Height: 480, Codec: "h265", Bitrate: 800000, CodecQuality: 20},
-		{Height: 720, Codec: "h265", Bitrate: 1000000, CodecQuality: 20},
-		{Height: 1080, Codec: "h265", Bitrate: 2000000, CodecQuality: 20},
-		{Height: 1440, Codec: "h265", Bitrate: 3000000, CodecQuality: 20},
-		{Height: 2160, Codec: "h265", Bitrate: 4000000, CodecQuality: 20},
-		{Height: 480, Codec: "av1", Bitrate: 700000, CodecQuality: 28},
-		{Height: 720, Codec: "av1", Bitrate: 1000000, CodecQuality: 30},
-		{Height: 1080, Codec: "av1", Bitrate: 2000000, CodecQuality: 31},
-		{Height: 1440, Codec: "av1", Bitrate: 3000000, CodecQuality: 32},
-		{Height: 2160, Codec: "av1", Bitrate: 4000000, CodecQuality: 32},
-		{Height: 3240, Codec: "av1", Bitrate: 5000000, CodecQuality: 32},
-		{Height: 4320, Codec: "av1", Bitrate: 8000000, CodecQuality: 32},
+// FromConfig returns the rendition ladder of c, ordered by encoder and
+// height.
+func FromConfig(c *config.Config) (Targets, error) {
+	var t Targets
+	for _, name := range c.RenditionNames() {
+		r := c.Renditions[name]
+		bitrate, err := config.ParseBitrate(r.Bitrate)
+		if err != nil {
+			return nil, fmt.Errorf("rendition %q: %w", name, err)
+		}
+		t = append(t, &Target{
+			Name:        name,
+			EncoderName: r.Encoder,
+			Encoder:     *c.Encoders[r.Encoder],
+			Height:      r.Height,
+			Quality:     r.Quality,
+			Bitrate:     bitrate,
+			Args:        r.Args,
+		})
 	}
-	if thumbnails {
-		t = append(t, &Target{Height: 180, Codec: "jpg"})
-	}
-	return t
+	return t, nil
 }
 
 // Filter fits the ladder to a source: it drops targets taller than the
 // source and computes each target's width from the source aspect
 // ratio. A codec whose ladder stops short of the source height gets
 // one extra rendition at full source resolution instead of an upscale.
-// Targets must be in ascending height order within each codec.
+// Targets must be in ascending height order within each encoder.
 func (targets Targets) Filter(vd probe.VideoData) Targets {
 	filtered := Targets{}
-	codecMaxHeight := make(map[string]uint64)
+	maxHeight := make(map[string]uint64)
 
 	for _, t := range targets {
 		nt := *t
 		switch {
 		case t.Height <= vd.Height:
 			nt.Width = scaledWidth(vd, t.Height)
-		case codecMaxHeight[t.Codec] < vd.Height:
+		case maxHeight[t.EncoderName] < vd.Height:
 			nt.Width, nt.Height = vd.Width, vd.Height
 		default:
 			continue
 		}
 		filtered = append(filtered, &nt)
-		codecMaxHeight[t.Codec] = max(codecMaxHeight[t.Codec], nt.Height)
+		maxHeight[t.EncoderName] = max(maxHeight[t.EncoderName], nt.Height)
 	}
 	return filtered
 }
@@ -90,59 +92,38 @@ func baseCommand(infile string) []string {
 // Job returns the ffmpeg job that encodes infile to t under outdir.
 // seq distinguishes the outputs of different sources (e.g. HDR and SDR
 // versions of one video).
-func (t *Target) Job(infile, outdir string, seq int) (*ffmpeg.Job, error) {
-	size := fmt.Sprintf("%dx%d", t.Width, t.Height)
-	quality := fmt.Sprintf("%d", t.CodecQuality)
-	bitrate := fmt.Sprintf("%d", t.Bitrate)
-	burst := fmt.Sprintf("%d", t.Bitrate*3/2)
-	output := filepath.Join(outdir, fmt.Sprintf("video_%d_%s_%dx%d_%d.mp4", seq, t.Codec, t.Width, t.Height, t.Bitrate))
+func (t *Target) Job(infile, outdir string, seq int) *ffmpeg.Job {
+	args := []string{
+		"-s", fmt.Sprintf("%dx%d", t.Width, t.Height),
+		"-c:v", t.Encoder.Codec,
+	}
+	args = append(args, t.Encoder.Args...)
+	args = append(args, t.Encoder.QualityFlag, strconv.FormatFloat(t.Quality, 'f', -1, 64))
+	if t.Encoder.CapBitrate && t.Bitrate > 0 {
+		burst := fmt.Sprint(t.Bitrate * 3 / 2)
+		args = append(args, "-b:v", fmt.Sprint(t.Bitrate), "-maxrate", burst, "-bufsize", burst)
+	}
+	args = append(args, t.Args...)
+	args = append(args, "-an")
 
-	var args []string
-	switch t.Codec {
-	case "av1":
-		args = []string{
-			"-s", size,
-			"-c:v", "libsvtav1",
-			"-crf", quality,
-			"-preset", "5",
-			"-an",
-		}
-	case "h264":
-		args = []string{
-			"-s", size,
-			"-c:v", "libx264",
-			"-preset", "faster",
-			"-crf", quality,
-			"-b:v", bitrate,
-			"-maxrate", burst,
-			"-bufsize", burst,
-			"-an",
-		}
-	case "h265":
-		args = []string{
-			"-s", size,
-			"-c:v", "libx265",
-			"-preset", "faster",
-			"-profile:v", "main422-10", // needed for macOS playback
-			"-tag:v", "hvc1", // needed for macOS playback
-			"-crf", quality,
-			"-b:v", bitrate,
-			"-maxrate", burst,
-			"-bufsize", burst,
-			"-an",
-		}
-	case "jpg":
-		args = []string{
-			"-s", size,
+	output := filepath.Join(outdir, fmt.Sprintf("video_%d_%s_%dx%d_%d.mp4", seq, t.EncoderName, t.Width, t.Height, t.Bitrate))
+	return &ffmpeg.Job{Input: infile, Output: output, Base: baseCommand(infile), Args: args}
+}
+
+// SeekThumbnailJob writes one 180p JPEG per second of infile, for seek
+// thumbnails.
+func SeekThumbnailJob(vd probe.VideoData, infile, outdir string) *ffmpeg.Job {
+	const height = 180
+	return &ffmpeg.Job{
+		Input:  infile,
+		Output: filepath.Join(outdir, "thumbnail-%d.jpg"),
+		Base:   baseCommand(infile),
+		Args: []string{
+			"-s", fmt.Sprintf("%dx%d", scaledWidth(vd, height), height),
 			"-r", "1",
 			"-f", "image2",
-		}
-		output = filepath.Join(outdir, "thumbnail-%d.jpg")
-	default:
-		return nil, fmt.Errorf("unknown codec %q", t.Codec)
+		},
 	}
-
-	return &ffmpeg.Job{Input: infile, Output: output, Base: baseCommand(infile), Args: args}, nil
 }
 
 // AudioJob extracts the audio of infile into outdir/audio.mp4.
