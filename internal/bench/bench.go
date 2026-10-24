@@ -365,8 +365,21 @@ func (b *Bench) encodeArgv(p *pending) []string {
 	argv := []string{"ffmpeg", "-hide_banner", "-loglevel", "error", "-nostats", "-y",
 		"-i", p.t.sample.path, "-map", "0:v:0"}
 	argv = append(argv, p.t.fs.Args...)
-	argv = append(argv, p.t.fs.Quality.Flag, ftoa(p.quality), "-an", p.out)
-	return argv
+	argv = append(argv, p.t.fs.Quality.Flag, ftoa(p.quality), "-an")
+	argv = append(argv, containerArgs(p.t.fs)...)
+	return append(argv, p.out)
+}
+
+// containerArgs are muxing options that don't change the encoded
+// stream, so they aren't part of the flagset's key. HEVC is tagged
+// hvc1, without which QuickTime and Safari won't open the keepers.
+func containerArgs(fs *Flagset) []string {
+	if strings.Contains(fs.Encoder(), "265") || strings.HasPrefix(fs.Encoder(), "hevc") {
+		if !slices.Contains(fs.Args, "-tag:v") {
+			return []string{"-tag:v", "hvc1"}
+		}
+	}
+	return nil
 }
 
 func (b *Bench) encodeAll(ctx context.Context, batch []*pending) error {

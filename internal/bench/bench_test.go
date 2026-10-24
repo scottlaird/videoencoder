@@ -238,11 +238,18 @@ func (f *fakeFFmpeg) Exec(_ context.Context, argv []string) (Measurement, error)
 		return Measurement{}, errors.New("Unknown encoder 'libbroken'")
 	}
 	out := argv[len(argv)-1]
-	q, err := strconv.ParseFloat(argv[len(argv)-3], 64)
+	qi := slices.IndexFunc(argv, func(a string) bool { return a == "-crf" || a == "-qp" })
+	if qi < 0 {
+		return Measurement{}, errors.New("no quality flag")
+	}
+	q, err := strconv.ParseFloat(argv[qi+1], 64)
 	if err != nil {
 		return Measurement{}, err
 	}
 	f.quality[out] = q
+	if slices.Contains(argv, "libx265") && !slices.Contains(argv, "hvc1") {
+		return Measurement{}, errors.New("HEVC encode not tagged hvc1")
+	}
 	f.encodes = append(f.encodes, fmt.Sprintf("%s %v", filepath.Base(argv[slices.Index(argv, "-i")+1]), q))
 	return Measurement{Wall: 2 * time.Second, User: 10 * time.Second}, os.WriteFile(out, bytes.Repeat([]byte("x"), int(10000/q)), 0o644)
 }
@@ -473,5 +480,22 @@ func TestBenchScales(t *testing.T) {
 	}
 	if fake.downscales != 0 || len(fake.encodes) != 0 {
 		t.Errorf("rerun made %d copies and %d encodes, want none", fake.downscales, len(fake.encodes))
+	}
+}
+
+func TestContainerArgs(t *testing.T) {
+	tests := []struct {
+		args []string
+		want []string
+	}{
+		{[]string{"-c:v", "libx265"}, []string{"-tag:v", "hvc1"}},
+		{[]string{"-c:v", "hevc_videotoolbox"}, []string{"-tag:v", "hvc1"}},
+		{[]string{"-c:v", "libx265", "-tag:v", "hev1"}, nil},
+		{[]string{"-c:v", "libsvtav1"}, nil},
+	}
+	for _, tt := range tests {
+		if got := containerArgs(&Flagset{Args: tt.args}); !slices.Equal(got, tt.want) {
+			t.Errorf("containerArgs(%q) = %q, want %q", tt.args, got, tt.want)
+		}
 	}
 }
