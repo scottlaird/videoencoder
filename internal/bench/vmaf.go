@@ -27,14 +27,21 @@ type Metrics struct {
 	PSNRCb    float64
 	PSNRCr    float64
 	CIEDE2000 float64
-	// ColorShiftP99 is the 99th percentile, over 16x16 blocks of
-	// sampled frames, of the shift in each block's average color, as
-	// distance in CIELAB a*b* (hue and saturation, ignoring lightness).
-	// Lower is better. Unlike the frame averages above, it catches a
-	// cast confined to part of the picture. ColorShiftP999 is the same
-	// at the 99.9th percentile.
+	// ColorShiftP99 is the 99th percentile, over 64x64 blocks of every
+	// frame, of the error in each block's average color, as
+	// ΔE_ITP chroma (ITU-R BT.2124: hue and saturation, ignoring
+	// lightness, with about 1 the smallest visible difference). Lower is
+	// better. Unlike the frame averages above, it catches a cast
+	// confined to part of the picture, and it is measured in HDR for
+	// HDR. ColorShiftP999 is the same at the 99.9th percentile.
 	ColorShiftP99  float64
 	ColorShiftP999 float64
+	// ColorFlickerP99 and P999 are percentiles of how far a block's
+	// color error strays from its own average over colorWindow frames:
+	// a cast that comes and goes, which the eye notices far more than a
+	// steady one of the same size. Lower is better.
+	ColorFlickerP99  float64
+	ColorFlickerP999 float64
 }
 
 // vmafModel picks the model trained for the reference's viewing
@@ -60,11 +67,11 @@ const frameIndexPTS = "settb=AVTB,setpts=N"
 const colorFrameStep = 6
 
 // colorBlock is the side, in pixels at scoring size, of the blocks
-// whose average colors are compared for color shift. A color cast
-// is a shift in the average color of an area, and 16x16 blocks are
-// large enough to average out noise and small enough not to dilute a
-// cast confined to part of the frame (whitewater, say).
-const colorBlock = 16
+// whose average colors are compared: AV1's superblock size. A cast that
+// is faint per pixel but covers a large patch is what the eye notices,
+// and smaller blocks drown it in the ordinary noise of textured areas
+// such as moving water.
+const colorBlock = 64
 
 // blockSize is the size of the block-average images for a scoring size.
 func blockSize(width, height uint64) (uint64, uint64) {
@@ -74,49 +81,72 @@ func blockSize(width, height uint64) (uint64, uint64) {
 // scoreArgv returns the ffmpeg command that scores distorted against
 // reference. It writes two libvmaf JSON logs: logPath with VMAF and
 // PSNR on every frame, and colorLogPath with CIEDE2000 on sampled
-// frames. It also writes, for sampled frames, block-average images of
-// both sides (16-bit RGB, one pixel per colorBlock square) to
-// distBlocks and refBlocks, for ColorShift. The distorted video is
-// scaled to the reference size first, and both are converted to one
-// pixel format, since libvmaf needs matching inputs.
+// frames. It also writes, for every frame, block-average images of both
+// sides (16-bit RGB in
+// the reference's own transfer and primaries, one pixel per colorBlock
+// square) to distBlocks and refBlocks, for ColorShift. The distorted
+// video is scaled to the reference size first, and both are converted
+// to one pixel format, since libvmaf needs matching inputs.
 //
-// prefilter, if not "", is applied to both inputs first; for HDR, a
-// tone map to SDR, since VMAF and CIEDE2000 are only meaningful there.
-func scoreArgv(distorted, reference string, width, height uint64, threads int, logPath, colorLogPath, distBlocks, refBlocks, prefilter string) []string {
+// prefilter, if not "", is applied to both inputs for VMAF and
+// CIEDE2000: for HDR, a tone map to SDR, since those are SDR metrics.
+// The block images skip it: color is compared in HDR as HDR, where a
+// tone map would squeeze the error in highlights. blockFilter, if not
+// "", converts them first (HLG to PQ, say).
+func scoreArgv(distorted, reference string, width, height uint64, threads int, logPath, colorLogPath, distBlocks, refBlocks, prefilter, blockFilter string) []string {
 	model := vmafModel(height)
 	pre := ""
 	if prefilter != "" {
 		pre = prefilter + ","
 	}
+	bpre := ""
+	if blockFilter != "" {
+		bpre = blockFilter + ","
+	}
 	sample := fmt.Sprintf("select='not(mod(n,%d))',scale=%d:%d:flags=area", colorFrameStep, (width/2)&^1, (height/2)&^1)
 	bw, bh := blockSize(width, height)
-	blocks := fmt.Sprintf("select='not(mod(n,%d))',format=rgb48le,scale=%d:%d:flags=area", colorFrameStep, bw, bh)
+	// The 16-bit 4:4:4 step matters: swscale's direct 8-bit YUV to RGB
+	// path is imprecise enough to read a lossless 8-bit copy as a color
+	// shift of 2.7.
+	blocks := fmt.Sprintf("%sformat=yuv444p16le,format=rgb48le,scale=%d:%d:flags=area", bpre, bw, bh)
+	// The VMAF and CIEDE2000 inputs are prepared exactly as scorer v3
+	// did: prefilter on the decoded frames, then scale and convert. A
+	// prefilter that runs after the 4:4:4 conversion instead scores
+	// every encode about 0.8 VMAF lower.
 	graph := fmt.Sprintf(
-		"[0:v]%sscale=%d:%d:flags=bicubic,format=yuv444p10le,"+frameIndexPTS+",split=3[d][dc][db];"+
-			"[1:v]%sformat=yuv444p10le,"+frameIndexPTS+",split=3[r][rc][rb];"+
+		"[0:v]"+frameIndexPTS+",split[dv][dbs];"+
+			"[dv]%sscale=%d:%d:flags=bicubic,format=yuv444p10le,split[d][dc];"+
+			"[dbs]scale=%d:%d:flags=bicubic,%s[dbo];"+
+			"[1:v]"+frameIndexPTS+",split[rv][rbs];"+
+			"[rv]%sformat=yuv444p10le,split[r][rc];"+
+			"[rbs]%s[rbo];"+
 			"[d][r]libvmaf=log_fmt=json:log_path=%s:n_threads=%d"+
 			":model='version=%s\\:name=vmaf|version=%sneg\\:name=vmaf_neg'"+
 			":feature='name=psnr'[quality];"+
 			"[dc]%s[ds];[rc]%s[rs];"+
-			"[ds][rs]libvmaf=log_fmt=json:log_path=%s:n_threads=%d:feature='name=ciede'[color];"+
-			"[db]%s[dbo];[rb]%s[rbo]",
-		pre, width, height, pre, escapeFilterValue(logPath), threads, model, model,
-		sample, sample, escapeFilterValue(colorLogPath), threads, blocks, blocks)
+			"[ds][rs]libvmaf=log_fmt=json:log_path=%s:n_threads=%d:feature='name=ciede'[color]",
+		pre, width, height, width, height, blocks, pre, blocks,
+		escapeFilterValue(logPath), threads, model, model,
+		sample, sample, escapeFilterValue(colorLogPath), threads)
 	return []string{
 		"ffmpeg", "-hide_banner", "-loglevel", "error", "-nostats", "-y",
 		"-i", distorted, "-i", reference,
 		"-filter_complex", graph,
 		"-map", "[quality]", "-f", "null", "-",
 		"-map", "[color]", "-f", "null", "-",
-		"-map", "[dbo]", "-f", "rawvideo", distBlocks,
-		"-map", "[rbo]", "-f", "rawvideo", refBlocks,
+		// Passthrough, or the muxer pads or drops frames to fit a
+		// constant rate (frameIndexPTS's microsecond ticks drop nearly
+		// all of them), and frames stop lining up with the reference.
+		"-map", "[dbo]", "-fps_mode", "passthrough", "-f", "rawvideo", distBlocks,
+		"-map", "[rbo]", "-fps_mode", "passthrough", "-f", "rawvideo", refBlocks,
 	}
 }
 
 // Score measures distorted against reference, which must be width x
-// height (distorted is scaled to match). Scratch logs go in tmpDir,
-// named after name. See scoreArgv for prefilter.
-func Score(ctx context.Context, e Executor, distorted, reference string, width, height uint64, threads int, tmpDir, name, prefilter string) (Metrics, error) {
+// height (distorted is scaled to match), and whose color transfer
+// (ffprobe's name: "smpte2084", "bt709", ...) is transfer. Scratch logs
+// go in tmpDir, named after name. See scoreArgv for prefilter.
+func Score(ctx context.Context, e Executor, distorted, reference string, width, height uint64, threads int, tmpDir, name, prefilter, transfer string) (Metrics, error) {
 	logPath := filepath.Join(tmpDir, name+".vmaf.json")
 	colorLogPath := filepath.Join(tmpDir, name+".ciede.json")
 	distBlocks := filepath.Join(tmpDir, name+".dist.blocks")
@@ -124,7 +154,8 @@ func Score(ctx context.Context, e Executor, distorted, reference string, width, 
 	for _, p := range []string{logPath, colorLogPath, distBlocks, refBlocks} {
 		defer os.Remove(p)
 	}
-	argv := scoreArgv(distorted, reference, width, height, threads, logPath, colorLogPath, distBlocks, refBlocks, prefilter)
+	space, blockFilter := colorSpaceFor(transfer)
+	argv := scoreArgv(distorted, reference, width, height, threads, logPath, colorLogPath, distBlocks, refBlocks, prefilter, blockFilter)
 	if _, err := e.Exec(ctx, argv); err != nil {
 		return Metrics{}, fmt.Errorf("scoring: %w", err)
 	}
@@ -133,7 +164,9 @@ func Score(ctx context.Context, e Executor, distorted, reference string, width, 
 		return Metrics{}, err
 	}
 	bw, bh := blockSize(width, height)
-	m.ColorShiftP99, m.ColorShiftP999, err = ColorShift(distBlocks, refBlocks, bw, bh)
+	st, err := ColorShift(distBlocks, refBlocks, bw, bh, space)
+	m.ColorShiftP99, m.ColorShiftP999 = st.ShiftP99, st.ShiftP999
+	m.ColorFlickerP99, m.ColorFlickerP999 = st.FlickerP99, st.FlickerP999
 	return m, err
 }
 

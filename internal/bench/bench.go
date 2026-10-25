@@ -439,7 +439,7 @@ func (b *Bench) scoreAll(ctx context.Context, batch []*pending, record func(*pen
 
 func (b *Bench) score(ctx context.Context, p *pending) (Metrics, error) {
 	vd := p.t.sample.vd
-	return Score(ctx, b.Exec, p.out, p.t.sample.path, vd.Width, vd.Height, b.Cfg.VMAFThreads, b.scratchDir(), p.key, p.t.sample.prefilter)
+	return Score(ctx, b.Exec, p.out, p.t.sample.path, vd.Width, vd.Height, b.Cfg.VMAFThreads, b.scratchDir(), p.key, p.t.sample.prefilter, vd.ColorTransfer)
 }
 
 func (b *Bench) record(results *Results, p *pending) error {

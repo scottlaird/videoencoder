@@ -98,6 +98,7 @@ func (tu *Tuner) Tune(ctx context.Context, r *config.Resolved, src string, vd pr
 type reference struct {
 	path          string
 	width, height uint64
+	transfer      string // color transfer, as ffprobe names it
 }
 
 // viewingHeight is the size a rendition of height h is scored at:
@@ -117,9 +118,10 @@ func (tu *Tuner) reference(ctx context.Context, refs map[uint64]reference, sampl
 		return ref, nil
 	}
 	ref := reference{
-		path:   filepath.Join(workdir, fmt.Sprintf("ref-%d.mkv", vh)),
-		width:  uint64(float64(vd.Width)*float64(vh)/float64(vd.Height)+0.5) &^ 1,
-		height: vh,
+		path:     filepath.Join(workdir, fmt.Sprintf("ref-%d.mkv", vh)),
+		width:    uint64(float64(vd.Width)*float64(vh)/float64(vd.Height)+0.5) &^ 1,
+		height:   vh,
+		transfer: vd.ColorTransfer,
 	}
 	// FFV1 is lossless, so the reference adds no error of its own.
 	err := tu.ffmpeg(ctx, "-i", sample, "-vf", fmt.Sprintf("scale=%d:%d:flags=lanczos", ref.width, ref.height),
@@ -199,7 +201,7 @@ func (tu *Tuner) search(ctx context.Context, r *config.Resolved, t *plan.Target,
 		if err != nil {
 			return Result{}, 0, err
 		}
-		m, err := bench.Score(ctx, tu.Exec, out, ref.path, ref.width, ref.height, tu.Threads, workdir, filepath.Base(out), prefilter)
+		m, err := bench.Score(ctx, tu.Exec, out, ref.path, ref.width, ref.height, tu.Threads, workdir, filepath.Base(out), prefilter, ref.transfer)
 		os.Remove(out)
 		if err != nil {
 			return Result{}, 0, err

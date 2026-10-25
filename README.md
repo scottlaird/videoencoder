@@ -142,7 +142,8 @@ samples: samples        # directory of ~30s clips
 workdir: work
 scales: [1080]          # test at 1080p; taller samples are downscaled once
 target_vmaf: 95
-max_color_shift: 3.9   # fail local color casts, which VMAF can't see
+max_color_shift: 2.7    # fail local color casts, which VMAF can't see
+max_color_flicker: 1.25 # and casts that come and go
 flagsets:
   x265-slow:
     args: [-c:v, libx265, -preset, slow]
