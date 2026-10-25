@@ -25,6 +25,12 @@ type Config struct {
 	// downscaled once (cached in workdir/samples); a sample no taller
 	// than a scale is used as it is. Empty means native size only.
 	Scales []uint64 `yaml:"scales"`
+	// References maps a sample's file name to another file in Samples
+	// to score it against instead of itself: say, an H.265 export
+	// scored against the ProRes master it was made from, to see what
+	// encoding from the export costs. The two must have the same
+	// frames. Scaled copies are scored against the reference's copies.
+	References map[string]string `yaml:"references"`
 	// An encode passes when its mean VMAF reaches TargetVMAF (default
 	// 95) and it meets the optional color limits. VMAF ignores chroma,
 	// so a color cast only fails an encode through MinCIEDE2000 (a
