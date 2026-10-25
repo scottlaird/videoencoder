@@ -509,6 +509,27 @@ func TestBenchScales(t *testing.T) {
 	}
 }
 
+func TestBenchSDROnly(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "samples", "big.mov"), "8k hdr")
+	writeFile(t, filepath.Join(dir, "samples", "hd.mov"), "1080p sdr")
+	c := benchConfig(t, dir, "  x: {args: [-c:v, libx265]}\n  h264: {args: [-c:v, libx264], sdr_only: true}\n")
+
+	b := &Bench{Cfg: c, Exec: newFake(18.7), Prober: sizedProber{}}
+	if err := b.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	results, _ := LoadResults(filepath.Join(dir, "work", "results.csv"))
+	var got []string
+	for _, best := range Bests(c, results) {
+		got = append(got, best.Name+" "+best.Sample)
+	}
+	slices.Sort(got)
+	if want := []string{"h264 hd.mov", "x big.mov", "x hd.mov"}; !slices.Equal(got, want) {
+		t.Errorf("answers = %q, want %q", got, want)
+	}
+}
+
 func TestContainerArgs(t *testing.T) {
 	tests := []struct {
 		args []string

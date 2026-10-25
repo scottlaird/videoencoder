@@ -149,6 +149,9 @@ flagsets:
     args: [-c:v, libx265, -preset, slow]
   svtav1-p5:
     args: [-c:v, libsvtav1, -preset, "5"]
+  x264-medium:
+    args: [-c:v, libx264, -preset, medium, -pix_fmt, yuv420p]
+    sdr_only: true      # skip HDR samples
 ```
 
 ```

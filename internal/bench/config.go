@@ -60,6 +60,9 @@ type Config struct {
 type Flagset struct {
 	Args    []string `yaml:"args"`
 	Quality Quality  `yaml:"quality"`
+	// SDROnly skips HDR samples, for encoders that shouldn't be used
+	// for HDR: 8-bit H.264 in PQ, say.
+	SDROnly bool `yaml:"sdr_only"`
 }
 
 // Quality describes the flag the search varies. Zero fields are filled

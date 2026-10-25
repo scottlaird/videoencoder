@@ -245,6 +245,9 @@ func (b *Bench) tasks(samples []*sample, results *Results) []*task {
 				continue
 			}
 			fs := b.Cfg.Flagsets[name]
+			if fs.SDROnly && s.vd.Tone() == probe.HDR {
+				continue
+			}
 			fkey := flagsetKey(fs)
 			if settled(b.Cfg, fs, fkey, s, results) {
 				continue
