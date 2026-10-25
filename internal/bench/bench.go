@@ -38,6 +38,9 @@ type sample struct {
 	path string
 	id   string
 	vd   probe.VideoData
+	// ref, if not nil, is what encodes of this sample are scored
+	// against (see Config.References); otherwise the sample itself.
+	ref *sample
 	// prefilter is applied to both sides before scoring: a tone map to
 	// SDR for HDR samples, since VMAF and CIEDE2000 are SDR metrics.
 	prefilter string
@@ -146,12 +149,60 @@ func (b *Bench) loadSamples(ctx context.Context) ([]*sample, error) {
 		if err != nil {
 			return nil, err
 		}
+		if refName := b.Cfg.References[name]; refName != "" {
+			if err := b.attachReferences(ctx, s, scaled, refName); err != nil {
+				return nil, fmt.Errorf("%s: %w", name, err)
+			}
+		}
 		samples = append(samples, scaled...)
 	}
 	if len(samples) == 0 {
 		return nil, fmt.Errorf("no sample videos in %s", b.Cfg.Samples)
 	}
 	return samples, nil
+}
+
+// attachReferences points each of s's scaled versions at the matching
+// version of the reference file refName. Encodes are keyed by the pair,
+// so a sample's results with and without a reference stay apart.
+func (b *Bench) attachReferences(ctx context.Context, s *sample, scaled []*sample, refName string) error {
+	ref := &sample{name: refName, path: filepath.Join(b.Cfg.Samples, refName)}
+	var err error
+	if ref.id, err = fileid.Content(ref.path); err != nil {
+		return fmt.Errorf("reference: %w", err)
+	}
+	if ref.vd, err = b.Prober.Probe(ctx, ref.path); err != nil {
+		return fmt.Errorf("reference: %w", err)
+	}
+	if ref.vd.Width != s.vd.Width || ref.vd.Height != s.vd.Height {
+		return fmt.Errorf("reference %s is %dx%d, sample is %dx%d", refName, ref.vd.Width, ref.vd.Height, s.vd.Width, s.vd.Height)
+	}
+	if d := ref.vd.Duration - s.vd.Duration; d > 100*time.Millisecond || d < -100*time.Millisecond {
+		return fmt.Errorf("reference %s lasts %v, sample %v: they must have the same frames", refName, ref.vd.Duration, s.vd.Duration)
+	}
+	if ref.vd.Tone() == probe.HDR {
+		ref.prefilter = plan.ToneMapSDR
+	}
+	refs, err := b.scaledSamples(ctx, ref)
+	if err != nil {
+		return err
+	}
+	if len(refs) != len(scaled) {
+		return fmt.Errorf("reference %s scales differently", refName)
+	}
+	for i, c := range scaled {
+		c.ref = refs[i]
+		c.id = hashKey("ref/v1", c.id, refs[i].id)
+	}
+	return nil
+}
+
+// reference is what encodes of s are scored against.
+func (s *sample) reference() *sample {
+	if s.ref != nil {
+		return s.ref
+	}
+	return s
 }
 
 // scaledSamples returns the versions of s to test: s itself if no
@@ -441,8 +492,9 @@ func (b *Bench) scoreAll(ctx context.Context, batch []*pending, record func(*pen
 }
 
 func (b *Bench) score(ctx context.Context, p *pending) (Metrics, error) {
-	vd := p.t.sample.vd
-	return Score(ctx, b.Exec, p.out, p.t.sample.path, vd.Width, vd.Height, b.Cfg.VMAFThreads, b.scratchDir(), p.key, p.t.sample.prefilter, vd.ColorTransfer)
+	ref := p.t.sample.reference()
+	vd := ref.vd
+	return Score(ctx, b.Exec, p.out, ref.path, vd.Width, vd.Height, b.Cfg.VMAFThreads, b.scratchDir(), p.key, ref.prefilter, vd.ColorTransfer)
 }
 
 func (b *Bench) record(results *Results, p *pending) error {
@@ -462,6 +514,7 @@ func (b *Bench) record(results *Results, p *pending) error {
 	m := p.metrics
 	row := Row{
 		Sample:        t.sample.name,
+		Reference:     t.sample.reference().name,
 		Encoder:       t.fs.Encoder(),
 		Flagset:       t.name,
 		Args:          joinArgs(t.fs.Args),

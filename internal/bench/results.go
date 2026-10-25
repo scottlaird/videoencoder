@@ -18,7 +18,10 @@ import (
 
 // Row is one encode and its scores: a line of results.csv.
 type Row struct {
-	Sample      string
+	Sample string
+	// Reference is the file Sample's encodes were scored against: Sample
+	// itself unless the config names another (Config.References).
+	Reference   string
 	Encoder     string
 	Flagset     string
 	Args        string
@@ -46,7 +49,7 @@ var resultColumns = []string{
 	"key", "flagset_key", "bytes", "kbps", "wall_s", "user_s", "sys_s", "max_rss_kb",
 	"vmaf", "vmaf_hmean", "vmaf_p1", "vmaf_neg", "psnr_y", "psnr_cb", "psnr_cr", "ciede2000",
 	"ffmpeg_version", "host", "time", "color_shift_p99", "color_shift_p999", "scorer",
-	"color_flicker_p99", "color_flicker_p999",
+	"color_flicker_p99", "color_flicker_p999", "reference",
 }
 
 // scorer is the current scoring method: v2 added CIEDE2000 on sampled
@@ -69,7 +72,7 @@ func (r *Row) record() []string {
 		ftoa(m.PSNRY), ftoa(m.PSNRCb), ftoa(m.PSNRCr), ftoa(m.CIEDE2000),
 		r.FFmpegVersion, r.Host, r.Time.UTC().Format(time.RFC3339),
 		ftoa(m.ColorShiftP99), ftoa(m.ColorShiftP999), r.Scorer,
-		ftoa(m.ColorFlickerP99), ftoa(m.ColorFlickerP999),
+		ftoa(m.ColorFlickerP99), ftoa(m.ColorFlickerP999), r.Reference,
 	}
 }
 
@@ -146,6 +149,10 @@ func parseRow(col map[string]int, rec []string) (Row, error) {
 	r.Scorer = "v2"
 	if i, ok := col["scorer"]; ok && i < len(rec) {
 		r.Scorer = get("scorer")
+	}
+	r.Reference = r.Sample
+	if i, ok := col["reference"]; ok && i < len(rec) && rec[i] != "" {
+		r.Reference = get("reference")
 	}
 	return r, errors.Join(errs...)
 }

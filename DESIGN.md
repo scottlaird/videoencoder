@@ -606,6 +606,12 @@ log and reuses whatever it finds. So:
     failed every 8-bit encode. Through 16-bit, both read 0.69. Scorer v6.
 - Each score is logged the moment it finishes, so an interrupted
   round loses only the scorings still running.
+- A sample can name another file to be scored against (`references`):
+  an H.265 export against the ProRes master it was rendered from, say.
+  Scored against itself, an export looks better than it is, since the
+  detail its own compression removed isn't counted as lost. Scaled
+  copies are paired with the reference's copies, the pair keys the
+  encodes, and rows record the `reference`.
 - Encodes below the reference resolution are scaled back up
   (bicubic) before scoring. 2160p samples use the `vmaf_4k` model.
 - Hosts are recorded. Timings from different machines are compared

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -189,7 +190,7 @@ func TestResultsRoundTrip(t *testing.T) {
 		t.Fatalf("LoadResults(missing) = %v, %v", r, err)
 	}
 	row := Row{
-		Sample: "a.mov", Encoder: "libx265", Flagset: "slow", Args: "-c:v libx265 -preset slow",
+		Sample: "a.mov", Reference: "a.mov", Encoder: "libx265", Flagset: "slow", Args: "-c:v libx265 -preset slow",
 		QualityFlag: "-crf", Quality: 18.7, Key: "k1", FlagsetKey: "f1", Bytes: 1234, Kbps: 329.1,
 		WallS: 1.5, UserS: 9.25, SysS: 0.5, MaxRSSKB: 2048,
 		Metrics:       Metrics{VMAF: 95.01, VMAFHMean: 94.9, VMAFP1: 91, VMAFNeg: 93.6, PSNRY: 44, PSNRCb: 48, PSNRCr: 47, CIEDE2000: math.Inf(1)},
@@ -224,14 +225,16 @@ type fakeFFmpeg struct {
 	cutoff     float64
 	ciede      float64
 	quality    map[string]float64 // encoded file -> quality
+	source     map[string]string  // encoded file -> sample it was made from
 	encodes    []string           // "sample q" per encode
 	scores     int
 	graphs     []string // scoring filtergraphs
+	scored     []string // "encoded-from -> reference" per scoring
 	downscales int
 }
 
 func newFake(cutoff float64) *fakeFFmpeg {
-	return &fakeFFmpeg{cutoff: cutoff, ciede: 60, quality: map[string]float64{}}
+	return &fakeFFmpeg{cutoff: cutoff, ciede: 60, quality: map[string]float64{}, source: map[string]string{}}
 }
 
 func (f *fakeFFmpeg) Exec(_ context.Context, argv []string) (Measurement, error) {
@@ -240,6 +243,9 @@ func (f *fakeFFmpeg) Exec(_ context.Context, argv []string) (Measurement, error)
 	if i := slices.Index(argv, "-filter_complex"); i >= 0 {
 		f.scores++
 		f.graphs = append(f.graphs, argv[i+1])
+		in := argv[slices.Index(argv, "-i")+1]
+		against := argv[slices.Index(argv, "-i")+3]
+		f.scored = append(f.scored, f.source[in]+" -> "+filepath.Base(against))
 		var logs []string
 		for _, part := range strings.Split(argv[i+1], "log_path=")[1:] {
 			logs = append(logs, strings.SplitN(part, ":n_threads", 2)[0])
@@ -273,6 +279,7 @@ func (f *fakeFFmpeg) Exec(_ context.Context, argv []string) (Measurement, error)
 		return Measurement{}, err
 	}
 	f.quality[out] = q
+	f.source[out] = filepath.Base(argv[slices.Index(argv, "-i")+1])
 	if slices.Contains(argv, "libx265") && !slices.Contains(argv, "hvc1") {
 		return Measurement{}, errors.New("HEVC encode not tagged hvc1")
 	}
@@ -527,6 +534,45 @@ func TestBenchSDROnly(t *testing.T) {
 	slices.Sort(got)
 	if want := []string{"h264 hd.mov", "x big.mov", "x hd.mov"}; !slices.Equal(got, want) {
 		t.Errorf("answers = %q, want %q", got, want)
+	}
+}
+
+func TestBenchReferences(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "samples", "big.mov"), "8k master")
+	writeFile(t, filepath.Join(dir, "samples", "big-h265.mov"), "8k export")
+	c := benchConfig(t, dir, "  x: {args: [-c:v, libx265]}\n")
+	c.Scales = []uint64{1080}
+	c.References = map[string]string{"big-h265.mov": "big.mov"}
+
+	fake := newFake(18.7)
+	b := &Bench{Cfg: c, Exec: fake, Prober: sizedProber{}}
+	if err := b.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// The export's encodes are scored against the master's scaled copy,
+	// the master's against itself.
+	got := map[string]bool{}
+	for _, s := range slices.Compact(slices.Sorted(slices.Values(fake.scored))) {
+		got[s] = true
+	}
+	want := map[string]bool{"big-h265@1080p.mov -> big@1080p.mov": true, "big@1080p.mov -> big@1080p.mov": true}
+	if !maps.Equal(got, want) {
+		t.Errorf("scored %v, want %v", got, want)
+	}
+	results, _ := LoadResults(filepath.Join(dir, "work", "results.csv"))
+	for _, r := range results.Rows {
+		if want := strings.Replace(r.Sample, "-h265", "", 1); r.Reference != want {
+			t.Errorf("row for %s has reference %q, want %q", r.Sample, r.Reference, want)
+		}
+	}
+	// Each copy is made once, and the export keeps its results apart
+	// from the master's.
+	if fake.downscales != 2 {
+		t.Errorf("made %d downscaled copies, want 2", fake.downscales)
+	}
+	if n := len(Bests(c, results)); n != 2 {
+		t.Errorf("%d answers, want 2", n)
 	}
 }
 
