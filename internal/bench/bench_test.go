@@ -796,3 +796,28 @@ func TestOldScorerRowsIgnored(t *testing.T) {
 		t.Error("an old-scorer row counted as an answer")
 	}
 }
+
+func TestFlagColor(t *testing.T) {
+	b := func(sample, name string, shift, flicker float64) Best {
+		return Best{Row: Row{Sample: sample, Metrics: Metrics{ColorShiftP999: shift, ColorFlickerP999: flicker}}, Name: name}
+	}
+	bests := []Best{
+		b("river", "x265", 2.1, 1.0), b("river", "vt", 1.1, 0.7), b("river", "av1", 4.2, 1.7), b("river", "x264", 2.0, 1.1),
+		// Everything small: a ratio alone doesn't flag.
+		b("still", "a", 0.1, 0.05), b("still", "b", 0.3, 0.2), b("still", "c", 0.1, 0.05),
+		b("odd", "nan", math.NaN(), math.NaN()), b("odd", "x", 1, 1),
+	}
+	flagColor(bests)
+	got := map[string]string{}
+	for _, b := range bests {
+		got[b.Sample+"/"+b.Name] = b.ColorFlag
+	}
+	want := map[string]string{
+		"river/x265": "", "river/vt": "", "river/av1": "shift+flicker", "river/x264": "",
+		"still/a": "", "still/b": "", "still/c": "",
+		"odd/nan": "", "odd/x": "",
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("flags = %v, want %v", got, want)
+	}
+}

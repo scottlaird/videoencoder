@@ -590,6 +590,15 @@ log and reuses whatever it finds. So:
     | every SVT-AV1 variant (visible cast) | 2.92–4.50 | 1.32–1.81 |
     | every SDR encode | ≤ 1.79 | ≤ 0.98 |
 
+  - **Later finding (2026-10-26): neither works as a pass criterion.**
+    Across 21 clips, flicker reads camera and subject motion as flicker
+    (a handheld cat walk needed VMAF 98.6 to pass), and shift varies with
+    SVT-AV1's preset on fast motion (p7 and up sit at a constant 3–5 on
+    two home videos even at CRF 10). Both stay in every row, and reports
+    flag an answer whose shift or flicker is at least 1.5× its sample's
+    median and above it by a margin, as something to look at. Pyramid
+    Creek's AV1 cast is flagged that way. The suggested limits below
+    are from before this and are now 0 in practice.
   - `max_color_shift` (suggested 2.7) and `max_color_flicker`
     (suggested 1.25) fail encodes over the limits at p99.9. They come
     from one clip, so treat them as starting points.
