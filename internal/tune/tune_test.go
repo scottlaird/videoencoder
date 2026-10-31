@@ -139,8 +139,8 @@ func TestTune(t *testing.T) {
 	if f.encodes["720"] != 0 || f.encodes["1080"] != 0 || f.encodes["480"] == 0 || f.encodes["480"] > 6 {
 		t.Errorf("encodes by height = %v", f.encodes)
 	}
-	// 480p is judged at 1080p, 2160p at 2160p; HDR is tone-mapped first.
-	if !slices.Contains(f.scoredAt, "ref-1080.mkv") || !slices.Contains(f.scoredAt, "ref-2160.mkv") {
+	// Each anchor is judged at its own size; HDR is tone-mapped first.
+	if !slices.Contains(f.scoredAt, "ref-480.mkv") || !slices.Contains(f.scoredAt, "ref-2160.mkv") || slices.Contains(f.scoredAt, "ref-1080.mkv") {
 		t.Errorf("references used: %v", f.scoredAt)
 	}
 	if !strings.Contains(f.prefilter[0], "tonemap=") {
@@ -165,8 +165,8 @@ func TestTuneSDROnly(t *testing.T) {
 	if _, err := tu.Tune(context.Background(), tuneConfig(), source(t), vd, targets, t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(slices.Compact(f.scoredAt), []string{"ref-1080-sdr.mkv"}) {
-		t.Errorf("references used: %v, want only ref-1080-sdr.mkv", f.scoredAt)
+	if !slices.Equal(slices.Compact(f.scoredAt), []string{"ref-480-sdr.mkv", "ref-1080-sdr.mkv"}) {
+		t.Errorf("references used: %v, want ref-480-sdr.mkv and ref-1080-sdr.mkv", f.scoredAt)
 	}
 	for _, g := range f.prefilter {
 		if strings.Contains(g, "tonemap=") {
@@ -178,13 +178,17 @@ func TestTuneSDROnly(t *testing.T) {
 	}
 }
 
-func TestViewingHeight(t *testing.T) {
-	tests := []struct{ h, source, want uint64 }{
-		{480, 2160, 1080}, {1080, 2160, 1080}, {1440, 3024, 2160}, {3024, 3024, 2160}, {480, 720, 720},
+func TestReferenceSize(t *testing.T) {
+	vd := probe.VideoData{Width: 8192, Height: 4320}
+	tests := []struct{ w, h, wantW, wantH uint64 }{
+		{852, 480, 852, 480}, {1920, 1080, 1920, 1080}, {3840, 2160, 3840, 2160},
+		{8192, 4320, 4096, 2160}, // capped at 2160p
 	}
+	tu := &Tuner{}
 	for _, tt := range tests {
-		if got := viewingHeight(tt.h, tt.source); got != tt.want {
-			t.Errorf("viewingHeight(%d, %d) = %d, want %d", tt.h, tt.source, got, tt.want)
+		ref := tu.reference(map[refKey]reference{}, vd, &plan.Target{Width: tt.w, Height: tt.h}, false, "w")
+		if ref.width != tt.wantW || ref.height != tt.wantH {
+			t.Errorf("reference for %dx%d is %dx%d, want %dx%d", tt.w, tt.h, ref.width, ref.height, tt.wantW, tt.wantH)
 		}
 	}
 }

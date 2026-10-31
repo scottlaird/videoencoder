@@ -681,11 +681,17 @@ being encoded, varying only the quality setting.
   caps, while bench's search (regula falsi plus bisection) varies the
   quality. The search starts from the configured quality, uses the
   encoder's bench range, and steps no finer than 0.5.
-- **Scoring at viewing size**, as Netflix's per-title encoding does.
-  Renditions up to 1080p are compared with a lossless (FFV1) 1080p
-  reference of the sample, and taller ones with a 2160p reference using
-  the 4K model, never above the source. HDR is tone-mapped to SDR on
-  both sides first, since VMAF and CIEDE2000 are calibrated for SDR.
+- **Scoring at the rendition's own size.** Each rendition is compared
+  with a lossless (FFV1) reference of the sample scaled to its own
+  size, capped at 2160p, where the 4K model is used. Scoring at viewing
+  size, as Netflix's per-title encoding does, also charges a rendition
+  for the detail its size can't hold: snow2's 480p rendition can't reach
+  VMAF 95 at 1080p however well it's encoded, and tune then fell back to
+  the best quality in range. Own-size scoring asks only what the encoder
+  lost, which is what a rendition's quality setting controls; which
+  rendition a player should pick is the player's call. HDR is
+  tone-mapped to SDR on both sides first, since VMAF and CIEDE2000 are
+  calibrated for SDR.
 - **Interpolation.** The other renditions get quality linear in log
   height between anchors, held flat outside them, rounded to the step.
   Bitrate is interpolated linearly in log bitrate.
