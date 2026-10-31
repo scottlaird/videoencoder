@@ -7,6 +7,8 @@ import (
 	"io"
 	"os/exec"
 	"time"
+
+	"github.com/scottlaird/videoencoder/internal/ffmpeg"
 )
 
 // Measurement is the resource use of one command.
@@ -30,7 +32,9 @@ func (e ExecExecutor) Exec(ctx context.Context, argv []string) (Measurement, err
 	if len(argv) == 0 {
 		return Measurement{}, errors.New("empty command")
 	}
+	argv = ffmpeg.Quiet(argv)
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Env = ffmpeg.QuietEnv()
 	cmd.Stderr = e.Stderr
 	start := time.Now()
 	err := cmd.Run()

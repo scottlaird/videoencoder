@@ -191,3 +191,58 @@ func TestBatchMismatchedBase(t *testing.T) {
 		t.Error("Argv() with different bases: got nil error, want one")
 	}
 }
+
+func TestQuiet(t *testing.T) {
+	tests := []struct {
+		name       string
+		argv, want []string
+	}{
+		{
+			name: "x265 output gets log-level",
+			argv: []string{"ffmpeg", "-i", "in", "-c:v", "libx265", "-crf", "20", "out.mp4"},
+			want: []string{"ffmpeg", "-i", "in", "-c:v", "libx265", "-x265-params", "log-level=error", "-crf", "20", "out.mp4"},
+		},
+		{
+			name: "merged into the output's own x265-params",
+			argv: []string{"ffmpeg", "-i", "in", "-c:v", "libx265", "-x265-params", "aq-mode=3", "out.mp4"},
+			want: []string{"ffmpeg", "-i", "in", "-c:v", "libx265", "-x265-params", "aq-mode=3:log-level=error", "out.mp4"},
+		},
+		{
+			name: "a log-level already given is kept",
+			argv: []string{"ffmpeg", "-c:v", "libx265", "-x265-params", "log-level=info", "out.mp4"},
+			want: []string{"ffmpeg", "-c:v", "libx265", "-x265-params", "log-level=info", "out.mp4"},
+		},
+		{
+			name: "each x265 output in a batch, and nothing else",
+			argv: []string{"ffmpeg", "-i", "in", "-c:v", "libx265", "a.mp4", "-c:v", "libsvtav1", "b.mp4", "-c:v", "libx265", "-x265-params", "x=1", "c.mp4"},
+			want: []string{"ffmpeg", "-i", "in", "-c:v", "libx265", "-x265-params", "log-level=error", "a.mp4", "-c:v", "libsvtav1", "b.mp4", "-c:v", "libx265", "-x265-params", "x=1:log-level=error", "c.mp4"},
+		},
+		{
+			name: "other commands unchanged",
+			argv: []string{"ffprobe", "-i", "in"},
+			want: []string{"ffprobe", "-i", "in"},
+		},
+	}
+	for _, tt := range tests {
+		in := slices.Clone(tt.argv)
+		if got := Quiet(tt.argv); !slices.Equal(got, tt.want) {
+			t.Errorf("%s: Quiet() = %v, want %v", tt.name, got, tt.want)
+		}
+		if !slices.Equal(tt.argv, in) {
+			t.Errorf("%s: Quiet modified its argument", tt.name)
+		}
+	}
+}
+
+func TestQuietEnv(t *testing.T) {
+	t.Setenv("SVT_LOG", "")
+	os.Unsetenv("SVT_LOG")
+	if !slices.Contains(QuietEnv(), "SVT_LOG=1") {
+		t.Error("QuietEnv() lacks SVT_LOG=1")
+	}
+	t.Setenv("SVT_LOG", "3")
+	env := QuietEnv()
+	if slices.Contains(env, "SVT_LOG=1") || !slices.Contains(env, "SVT_LOG=3") {
+		t.Error("QuietEnv() overrode a SVT_LOG already set")
+	}
+}

@@ -34,7 +34,9 @@ func (r ExecRunner) Run(ctx context.Context, argv []string) error {
 	if len(argv) == 0 {
 		return errors.New("empty command")
 	}
+	argv = Quiet(argv)
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Env = QuietEnv()
 	cmd.Stdout = r.Stdout
 	cmd.Stderr = r.Stderr
 	if err := cmd.Run(); err != nil {
