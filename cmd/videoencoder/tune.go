@@ -46,7 +46,15 @@ func tuneVideo(ctx context.Context, r *config.Resolved, adHoc bool, d deps) erro
 		return err
 	}
 	defer os.RemoveAll(work)
-	tu := &tune.Tuner{Exec: d.exec, Prober: d.prober, Threads: 4}
+	version, err := bench.FFmpegVersion(ctx)
+	if err != nil {
+		return err
+	}
+	tu := &tune.Tuner{
+		Exec: d.exec, Prober: d.prober, Threads: 4,
+		Results:       filepath.Join(r.Outdir, tune.ResultsFile),
+		FFmpegVersion: version,
+	}
 	results, err := tu.Tune(ctx, r, r.Sources[label], vd, targets, work)
 	if err != nil {
 		return err

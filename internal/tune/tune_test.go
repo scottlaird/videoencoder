@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -81,6 +82,17 @@ func (p fakeProber) Probe(context.Context, string) (probe.VideoData, error) {
 	return probe.VideoData{Width: 3840, Height: 2160, Duration: 8 * time.Second}, nil
 }
 
+// source writes a stand-in source file, which tune identifies by
+// content.
+func source(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "src.mov")
+	if err := os.WriteFile(p, []byte("source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 func tuneConfig() *config.Resolved {
 	r := &config.Resolved{}
 	r.Name = "v"
@@ -101,7 +113,7 @@ func TestTune(t *testing.T) {
 	tu := &Tuner{Exec: f, Prober: fakeProber{}, Threads: 1}
 	vd := probe.VideoData{Width: 3840, Height: 2160, ColorTransfer: "smpte2084"}
 
-	results, err := tu.Tune(context.Background(), tuneConfig(), "src.mov", vd, targets, t.TempDir())
+	results, err := tu.Tune(context.Background(), tuneConfig(), source(t), vd, targets, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +162,7 @@ func TestTuneSDROnly(t *testing.T) {
 	f := &fakeFFmpeg{encodes: map[string]int{}, quality: map[string]float64{}, height: map[string]uint64{}}
 	tu := &Tuner{Exec: f, Prober: fakeProber{}, Threads: 1}
 	vd := probe.VideoData{Width: 3840, Height: 2160, ColorTransfer: "smpte2084"}
-	if _, err := tu.Tune(context.Background(), tuneConfig(), "src.mov", vd, targets, t.TempDir()); err != nil {
+	if _, err := tu.Tune(context.Background(), tuneConfig(), source(t), vd, targets, t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Equal(slices.Compact(f.scoredAt), []string{"ref-1080-sdr.mkv"}) {
@@ -174,5 +186,87 @@ func TestViewingHeight(t *testing.T) {
 		if got := viewingHeight(tt.h, tt.source); got != tt.want {
 			t.Errorf("viewingHeight(%d, %d) = %d, want %d", tt.h, tt.source, got, tt.want)
 		}
+	}
+}
+
+// A results file lets a later run reuse earlier trials: the same
+// target needs no encodes at all, and a new one starts from the
+// bracket the old trials give. Trials with other flags don't count.
+func TestTuneResults(t *testing.T) {
+	av1 := config.Encoder{Codec: "libsvtav1", QualityFlag: "-crf", Args: []string{"-preset", "5"}}
+	targets := func(enc config.Encoder) plan.Targets {
+		return plan.Targets{
+			{Name: "av1-480", EncoderName: "av1", Encoder: enc, Width: 852, Height: 480, Quality: 28},
+			{Name: "av1-2160", EncoderName: "av1", Encoder: enc, Width: 3840, Height: 2160, Quality: 32},
+		}
+	}
+	src := source(t)
+	file := filepath.Join(t.TempDir(), ResultsFile)
+	vd := probe.VideoData{Width: 3840, Height: 2160, ColorTransfer: "bt709"}
+	run := func(goal float64, enc config.Encoder) (map[string]Result, int) {
+		t.Helper()
+		f := &fakeFFmpeg{encodes: map[string]int{}, quality: map[string]float64{}, height: map[string]uint64{}}
+		tu := &Tuner{Exec: f, Prober: fakeProber{}, Threads: 1, Results: file, FFmpegVersion: "9.0"}
+		r := tuneConfig()
+		r.Tune.TargetVMAF = goal
+		r.Renditions = nil
+		results, err := tu.Tune(context.Background(), r, src, vd, targets(enc), t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]Result{}
+		for _, res := range results {
+			got[res.Rendition] = res
+		}
+		return got, f.encodes["480"] + f.encodes["2160"]
+	}
+
+	first, n1 := run(95, av1)
+	if first["av1-480"].Quality != 22 || first["av1-2160"].Quality != 29 || n1 == 0 {
+		t.Fatalf("first run = %+v after %d encodes", first, n1)
+	}
+
+	again, n2 := run(95, av1)
+	if n2 != 0 {
+		t.Errorf("same target again: %d encodes, want 0", n2)
+	}
+	if again["av1-480"].Quality != 22 || again["av1-2160"].Quality != 29 || again["av1-480"].Cached == 0 {
+		t.Errorf("same target again = %+v", again)
+	}
+	if b1, b2 := first["av1-2160"].Bitrate, again["av1-2160"].Bitrate; b1 != b2 {
+		t.Errorf("cached bitrate %d, want %d", b2, b1)
+	}
+
+	// VMAF 93 is 4 steps past the 95 cutoff.
+	lower, n3 := run(93, av1)
+	t.Logf("encodes: first %d, same target %d, target 93 %d", n1, n2, n3)
+	if lower["av1-480"].Quality != 26 || lower["av1-2160"].Quality != 33 {
+		t.Errorf("target 93 = %+v, want crf 26 and 33", lower)
+	}
+	if n3 >= n1 {
+		t.Errorf("target 93 took %d encodes, no fewer than the first run's %d", n3, n1)
+	}
+
+	other := av1
+	other.Args = []string{"-preset", "6"}
+	if res, n := run(95, other); n == 0 || res["av1-480"].Cached != 0 {
+		t.Errorf("other flags: %d encodes, %d cached; want fresh trials", n, res["av1-480"].Cached)
+	}
+
+	data, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if !strings.HasPrefix(lines[0], "time,key,rendition,quality,vmaf,bitrate") || len(lines) < 2 {
+		t.Errorf("results file starts %q, has %d lines", lines[0], len(lines))
+	}
+}
+
+func TestWithoutQuality(t *testing.T) {
+	got := withoutQuality([]string{"-c:v", "libx265", "-crf", "20", "-crf-max", "x"}, "-crf")
+	want := []string{"-c:v", "libx265", "-crf", "{quality}", "-crf-max", "x"}
+	if !slices.Equal(got, want) {
+		t.Errorf("withoutQuality = %v, want %v", got, want)
 	}
 }
