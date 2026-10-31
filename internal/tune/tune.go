@@ -87,7 +87,7 @@ func (tu *Tuner) Tune(ctx context.Context, r *config.Resolved, src string, vd pr
 			if hdr && !toneMap {
 				prefilter = plan.ToneMapSDR
 			}
-			ref := tu.reference(refs, vd, t.Height, toneMap, workdir)
+			ref := tu.reference(refs, vd, t, toneMap, workdir)
 			key := trialKey{
 				source: sourceID, start: r.Tune.Start, duration: r.Tune.Duration,
 				reference: fmt.Sprintf("%dx%d tonemap=%v %s", ref.width, ref.height, toneMap, ref.transfer),
@@ -119,10 +119,10 @@ func (tu *Tuner) Tune(ctx context.Context, r *config.Resolved, src string, vd pr
 	return results, nil
 }
 
-// refKey picks a reference: its height, and whether it is tone-mapped.
+// refKey picks a reference: its size, and whether it is tone-mapped.
 type refKey struct {
-	height  uint64
-	toneMap bool
+	width, height uint64
+	toneMap       bool
 }
 
 // reference is the sample at the size a rendition is judged at.
@@ -133,33 +133,33 @@ type reference struct {
 	toneMap       bool   // tone-mapped to SDR from an HDR sample
 }
 
-// viewingHeight is the size a rendition of height h is scored at:
-// 1080p for HD and below, 2160p above, as Netflix's VMAF models
-// assume; never more than the source.
-func viewingHeight(h, source uint64) uint64 {
-	v := uint64(1080)
-	if h > 1080 {
-		v = 2160
-	}
-	return min(v, source)
-}
+// maxScoreHeight is the tallest a rendition is scored at: VMAF's
+// largest model is trained for 2160p, and scoring 8K is slow.
+const maxScoreHeight = 2160
 
-// reference returns the reference for a rendition of height h, without
+// reference returns the reference that t is judged against, without
 // making it; makeReference does that when a trial first needs it.
-func (tu *Tuner) reference(refs map[refKey]reference, vd probe.VideoData, h uint64, toneMap bool, workdir string) reference {
-	vh := viewingHeight(h, vd.Height)
-	key := refKey{vh, toneMap}
+// Each rendition is judged at its own size, up to 2160p, so its score
+// measures what the encoder lost rather than what the smaller size
+// can't hold: the snow in a 4K clip can't survive a scale to 480p
+// however well that's encoded.
+func (tu *Tuner) reference(refs map[refKey]reference, vd probe.VideoData, t *plan.Target, toneMap bool, workdir string) reference {
+	w, h := t.Width, t.Height
+	if h > maxScoreHeight {
+		w, h = uint64(float64(vd.Width)*maxScoreHeight/float64(vd.Height)+0.5)&^1, maxScoreHeight
+	}
+	key := refKey{w, h, toneMap}
 	if ref, ok := refs[key]; ok {
 		return ref
 	}
-	name, transfer := fmt.Sprintf("ref-%d.mkv", vh), vd.ColorTransfer
+	name, transfer := fmt.Sprintf("ref-%d.mkv", h), vd.ColorTransfer
 	if toneMap {
-		name, transfer = fmt.Sprintf("ref-%d-sdr.mkv", vh), "bt709" // what ToneMapSDR writes
+		name, transfer = fmt.Sprintf("ref-%d-sdr.mkv", h), "bt709" // what ToneMapSDR writes
 	}
 	ref := reference{
 		path:     filepath.Join(workdir, name),
-		width:    uint64(float64(vd.Width)*float64(vh)/float64(vd.Height)+0.5) &^ 1,
-		height:   vh,
+		width:    w,
+		height:   h,
 		transfer: transfer,
 		toneMap:  toneMap,
 	}
@@ -270,8 +270,8 @@ func (tu *Tuner) search(ctx context.Context, r *config.Resolved, t *plan.Target,
 		}
 
 		q := spec.IndexToQuality(i)
-		p, ok := seen[i]
-		if !ok {
+		p, cached := seen[i]
+		if !cached {
 			var err error
 			if p, err = tu.trial(ctx, trialJob(q), sample, seconds, ref, prefilter, workdir); err != nil {
 				return Result{}, 0, err
@@ -283,7 +283,7 @@ func (tu *Tuner) search(ctx context.Context, r *config.Resolved, t *plan.Target,
 			}
 		}
 		margin := p.vmaf - goal
-		slog.Info("Trial", "rendition", t.Name, "quality", q, "vmaf", p.vmaf, "pass", margin >= 0, "cached", !ok)
+		slog.Info("Trial", "rendition", t.Name, "quality", q, "vmaf", p.vmaf, "pass", margin >= 0, "cached", cached)
 		s.Observe(i, margin >= 0, margin)
 	}
 }

@@ -60,9 +60,11 @@ renditions in between, and writes `quality` (and, for encoders with
 bitrate caps, `bitrate`) into the video's sidecar with a comment saying
 where each value came from.  Review the sidecar, then render as usual.
 
-Renditions up to 1080p are judged at 1080p and taller ones at 2160p
-with VMAF's 4K model.  HDR-only videos are tone-mapped to SDR for
-scoring; with an SDR source as well, that's used instead.
+Each rendition is judged against the sample scaled to its own size,
+up to 2160p (with VMAF's 4K model from 2160p), so the score measures
+what the encoder lost rather than what the smaller size can't hold.
+HDR-only videos are tone-mapped to SDR for scoring; with an SDR source
+as well, that's used instead.
 
 Every trial encode is logged to `tune-results.csv` in the video's
 `outdir`, keyed by everything that decides its score: the source's
