@@ -75,7 +75,8 @@ encoders:
 # Each rendition is scored against the sample at its own size, up to
 # 2160p (with the 4K model there); HDR is tone-mapped to SDR for
 # scoring. A rendition's
-# own target_vmaf overrides this one. Every trial is logged to
+# own target_vmaf overrides this one, and a rendition with tune: false
+# is left as configured. Every trial is logged to
 # tune-results.csv in outdir, and later runs reuse the ones that still
 # apply.
 tune:

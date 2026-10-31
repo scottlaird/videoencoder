@@ -558,7 +558,8 @@ func TestTuneEndToEnd(t *testing.T) {
 tune: {duration: 1s, target_vmaf: 90}
 renditions: {h264-480: null, h264-720: null, h265-480: null, h265-720: null, h265-1080: null,
   h265-1440: null, h265-2160: null, av1-720: null, av1-1080: null, av1-1440: null, av1-2160: null,
-  av1-3240: null, av1-4320: null}
+  av1-3240: null, av1-4320: null,
+  h264-180-capped: {encoder: h264, height: 180, quality: 30, bitrate: 300k, tune: false}}
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -579,6 +580,13 @@ renditions: {h264-480: null, h264-720: null, h265-480: null, h265-720: null, h26
 		if !strings.Contains(string(sidecar), want) {
 			t.Errorf("sidecar lacks %q:\n%s", want, sidecar)
 		}
+	}
+	// A rendition with tune: false is reported but left alone.
+	if strings.Contains(string(sidecar), "h264-180-capped") {
+		t.Errorf("sidecar tunes h264-180-capped despite tune: false:\n%s", sidecar)
+	}
+	if !strings.Contains(out.String(), "h264-180-capped quality 30    kept: tune: false") {
+		t.Errorf("tune output doesn't report the kept rendition:\n%s", out.String())
 	}
 	// The tuned values are what the next render uses.
 	o.mode = "plan"

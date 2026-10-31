@@ -460,3 +460,18 @@ renditions:
 		t.Errorf("new sidecar: %+v, %v", r, err)
 	}
 }
+
+func TestRenditionTuned(t *testing.T) {
+	no, yes := false, true
+	tests := []struct {
+		r    *Rendition
+		want bool
+	}{
+		{nil, true}, {&Rendition{}, true}, {&Rendition{Tune: &yes}, true}, {&Rendition{Tune: &no}, false},
+	}
+	for _, tt := range tests {
+		if got := tt.r.Tuned(); got != tt.want {
+			t.Errorf("%+v.Tuned() = %v, want %v", tt.r, got, tt.want)
+		}
+	}
+}
