@@ -258,6 +258,7 @@ func TestDiscover(t *testing.T) {
 	write(t, filepath.Join(root, "a", "two"+SidecarSuffix), "renditions: {}")
 	write(t, filepath.Join(root, "b", "c", "three"+SidecarSuffix), "sources: {s: three.mov}")
 	write(t, filepath.Join(root, ".hidden", "four"+SidecarSuffix), "sources: {s: four.mov}")
+	write(t, filepath.Join(root, "b", "c", "._three"+SidecarSuffix), "\x00\x05\x16\x07") // AppleDouble
 	write(t, filepath.Join(root, "b", ProjectFile), "outdir: x")
 
 	videos, err := Discover(root)

@@ -12,8 +12,9 @@ import (
 // Discover finds every video defined under root, either by a
 // "<name>.video.yaml" sidecar or by an entry under "videos:" in a
 // videoencoder.yaml. A video defined both ways is returned once. Hidden
-// directories are skipped. If root is a sidecar file, it returns just
-// that video.
+// files and directories are skipped, among them the "._" AppleDouble
+// files macOS writes on network and FAT volumes. If root is a sidecar
+// file, it returns just that video.
 func Discover(root string) ([]Video, error) {
 	root, err := filepath.Abs(root)
 	if err != nil {
@@ -48,6 +49,9 @@ func Discover(root string) ([]Video, error) {
 			if path != root && strings.HasPrefix(name, ".") {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		if strings.HasPrefix(name, ".") {
 			return nil
 		}
 		dir := filepath.Dir(path)
