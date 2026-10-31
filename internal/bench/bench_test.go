@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -141,7 +142,7 @@ func TestParseColorLog(t *testing.T) {
 }
 
 func TestScoreArgvEscaping(t *testing.T) {
-	argv := scoreArgv("d.mp4", "r.mov", 3840, 2160, 8, "/tmp/a:b/log.json", "/tmp/c.json", "/tmp/d.blocks", "/tmp/r.blocks", "")
+	argv := scoreArgv("d.mp4", "r.mov", 3840, 2160, 8, "/tmp/a:b/log.json", "/tmp/c.json", "/tmp/d.blocks", "/tmp/r.blocks", "", "")
 	graph := argv[slices.Index(argv, "-filter_complex")+1]
 	for _, want := range []string{
 		`log_path=/tmp/a\:b/log.json`, "log_path=/tmp/c.json", "version=vmaf_4k_v0.6.1\\:name=vmaf|",
@@ -154,13 +155,31 @@ func TestScoreArgvEscaping(t *testing.T) {
 }
 
 func TestScoreArgvPrefilter(t *testing.T) {
-	argv := scoreArgv("d.mp4", "r.mov", 1920, 1080, 4, "/l.json", "/c.json", "/d.blocks", "/r.blocks", "tonemap=hable")
+	argv := scoreArgv("d.mp4", "r.mov", 1920, 1080, 4, "/l.json", "/c.json", "/d.blocks", "/r.blocks", "tonemap=hable", "zscale=t=smpte2084")
 	graph := argv[slices.Index(argv, "-filter_complex")+1]
+	// Once per input, before the 4:4:4 conversion (after it, VMAF
+	// scores about 0.8 low), and not on the block images.
 	if strings.Count(graph, "tonemap=hable,") != 2 {
-		t.Errorf("prefilter isn't applied to both inputs: %q", graph)
+		t.Errorf("prefilter isn't applied once to each input: %q", graph)
 	}
-	if !strings.Contains(graph, "format=rgb48le,scale=120:67:flags=area") || !slices.Contains(argv, "/d.blocks") {
+	for _, branch := range strings.Split(graph, ";") {
+		if i := strings.Index(branch, "tonemap=hable"); i >= 0 && strings.Index(branch, "format=yuv444p10le") < i {
+			t.Errorf("branch %q: prefilter runs after the 4:4:4 conversion", branch)
+		}
+	}
+	for _, branch := range strings.Split(graph, ";") {
+		if strings.Contains(branch, "rgb48le") && (strings.Contains(branch, "tonemap") || !strings.Contains(branch, "zscale=t=smpte2084,")) {
+			t.Errorf("block branch %q: want the block filter and no tone map", branch)
+		}
+	}
+	if !strings.Contains(graph, "format=yuv444p16le,format=rgb48le,scale=30:16:flags=area") || !slices.Contains(argv, "/d.blocks") {
 		t.Errorf("no block-average outputs: %q", argv)
+	}
+	for _, out := range []string{"/d.blocks", "/r.blocks"} {
+		i := slices.Index(argv, out)
+		if got := strings.Join(argv[i-5:i], " "); !strings.Contains(got, "-fps_mode passthrough") {
+			t.Errorf("block output %s: %q; want -fps_mode passthrough, or frames are padded or dropped", out, got)
+		}
 	}
 }
 
@@ -171,7 +190,7 @@ func TestResultsRoundTrip(t *testing.T) {
 		t.Fatalf("LoadResults(missing) = %v, %v", r, err)
 	}
 	row := Row{
-		Sample: "a.mov", Encoder: "libx265", Flagset: "slow", Args: "-c:v libx265 -preset slow",
+		Sample: "a.mov", Reference: "a.mov", Encoder: "libx265", Flagset: "slow", Args: "-c:v libx265 -preset slow",
 		QualityFlag: "-crf", Quality: 18.7, Key: "k1", FlagsetKey: "f1", Bytes: 1234, Kbps: 329.1,
 		WallS: 1.5, UserS: 9.25, SysS: 0.5, MaxRSSKB: 2048,
 		Metrics:       Metrics{VMAF: 95.01, VMAFHMean: 94.9, VMAFP1: 91, VMAFNeg: 93.6, PSNRY: 44, PSNRCb: 48, PSNRCr: 47, CIEDE2000: math.Inf(1)},
@@ -206,14 +225,16 @@ type fakeFFmpeg struct {
 	cutoff     float64
 	ciede      float64
 	quality    map[string]float64 // encoded file -> quality
+	source     map[string]string  // encoded file -> sample it was made from
 	encodes    []string           // "sample q" per encode
 	scores     int
 	graphs     []string // scoring filtergraphs
+	scored     []string // "encoded-from -> reference" per scoring
 	downscales int
 }
 
 func newFake(cutoff float64) *fakeFFmpeg {
-	return &fakeFFmpeg{cutoff: cutoff, ciede: 60, quality: map[string]float64{}}
+	return &fakeFFmpeg{cutoff: cutoff, ciede: 60, quality: map[string]float64{}, source: map[string]string{}}
 }
 
 func (f *fakeFFmpeg) Exec(_ context.Context, argv []string) (Measurement, error) {
@@ -222,6 +243,9 @@ func (f *fakeFFmpeg) Exec(_ context.Context, argv []string) (Measurement, error)
 	if i := slices.Index(argv, "-filter_complex"); i >= 0 {
 		f.scores++
 		f.graphs = append(f.graphs, argv[i+1])
+		in := argv[slices.Index(argv, "-i")+1]
+		against := argv[slices.Index(argv, "-i")+3]
+		f.scored = append(f.scored, f.source[in]+" -> "+filepath.Base(against))
 		var logs []string
 		for _, part := range strings.Split(argv[i+1], "log_path=")[1:] {
 			logs = append(logs, strings.SplitN(part, ":n_threads", 2)[0])
@@ -235,7 +259,7 @@ func (f *fakeFFmpeg) Exec(_ context.Context, argv []string) (Measurement, error)
 		return Measurement{Wall: time.Second}, errors.Join(
 			os.WriteFile(logs[0], []byte(log), 0o644),
 			os.WriteFile(logs[1], []byte(color), 0o644),
-			os.WriteFile(argv[len(argv)-6], dist, 0o644),
+			os.WriteFile(argv[len(argv)-8], dist, 0o644),
 			os.WriteFile(argv[len(argv)-1], ref, 0o644))
 	}
 	if slices.Contains(argv, "prores_ks") {
@@ -255,6 +279,7 @@ func (f *fakeFFmpeg) Exec(_ context.Context, argv []string) (Measurement, error)
 		return Measurement{}, err
 	}
 	f.quality[out] = q
+	f.source[out] = filepath.Base(argv[slices.Index(argv, "-i")+1])
 	if slices.Contains(argv, "libx265") && !slices.Contains(argv, "hvc1") {
 		return Measurement{}, errors.New("HEVC encode not tagged hvc1")
 	}
@@ -491,6 +516,66 @@ func TestBenchScales(t *testing.T) {
 	}
 }
 
+func TestBenchSDROnly(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "samples", "big.mov"), "8k hdr")
+	writeFile(t, filepath.Join(dir, "samples", "hd.mov"), "1080p sdr")
+	c := benchConfig(t, dir, "  x: {args: [-c:v, libx265]}\n  h264: {args: [-c:v, libx264], sdr_only: true}\n")
+
+	b := &Bench{Cfg: c, Exec: newFake(18.7), Prober: sizedProber{}}
+	if err := b.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	results, _ := LoadResults(filepath.Join(dir, "work", "results.csv"))
+	var got []string
+	for _, best := range Bests(c, results) {
+		got = append(got, best.Name+" "+best.Sample)
+	}
+	slices.Sort(got)
+	if want := []string{"h264 hd.mov", "x big.mov", "x hd.mov"}; !slices.Equal(got, want) {
+		t.Errorf("answers = %q, want %q", got, want)
+	}
+}
+
+func TestBenchReferences(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "samples", "big.mov"), "8k master")
+	writeFile(t, filepath.Join(dir, "samples", "big-h265.mov"), "8k export")
+	c := benchConfig(t, dir, "  x: {args: [-c:v, libx265]}\n")
+	c.Scales = []uint64{1080}
+	c.References = map[string]string{"big-h265.mov": "big.mov"}
+
+	fake := newFake(18.7)
+	b := &Bench{Cfg: c, Exec: fake, Prober: sizedProber{}}
+	if err := b.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// The export's encodes are scored against the master's scaled copy,
+	// the master's against itself.
+	got := map[string]bool{}
+	for _, s := range slices.Compact(slices.Sorted(slices.Values(fake.scored))) {
+		got[s] = true
+	}
+	want := map[string]bool{"big-h265@1080p.mov -> big@1080p.mov": true, "big@1080p.mov -> big@1080p.mov": true}
+	if !maps.Equal(got, want) {
+		t.Errorf("scored %v, want %v", got, want)
+	}
+	results, _ := LoadResults(filepath.Join(dir, "work", "results.csv"))
+	for _, r := range results.Rows {
+		if want := strings.Replace(r.Sample, "-h265", "", 1); r.Reference != want {
+			t.Errorf("row for %s has reference %q, want %q", r.Sample, r.Reference, want)
+		}
+	}
+	// Each copy is made once, and the export keeps its results apart
+	// from the master's.
+	if fake.downscales != 2 {
+		t.Errorf("made %d downscaled copies, want 2", fake.downscales)
+	}
+	if n := len(Bests(c, results)); n != 2 {
+		t.Errorf("%d answers, want 2", n)
+	}
+}
+
 func TestContainerArgs(t *testing.T) {
 	tests := []struct {
 		args []string
@@ -540,28 +625,65 @@ func TestColorShift(t *testing.T) {
 		}
 		return path
 	}
-	gray := [3]uint16{30000, 30000, 30000}
-	// 2x2 blocks, one frame: one block gets a strong magenta cast.
-	ref := write("ref", [][3]uint16{gray, gray, gray, gray})
-	dist := write("dist", [][3]uint16{gray, gray, gray, {33000, 29000, 33000}})
-	got, _, err := ColorShift(dist, ref, 2, 2)
-	if err != nil {
-		t.Fatal(err)
+	g := [3]uint16{30000, 30000, 30000}
+	pink := [3]uint16{33000, 29000, 33000}
+	// 2x2 blocks, one pair of consecutive frames.
+	ref := write("ref", [][3]uint16{g, g, g, g, g, g, g, g})
+	// A steady cast: the same block is pink in both frames.
+	steady := write("steady", [][3]uint16{g, g, g, pink, g, g, g, pink})
+	// A flickering cast: pink in one frame only.
+	flicker := write("flicker", [][3]uint16{g, g, g, pink, g, g, g, g})
+
+	for _, space := range []colorSpace{spaceSDR, spacePQ} {
+		st, err := ColorShift(steady, ref, 2, 2, space)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.ShiftP99 < 5 || st.FlickerP999 > 0.01 {
+			t.Errorf("space %d, steady cast: %+v; want a large shift and no flicker", space, st)
+		}
+		fl, err := ColorShift(flicker, ref, 2, 2, space)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fl.FlickerP999 < 5 {
+			t.Errorf("space %d, flickering cast: %+v; want large flicker", space, fl)
+		}
+		if same, _ := ColorShift(ref, ref, 2, 2, space); same != (ColorStats{}) {
+			t.Errorf("space %d, ColorShift(ref, ref) = %+v, want zero", space, same)
+		}
+		// An extra frame on one side is ignored.
+		long := write("long", [][3]uint16{g, g, g, pink, g, g, g, pink, g, g, g, g})
+		if a, err := ColorShift(long, ref, 2, 2, space); err != nil || a != st {
+			t.Errorf("space %d, ColorShift with an extra frame = %+v, %v; want %+v", space, a, err, st)
+		}
 	}
-	if got < 5 {
-		t.Errorf("ColorShift = %.2f; want the cast block's shift (several a*b* units) at p99", got)
-	}
-	if same, _, _ := ColorShift(ref, ref, 2, 2); same != 0 {
-		t.Errorf("ColorShift(ref, ref) = %v, want 0", same)
-	}
-	// An extra frame on one side is ignored.
-	long := write("long", [][3]uint16{gray, gray, gray, {33000, 29000, 33000}, gray, gray, gray, gray})
-	if a, _, err := ColorShift(long, ref, 2, 2); err != nil || a != got {
-		t.Errorf("ColorShift with an extra frame = %v, %v; want %v", a, err, got)
-	}
-	ragged := write("ragged", [][3]uint16{gray})
-	if _, _, err := ColorShift(ragged, ref, 2, 2); err == nil {
+	ragged := write("ragged", [][3]uint16{g})
+	if _, err := ColorShift(ragged, ref, 2, 2, spaceSDR); err == nil {
 		t.Error("ColorShift with a partial frame: nil error")
+	}
+}
+
+func TestICtCp(t *testing.T) {
+	px := func(r, g, b uint16) []byte {
+		return binary.LittleEndian.AppendUint16(binary.LittleEndian.AppendUint16(binary.LittleEndian.AppendUint16(nil, r), g), b)
+	}
+	// Grays have no chroma in either space.
+	for _, space := range []colorSpace{spaceSDR, spacePQ} {
+		for _, v := range []uint16{0, 10000, 40000, 65535} {
+			if _, ct, cp := ictcp(px(v, v, v), space); math.Abs(ct) > 1e-3 || math.Abs(cp) > 1e-3 {
+				t.Errorf("space %d, gray %d: Ct %v, Cp %v; want 0", space, v, ct, cp)
+			}
+		}
+	}
+	// SDR white is 100 nits, which PQ puts at about 0.508.
+	if i, _, _ := ictcp(px(65535, 65535, 65535), spaceSDR); math.Abs(i-0.508) > 0.002 {
+		t.Errorf("SDR white I = %v, want 0.508", i)
+	}
+	// The same 100-nit white, given as PQ, matches.
+	pq := uint16(math.Round(pqInverseEOTF(0.01) * 65535))
+	if i, _, _ := ictcp(px(pq, pq, pq), spacePQ); math.Abs(i-0.508) > 0.002 {
+		t.Errorf("PQ 100-nit white I = %v, want 0.508", i)
 	}
 }
 
@@ -592,7 +714,7 @@ func TestBenchColorShiftLimit(t *testing.T) {
 
 func TestResultsUpgrade(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "results.csv")
-	oldCols := resultColumns[:len(resultColumns)-3]
+	oldCols := resultColumns[:len(resultColumns)-5]
 	oldRow := "a.mov,libx265,x,-c:v libx265,-crf,20,k1,f1,100,26.6,1,1,0,0,96,96,95,95,45,48,48,50,8.1,h,2026-10-24T00:00:00Z"
 	// An old header, an old row, then a row appended by the new code.
 	newRow := oldRow[:strings.Index(oldRow, ",k1,")] + ",k2," + oldRow[strings.Index(oldRow, ",k1,")+4:] + ",1.5,3.2,v3"
@@ -657,7 +779,7 @@ func TestOldSpellings(t *testing.T) {
 func TestOldScorerRowsIgnored(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "results.csv")
 	// A row as written before color_shift_p99 and scorer existed.
-	old := strings.Join(resultColumns[:len(resultColumns)-3], ",") + "\n" +
+	old := strings.Join(resultColumns[:len(resultColumns)-5], ",") + "\n" +
 		"a.mov,libx265,x,-c:v libx265,-crf,20,k1,f1,100,26.6,1,1,0,0,96,96,95,95,45,48,48,50,8.1,h,2026-10-24T00:00:00Z\n"
 	if err := os.WriteFile(path, []byte(old), 0o644); err != nil {
 		t.Fatal(err)
@@ -672,5 +794,30 @@ func TestOldScorerRowsIgnored(t *testing.T) {
 	c := &Config{TargetVMAF: 95, Flagsets: map[string]*Flagset{"x": {Args: []string{"-c:v", "libx265"}, Quality: Quality{Flag: "-crf"}}}}
 	if len(bestByPair(c, r)) != 0 {
 		t.Error("an old-scorer row counted as an answer")
+	}
+}
+
+func TestFlagColor(t *testing.T) {
+	b := func(sample, name string, shift, flicker float64) Best {
+		return Best{Row: Row{Sample: sample, Metrics: Metrics{ColorShiftP999: shift, ColorFlickerP999: flicker}}, Name: name}
+	}
+	bests := []Best{
+		b("river", "x265", 2.1, 1.0), b("river", "vt", 1.1, 0.7), b("river", "av1", 4.2, 1.7), b("river", "x264", 2.0, 1.1),
+		// Everything small: a ratio alone doesn't flag.
+		b("still", "a", 0.1, 0.05), b("still", "b", 0.3, 0.2), b("still", "c", 0.1, 0.05),
+		b("odd", "nan", math.NaN(), math.NaN()), b("odd", "x", 1, 1),
+	}
+	flagColor(bests)
+	got := map[string]string{}
+	for _, b := range bests {
+		got[b.Sample+"/"+b.Name] = b.ColorFlag
+	}
+	want := map[string]string{
+		"river/x265": "", "river/vt": "", "river/av1": "shift+flicker", "river/x264": "",
+		"still/a": "", "still/b": "", "still/c": "",
+		"odd/nan": "", "odd/x": "",
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("flags = %v, want %v", got, want)
 	}
 }

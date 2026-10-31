@@ -25,6 +25,12 @@ type Config struct {
 	// downscaled once (cached in workdir/samples); a sample no taller
 	// than a scale is used as it is. Empty means native size only.
 	Scales []uint64 `yaml:"scales"`
+	// References maps a sample's file name to another file in Samples
+	// to score it against instead of itself: say, an H.265 export
+	// scored against the ProRes master it was made from, to see what
+	// encoding from the export costs. The two must have the same
+	// frames. Scaled copies are scored against the reference's copies.
+	References map[string]string `yaml:"references"`
 	// An encode passes when its mean VMAF reaches TargetVMAF (default
 	// 95) and it meets the optional color limits. VMAF ignores chroma,
 	// so a color cast only fails an encode through MinCIEDE2000 (a
@@ -37,11 +43,17 @@ type Config struct {
 	// 99.9th percentile (Metrics.ColorShiftP999) exceeds it: a local
 	// color cast that the frame averages above miss. 0 means no
 	// limit. On the Pyramid Creek HDR sample, encodes that looked fine
-	// measured at most 3.44 and those with a visible cast at least
-	// 4.32, so 3.9 is a reasonable starting point.
+	// measured at most 2.54 and those with a visible cast at least
+	// 2.92, so 2.7 is a reasonable starting point.
 	MaxColorShift float64 `yaml:"max_color_shift"`
 	// OldMaxColorShift is max_color_shift's first spelling, still read.
 	OldMaxColorShift float64 `yaml:"max_colour_shift"`
+	// MaxColorFlicker fails encodes whose block color flicker at the
+	// 99.9th percentile (Metrics.ColorFlickerP999) exceeds it: a color
+	// cast that comes and goes. 0 means no limit. On Pyramid Creek,
+	// fine encodes measured at most 1.12 and those with a visible
+	// flickering cast at least 1.32; 1.25 is a starting point.
+	MaxColorFlicker float64 `yaml:"max_color_flicker"`
 	// VMAFThreads is passed to libvmaf's n_threads; VMAFJobs is how many
 	// scorings run at once.
 	VMAFThreads int                 `yaml:"vmaf_threads"`
@@ -54,6 +66,9 @@ type Config struct {
 type Flagset struct {
 	Args    []string `yaml:"args"`
 	Quality Quality  `yaml:"quality"`
+	// SDROnly skips HDR samples, for encoders that shouldn't be used
+	// for HDR: 8-bit H.264 in PQ, say.
+	SDROnly bool `yaml:"sdr_only"`
 }
 
 // Quality describes the flag the search varies. Zero fields are filled
@@ -237,6 +252,12 @@ func (c *Config) margin(m Metrics) float64 {
 			return math.Inf(-1)
 		}
 		margin = min(margin, c.MaxColorShift-m.ColorShiftP999)
+	}
+	if c.MaxColorFlicker > 0 {
+		if math.IsNaN(m.ColorFlickerP999) {
+			return math.Inf(-1)
+		}
+		margin = min(margin, c.MaxColorFlicker-m.ColorFlickerP999)
 	}
 	return margin
 }

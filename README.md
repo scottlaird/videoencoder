@@ -142,12 +142,18 @@ samples: samples        # directory of ~30s clips
 workdir: work
 scales: [1080]          # test at 1080p; taller samples are downscaled once
 target_vmaf: 95
-max_color_shift: 3.9   # fail local color casts, which VMAF can't see
+max_color_shift: 2.7    # fail local color casts, which VMAF can't see
+max_color_flicker: 1.25 # and casts that come and go
+references:             # score a sample against another file in samples/:
+  yuri-h265.mov: yuri.mov   # an H.265 export against its ProRes master
 flagsets:
   x265-slow:
     args: [-c:v, libx265, -preset, slow]
   svtav1-p5:
     args: [-c:v, libsvtav1, -preset, "5"]
+  x264-medium:
+    args: [-c:v, libx264, -preset, medium, -pix_fmt, yuv420p]
+    sdr_only: true      # skip HDR samples
 ```
 
 ```

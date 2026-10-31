@@ -18,7 +18,10 @@ import (
 
 // Row is one encode and its scores: a line of results.csv.
 type Row struct {
-	Sample      string
+	Sample string
+	// Reference is the file Sample's encodes were scored against: Sample
+	// itself unless the config names another (Config.References).
+	Reference   string
 	Encoder     string
 	Flagset     string
 	Args        string
@@ -46,11 +49,16 @@ var resultColumns = []string{
 	"key", "flagset_key", "bytes", "kbps", "wall_s", "user_s", "sys_s", "max_rss_kb",
 	"vmaf", "vmaf_hmean", "vmaf_p1", "vmaf_neg", "psnr_y", "psnr_cb", "psnr_cr", "ciede2000",
 	"ffmpeg_version", "host", "time", "color_shift_p99", "color_shift_p999", "scorer",
+	"color_flicker_p99", "color_flicker_p999", "reference",
 }
 
 // scorer is the current scoring method: v2 added CIEDE2000 on sampled
-// frames; v3 the block color shift.
-const scorer = "v3"
+// frames; v3 the block color shift; v4 measured it as ΔE_ITP before any
+// tone map, on every frame (v3's block images held only about three),
+// and added color flicker, but scored VMAF about 0.8 low; v5 is v4 with
+// v3's VMAF restored; v6 converts block images precisely, which v5 got
+// wrong for 8-bit encodes (10-bit ones moved by 0.04 at most).
+const scorer = "v6"
 
 func ftoa(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }
 
@@ -64,6 +72,7 @@ func (r *Row) record() []string {
 		ftoa(m.PSNRY), ftoa(m.PSNRCb), ftoa(m.PSNRCr), ftoa(m.CIEDE2000),
 		r.FFmpegVersion, r.Host, r.Time.UTC().Format(time.RFC3339),
 		ftoa(m.ColorShiftP99), ftoa(m.ColorShiftP999), r.Scorer,
+		ftoa(m.ColorFlickerP99), ftoa(m.ColorFlickerP999), r.Reference,
 	}
 }
 
@@ -127,8 +136,10 @@ func parseRow(col map[string]int, rec []string) (Row, error) {
 	r.Time = t
 	// Columns added later are absent from older rows.
 	for name, dst := range map[string]*float64{
-		"color_shift_p99":  &r.Metrics.ColorShiftP99,
-		"color_shift_p999": &r.Metrics.ColorShiftP999,
+		"color_shift_p99":    &r.Metrics.ColorShiftP99,
+		"color_shift_p999":   &r.Metrics.ColorShiftP999,
+		"color_flicker_p99":  &r.Metrics.ColorFlickerP99,
+		"color_flicker_p999": &r.Metrics.ColorFlickerP999,
 	} {
 		*dst = math.NaN()
 		if i, ok := col[name]; ok && i < len(rec) {
@@ -138,6 +149,10 @@ func parseRow(col map[string]int, rec []string) (Row, error) {
 	r.Scorer = "v2"
 	if i, ok := col["scorer"]; ok && i < len(rec) {
 		r.Scorer = get("scorer")
+	}
+	r.Reference = r.Sample
+	if i, ok := col["reference"]; ok && i < len(rec) && rec[i] != "" {
+		r.Reference = get("reference")
 	}
 	return r, errors.Join(errs...)
 }

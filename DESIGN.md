@@ -559,22 +559,68 @@ log and reuses whatever it finds. So:
   the whitewater toward magenta and yellow, but its frame-mean CIEDE2000
   matched x265's.
   - So a third branch of the scoring graph area-averages both sides
-    into 16×16 blocks (16-bit RGB, after the HDR tone map) on every
-    sixth frame. Go then takes the CIELAB a*b* distance per block, which
-    is hue and saturation, ignoring lightness. That's recorded at the
-    99th and 99.9th percentiles (`color_shift_p99`, `color_shift_p999`).
-  - Checked against the eight Pyramid Creek HDR keepers as judged by
-    eye: the encodes that looked fine (VideoToolbox, both x265) measured
-    2.32–3.44 at p99.9, and every AV1 variant with the visible cast
-    4.32–5.04. At p99 the groups were only 0.13 apart; the cast covers
-    so little of the frame that the more extreme percentile is needed.
-  - `max_color_shift` (suggested 3.9) fails encodes over the limit at
-    p99.9. Each row records its `scorer` version (v3 adds this), and rows
-    from older scorers are ignored for answers, seeds and settled checks.
-    The encode key includes the scorer, so they're re-encoded rather
-    than reused.
+    into 64×64 blocks (AV1's superblock size), as 16-bit RGB on every
+    frame. Go converts each block to ICtCp and takes the ΔE_ITP
+    chroma error (ITU-R BT.2124: hue and saturation, ignoring
+    lightness, scaled so 1 is about the smallest visible difference).
+  - HDR is measured as HDR: the blocks skip the tone map that VMAF
+    and CIEDE2000 need, and are read as PQ BT.2020; HLG is converted to
+    PQ first. SDR is read as BT.1886 at 100 nits and converted to
+    BT.2020, so both land on one scale. A tone map compresses
+    highlights, which is where whitewater's cast was, and hid much of it.
+  - Two measures, each at p99 and p99.9:
+    - **Shift** (`color_shift_*`) is each block's error.
+    - **Flicker** (`color_flicker_*`) is how far a block's error strays
+      from its own average over 16-frame windows. What made the AV1
+      cast annoying was that it came and went, in rectangular patches,
+      frame by frame. Sixteen frames spans several of SVT-AV1's
+      hierarchical layers (its mini-GOP at preset 5 is 32 frames),
+      whose cycle of quantizers is the likely driver; 8 and 32 also
+      worked, 16 separated the encoders most.
+      Comparing only adjacent frames doesn't separate the encoders,
+      since neighbors at nearby levels err alike.
+  - Checked against the Pyramid Creek HDR keepers as judged by eye, at
+    p99.9:
+
+    | | shift | flicker |
+    |:--|--:|--:|
+    | VideoToolbox | 1.13 | 0.68 |
+    | x265 medium | 1.59 | 0.95 |
+    | x265 slow | 2.54 | 1.12 |
+    | every SVT-AV1 variant (visible cast) | 2.92–4.50 | 1.32–1.81 |
+    | every SDR encode | ≤ 1.79 | ≤ 0.98 |
+
+  - **Later finding (2026-10-26): neither works as a pass criterion.**
+    Across 21 clips, flicker reads camera and subject motion as flicker
+    (a handheld cat walk needed VMAF 98.6 to pass), and shift varies with
+    SVT-AV1's preset on fast motion (p7 and up sit at a constant 3–5 on
+    two home videos even at CRF 10). Both stay in every row, and reports
+    flag an answer whose shift or flicker is at least 1.5× its sample's
+    median and above it by a margin, as something to look at. Pyramid
+    Creek's AV1 cast is flagged that way. The suggested limits below
+    are from before this and are now 0 in practice.
+  - `max_color_shift` (suggested 2.7) and `max_color_flicker`
+    (suggested 1.25) fail encodes over the limits at p99.9. They come
+    from one clip, so treat them as starting points.
+  - Each row records its `scorer` version, and rows from older scorers
+    are ignored for answers, seeds and settled checks. The encode key
+    includes the scorer, so they're re-encoded rather than reused. v4
+    is this measure. v3's CIELAB block metric is void: the raw block
+    output ran at a constant frame rate, which, given the renumbered
+    microsecond timestamps, kept only about three frames. Block
+    outputs now use `-fps_mode passthrough`.
+  - Block images go through 16-bit 4:4:4 before RGB. swscale's direct
+    8-bit YUV to RGB conversion is imprecise: it measured a lossless
+    8-bit copy of a clip at 2.71 (the same at 10-bit: 0.66), which
+    failed every 8-bit encode. Through 16-bit, both read 0.69. Scorer v6.
 - Each score is logged the moment it finishes, so an interrupted
   round loses only the scorings still running.
+- A sample can name another file to be scored against (`references`):
+  an H.265 export against the ProRes master it was rendered from, say.
+  Scored against itself, an export looks better than it is, since the
+  detail its own compression removed isn't counted as lost. Scaled
+  copies are paired with the reference's copies, the pair keys the
+  encodes, and rows record the `reference`.
 - Encodes below the reference resolution are scaled back up
   (bicubic) before scoring. 2160p samples use the `vmaf_4k` model.
 - Hosts are recorded. Timings from different machines are compared
