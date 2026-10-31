@@ -59,6 +59,13 @@ rendition's own `target_vmaf` overrides it), interpolates the
 renditions in between, and writes `quality` (and, for encoders with
 bitrate caps, `bitrate`) into the video's sidecar with a comment saying
 where each value came from.  Review the sidecar, then render as usual.
+A rendition with `tune: false` is left as configured, for fixed rungs
+such as a bitrate-capped one for slow networks:
+
+```yaml
+renditions:
+  h264-480-capped: {encoder: h264, height: 480, quality: 23, bitrate: 1.5M, tune: false}
+```
 
 Each rendition is judged against the sample scaled to its own size,
 up to 2160p (with VMAF's 4K model from 2160p), so the score measures

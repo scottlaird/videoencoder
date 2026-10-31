@@ -132,6 +132,17 @@ type Rendition struct {
 	Args []string `yaml:"args"`
 	// TargetVMAF overrides tune.target_vmaf for this rendition.
 	TargetVMAF float64 `yaml:"target_vmaf"`
+	// Tune false leaves the rendition out of "videoencoder tune": it
+	// isn't searched or interpolated, and its quality and bitrate stay
+	// as configured. For fixed rungs, like a bitrate-capped one for
+	// slow networks.
+	Tune *bool `yaml:"tune"`
+}
+
+// Tuned reports whether "videoencoder tune" sets r's quality: unless
+// it says tune: false. A rendition with no config of its own is tuned.
+func (r *Rendition) Tuned() bool {
+	return r == nil || r.Tune == nil || *r.Tune
 }
 
 // SourceLabels returns the source labels in encoding order.

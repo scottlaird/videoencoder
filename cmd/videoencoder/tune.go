@@ -36,7 +36,20 @@ func tuneVideo(ctx context.Context, r *config.Resolved, adHoc bool, d deps) erro
 	if err != nil {
 		return err
 	}
-	targets := ladder.Filter(vd)
+	var targets, fixed plan.Targets
+	for _, t := range ladder.Filter(vd) {
+		if r.Renditions[t.Name].Tuned() {
+			targets = append(targets, t)
+		} else {
+			fixed = append(fixed, t)
+		}
+	}
+	for _, t := range fixed {
+		fmt.Fprintf(d.stdout, "#   %-10s quality %-5g kept: tune: false\n", t.Name, t.Quality)
+	}
+	if len(targets) == 0 {
+		return nil
+	}
 
 	if err := os.MkdirAll(r.Outdir, 0o755); err != nil {
 		return err
