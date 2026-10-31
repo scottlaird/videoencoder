@@ -33,10 +33,24 @@ func withoutKey(m *yaml.Node, key string) *yaml.Node {
 	return &c
 }
 
-// mergeInto merges mapping src into mapping dst: mappings merge
-// recursively, other values replace, and null deletes. Every value
-// taken from src is annotated with label as a line comment.
-func mergeInto(dst, src *yaml.Node, label string) {
+// namedMaps are the mappings keyed by names the user chooses, whose
+// entries a later layer can delete with null.
+var namedMaps = map[string]bool{
+	"sources":         true,
+	"encoders":        true,
+	"renditions":      true,
+	"videos":          true,
+	"publish.targets": true,
+}
+
+// mergeInto merges mapping src into mapping dst, found at path (""
+// for the top level): mappings merge recursively and other values
+// replace. Null deletes an entry of a named map, such as one
+// rendition; anywhere else it changes nothing, so a bare "tune:" left
+// in a file keeps the inherited settings rather than erasing them.
+// Every value taken from src is annotated with label as a line
+// comment.
+func mergeInto(dst, src *yaml.Node, label, path string) {
 	for i := 0; i+1 < len(src.Content); i += 2 {
 		key, val := src.Content[i], src.Content[i+1]
 		at := -1
@@ -49,11 +63,15 @@ func mergeInto(dst, src *yaml.Node, label string) {
 
 		switch {
 		case isNull(val):
-			if at >= 0 {
+			if at >= 0 && namedMaps[path] {
 				dst.Content = append(dst.Content[:at], dst.Content[at+2:]...)
 			}
 		case at >= 0 && val.Kind == yaml.MappingNode && dst.Content[at+1].Kind == yaml.MappingNode:
-			mergeInto(dst.Content[at+1], val, label)
+			sub := key.Value
+			if path != "" {
+				sub = path + "." + key.Value
+			}
+			mergeInto(dst.Content[at+1], val, label, sub)
 		default:
 			k := &yaml.Node{Kind: yaml.ScalarNode, Tag: key.Tag, Value: key.Value}
 			v := annotate(clean(val), label)

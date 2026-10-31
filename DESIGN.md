@@ -69,7 +69,11 @@ directory is where its sidecar or project entry lives. For a bare
 is named after that file.
 
 **Merge rules.** Maps merge key by key, recursively. Scalars and lists
-replace. An explicit `null` deletes the inherited key. Anything a lower
+replace. An explicit `null` deletes an entry of a map keyed by name
+(`sources`, `encoders`, `renditions`, `videos`, `publish.targets`);
+anywhere else it changes nothing, since YAML reads a section left
+empty (`tune:` with its contents commented out) as null, and erasing
+a fixed section is never what that meant. Anything a lower
 layer might want to patch individually is therefore a **map keyed by
 name, never a list**. This is the main reason inheritance hurts in CUE
 and in most YAML schemes, and keyed maps sidestep it:
