@@ -74,7 +74,9 @@ encoders:
 # the rest, and writes quality and bitrate into the video's sidecar.
 # Renditions up to 1080p are scored at 1080p, taller ones at 2160p with
 # the 4K model; HDR is tone-mapped to SDR for scoring. A rendition's
-# own target_vmaf overrides this one.
+# own target_vmaf overrides this one. Every trial is logged to
+# tune-results.csv in outdir, and later runs reuse the ones that still
+# apply.
 tune:
   target_vmaf: 95
   start: 0s

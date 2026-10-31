@@ -12,17 +12,14 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 
 	"github.com/scottlaird/videoencoder/internal/bench"
@@ -99,7 +96,7 @@ func runCmd(ctx context.Context, cfg *bench.Config, args []string, stderr io.Wri
 		return err
 	}
 
-	version, err := ffmpegVersion(ctx)
+	version, err := bench.FFmpegVersion(ctx)
 	if err != nil {
 		return err
 	}
@@ -115,20 +112,6 @@ func runCmd(ctx context.Context, cfg *bench.Config, args []string, stderr io.Wri
 		DryRun:        *dryRun,
 	}
 	return b.Run(ctx)
-}
-
-// ffmpegVersion returns the version from the first line of
-// "ffmpeg -version", such as "8.1".
-func ffmpegVersion(ctx context.Context) (string, error) {
-	out, err := exec.CommandContext(ctx, "ffmpeg", "-hide_banner", "-version").Output()
-	if err != nil {
-		return "", fmt.Errorf("running ffmpeg -version: %w", err)
-	}
-	line, _, _ := bytes.Cut(out, []byte("\n"))
-	if f := strings.Fields(string(line)); len(f) >= 3 && f[0] == "ffmpeg" && f[1] == "version" {
-		return f[2], nil
-	}
-	return strings.TrimSpace(string(line)), nil
 }
 
 // prune deletes kept encodes that are no longer an answer for a

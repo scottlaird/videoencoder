@@ -60,6 +60,9 @@ var resultColumns = []string{
 // wrong for 8-bit encodes (10-bit ones moved by 0.04 at most).
 const scorer = "v6"
 
+// ScorerVersion is scorer, for callers that keep scores of their own.
+const ScorerVersion = scorer
+
 func ftoa(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }
 
 func (r *Row) record() []string {

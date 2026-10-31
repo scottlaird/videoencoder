@@ -10,6 +10,8 @@ import (
 
 	"github.com/scottlaird/videoencoder/internal/bench"
 	"github.com/scottlaird/videoencoder/internal/config"
+	"github.com/scottlaird/videoencoder/internal/ffmpeg"
+	"github.com/scottlaird/videoencoder/internal/fileid"
 	"github.com/scottlaird/videoencoder/internal/plan"
 	"github.com/scottlaird/videoencoder/internal/probe"
 )
@@ -25,7 +27,8 @@ type Result struct {
 	// Outcome is the search's; for an anchor that ran out of range, the
 	// quality is the range limit.
 	Outcome bench.Outcome
-	Encodes int
+	Encodes int // new trial encodes
+	Cached  int // trials taken from the results file instead
 }
 
 // Tuner runs the sample encodes and scorings.
@@ -33,6 +36,13 @@ type Tuner struct {
 	Exec    bench.Executor
 	Prober  probe.Prober
 	Threads int // libvmaf n_threads
+	// Results is a CSV file of every trial, read at the start and
+	// appended to as trials finish, so a later run with a different
+	// target reuses the encodes that still apply; "" keeps none.
+	Results string
+	// FFmpegVersion is part of each trial's key: another ffmpeg build
+	// may encode differently.
+	FFmpegVersion string
 }
 
 // Tune searches r's anchor renditions on a sample of src (whose video
@@ -54,6 +64,14 @@ func (tu *Tuner) Tune(ctx context.Context, r *config.Resolved, src string, vd pr
 		return nil, fmt.Errorf("sample of %s is empty: is tune.start past its end?", src)
 	}
 	hdr := vd.Tone() == probe.HDR
+	sourceID, err := fileid.Content(src)
+	if err != nil {
+		return nil, err
+	}
+	past, err := loadResults(tu.Results)
+	if err != nil {
+		return nil, err
+	}
 
 	refs := map[refKey]reference{}
 	results := make([]Result, len(targets))
@@ -69,11 +87,13 @@ func (tu *Tuner) Tune(ctx context.Context, r *config.Resolved, src string, vd pr
 			if hdr && !toneMap {
 				prefilter = plan.ToneMapSDR
 			}
-			ref, err := tu.reference(ctx, refs, sample, vd, t.Height, toneMap, workdir)
-			if err != nil {
-				return nil, err
+			ref := tu.reference(refs, vd, t.Height, toneMap, workdir)
+			key := trialKey{
+				source: sourceID, start: r.Tune.Start, duration: r.Tune.Duration,
+				reference: fmt.Sprintf("%dx%d tonemap=%v %s", ref.width, ref.height, toneMap, ref.transfer),
+				prefilter: prefilter, ffmpeg: tu.FFmpegVersion, scorer: bench.ScorerVersion,
 			}
-			res, bitrate, err := tu.search(ctx, r, t, sample, sampleVD.Duration.Seconds(), ref, toneMap, prefilter, workdir)
+			res, bitrate, err := tu.search(ctx, r, t, sample, sampleVD.Duration.Seconds(), ref, toneMap, prefilter, workdir, key, past)
 			if err != nil {
 				return nil, fmt.Errorf("tuning %s: %w", t.Name, err)
 			}
@@ -110,6 +130,7 @@ type reference struct {
 	path          string
 	width, height uint64
 	transfer      string // color transfer, as ffprobe names it
+	toneMap       bool   // tone-mapped to SDR from an HDR sample
 }
 
 // viewingHeight is the size a rendition of height h is scored at:
@@ -123,11 +144,13 @@ func viewingHeight(h, source uint64) uint64 {
 	return min(v, source)
 }
 
-func (tu *Tuner) reference(ctx context.Context, refs map[refKey]reference, sample string, vd probe.VideoData, h uint64, toneMap bool, workdir string) (reference, error) {
+// reference returns the reference for a rendition of height h, without
+// making it; makeReference does that when a trial first needs it.
+func (tu *Tuner) reference(refs map[refKey]reference, vd probe.VideoData, h uint64, toneMap bool, workdir string) reference {
 	vh := viewingHeight(h, vd.Height)
 	key := refKey{vh, toneMap}
 	if ref, ok := refs[key]; ok {
-		return ref, nil
+		return ref
 	}
 	name, transfer := fmt.Sprintf("ref-%d.mkv", vh), vd.ColorTransfer
 	if toneMap {
@@ -138,18 +161,26 @@ func (tu *Tuner) reference(ctx context.Context, refs map[refKey]reference, sampl
 		width:    uint64(float64(vd.Width)*float64(vh)/float64(vd.Height)+0.5) &^ 1,
 		height:   vh,
 		transfer: transfer,
+		toneMap:  toneMap,
+	}
+	refs[key] = ref
+	return ref
+}
+
+// makeReference writes ref from sample, unless it already exists.
+func (tu *Tuner) makeReference(ctx context.Context, sample string, ref reference) error {
+	if _, err := os.Stat(ref.path); err == nil {
+		return nil
 	}
 	// FFV1 is lossless, so the reference adds no error of its own.
 	vf := fmt.Sprintf("scale=%d:%d:flags=lanczos", ref.width, ref.height)
-	if toneMap {
+	if ref.toneMap {
 		vf = plan.ToneMapSDR + "," + vf
 	}
-	err := tu.ffmpeg(ctx, "-i", sample, "-vf", vf, "-c:v", "ffv1", "-level", "3", ref.path)
-	if err != nil {
-		return reference{}, fmt.Errorf("making %dp reference: %w", vh, err)
+	if err := tu.ffmpeg(ctx, "-i", sample, "-vf", vf, "-c:v", "ffv1", "-level", "3", ref.path); err != nil {
+		return fmt.Errorf("making %dp reference: %w", ref.height, err)
 	}
-	refs[key] = ref
-	return ref, nil
+	return nil
 }
 
 // qualitySpec is the search range for an encoder: its bench defaults,
@@ -176,15 +207,46 @@ func target(r *config.Resolved, t *plan.Target) float64 {
 // search finds the worst quality setting at which t, encoded from the
 // sample without bitrate caps (and tone-mapped first with toneMap),
 // reaches its target VMAF. It returns the result and the bitrate of
-// that encode.
-func (tu *Tuner) search(ctx context.Context, r *config.Resolved, t *plan.Target, sample string, seconds float64, ref reference, toneMap bool, prefilter, workdir string) (Result, float64, error) {
+// that encode. Trials recorded in past under key are used instead of
+// encoding again, and new ones are recorded there.
+func (tu *Tuner) search(ctx context.Context, r *config.Resolved, t *plan.Target, sample string, seconds float64, ref reference, toneMap bool, prefilter, workdir string, key trialKey, past *results) (Result, float64, error) {
 	spec := qualitySpec(t.Encoder.Codec)
 	goal := target(r, t)
 	s := bench.NewSearch(spec.Steps(), spec.QualityToIndex(t.Quality))
-	type point struct{ vmaf, bitrate float64 }
-	seen := map[int]point{}
 	src := plan.Source{Label: "tune", Path: sample, ID: "sample"}
+	trialJob := func(q float64) *ffmpeg.Job {
+		tr := *t
+		tr.Quality = q
+		tr.Encoder.CapBitrate = false
+		return tr.Job(src, workdir, toneMap)
+	}
+	key.args = withoutQuality(trialJob(0).Args, t.Encoder.QualityFlag)
 
+	// Start from the closest bracket the past trials give, judged
+	// against this target: the worst passing setting and the best
+	// failing one below it.
+	seen := map[int]trial{}
+	pass, fail := -1, -1
+	for i := 0; i <= spec.Steps(); i++ {
+		if p, ok := past.lookup(key, spec.IndexToQuality(i)); ok {
+			seen[i] = p
+			if p.vmaf >= goal {
+				pass = i
+			}
+		}
+	}
+	for i := range seen {
+		if seen[i].vmaf < goal && i > pass && (fail < 0 || i < fail) {
+			fail = i
+		}
+	}
+	for _, i := range []int{pass, fail} {
+		if i >= 0 {
+			s.Observe(i, seen[i].vmaf >= goal, seen[i].vmaf-goal)
+		}
+	}
+
+	encodes := 0
 	for {
 		i, outcome := s.Next()
 		if outcome != bench.Searching {
@@ -200,37 +262,65 @@ func (tu *Tuner) search(ctx context.Context, r *config.Resolved, t *plan.Target,
 			p := seen[best]
 			res := Result{
 				Rendition: t.Name, Quality: spec.IndexToQuality(best), Bitrate: roundBitrate(p.bitrate),
-				VMAF: p.vmaf, Target: goal, Outcome: outcome, Encodes: len(seen),
+				VMAF: p.vmaf, Target: goal, Outcome: outcome, Encodes: encodes, Cached: len(seen) - encodes,
 			}
 			slog.Info("Tuned", "rendition", t.Name, "quality", res.Quality, "vmaf", p.vmaf,
-				"bitrate", FormatBitrate(res.Bitrate), "outcome", outcome, "encodes", len(seen))
+				"bitrate", FormatBitrate(res.Bitrate), "outcome", outcome, "encodes", encodes, "cached", res.Cached)
 			return res, p.bitrate, nil
 		}
 
 		q := spec.IndexToQuality(i)
-		trial := *t
-		trial.Quality = q
-		trial.Encoder.CapBitrate = false
-		out := filepath.Join(workdir, fmt.Sprintf("%s.q%v.mp4", t.Name, q))
-		job := trial.Job(src, workdir, toneMap)
-		args := append([]string{"-i", sample}, job.Args...)
-		if err := tu.ffmpeg(ctx, append(args, out)...); err != nil {
-			return Result{}, 0, err
+		p, ok := seen[i]
+		if !ok {
+			var err error
+			if p, err = tu.trial(ctx, trialJob(q), sample, seconds, ref, prefilter, workdir); err != nil {
+				return Result{}, 0, err
+			}
+			encodes++
+			seen[i] = p
+			if err := past.record(key, t.Name, q, p); err != nil {
+				return Result{}, 0, fmt.Errorf("recording trial: %w", err)
+			}
 		}
-		st, err := os.Stat(out)
-		if err != nil {
-			return Result{}, 0, err
-		}
-		m, err := bench.Score(ctx, tu.Exec, out, ref.path, ref.width, ref.height, tu.Threads, workdir, filepath.Base(out), prefilter, ref.transfer)
-		os.Remove(out)
-		if err != nil {
-			return Result{}, 0, err
-		}
-		seen[i] = point{vmaf: m.VMAF, bitrate: float64(st.Size()) * 8 / seconds}
-		margin := m.VMAF - goal
-		slog.Info("Trial", "rendition", t.Name, "quality", q, "vmaf", m.VMAF, "pass", margin >= 0)
+		margin := p.vmaf - goal
+		slog.Info("Trial", "rendition", t.Name, "quality", q, "vmaf", p.vmaf, "pass", margin >= 0, "cached", !ok)
 		s.Observe(i, margin >= 0, margin)
 	}
+}
+
+// trial encodes the sample with job and scores it against ref.
+func (tu *Tuner) trial(ctx context.Context, job *ffmpeg.Job, sample string, seconds float64, ref reference, prefilter, workdir string) (trial, error) {
+	if err := tu.makeReference(ctx, sample, ref); err != nil {
+		return trial{}, err
+	}
+	out := job.Output
+	args := append([]string{"-i", sample}, job.Args...)
+	if err := tu.ffmpeg(ctx, append(args, out)...); err != nil {
+		return trial{}, err
+	}
+	st, err := os.Stat(out)
+	if err != nil {
+		return trial{}, err
+	}
+	m, err := bench.Score(ctx, tu.Exec, out, ref.path, ref.width, ref.height, tu.Threads, workdir, filepath.Base(out), prefilter, ref.transfer)
+	os.Remove(out)
+	if err != nil {
+		return trial{}, err
+	}
+	return trial{vmaf: m.VMAF, bitrate: float64(st.Size()) * 8 / seconds}, nil
+}
+
+// withoutQuality returns args with the value after the last flag
+// replaced by a placeholder, so trials at every quality share a key.
+func withoutQuality(args []string, flag string) []string {
+	out := slices.Clone(args)
+	for i := len(out) - 2; i >= 0; i-- {
+		if out[i] == flag {
+			out[i+1] = "{quality}"
+			break
+		}
+	}
+	return out
 }
 
 func (tu *Tuner) ffmpeg(ctx context.Context, args ...string) error {

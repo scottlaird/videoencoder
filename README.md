@@ -64,6 +64,15 @@ Renditions up to 1080p are judged at 1080p and taller ones at 2160p
 with VMAF's 4K model.  HDR-only videos are tone-mapped to SDR for
 scoring; with an SDR source as well, that's used instead.
 
+Every trial encode is logged to `tune-results.csv` in the video's
+`outdir`, keyed by everything that decides its score: the source's
+content, `tune.start` and `tune.duration`, the encoder's arguments,
+the reference it's judged against, and the ffmpeg version.  A later
+run reuses the trials that still apply, so asking for VMAF 93 after
+95 starts from the bracket the earlier encodes give, and repeating a
+run encodes nothing.  Changing an encoder's flags starts fresh, and
+deleting the file forgets everything.
+
 ### Publishing
 
 With `publish.to` set, each render ends by copying the stream to a
