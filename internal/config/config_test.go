@@ -46,13 +46,13 @@ thumbnails: null
 encoders:
   x: {args: [-preset, slow]}
 renditions:
-  one: {quality: 20}
+  one: {quality: 20, height: null}
   two: null
   three: {encoder: x, height: 1080, quality: 22}
 `
 	dst := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-	mergeInto(dst, node(t, base), "base")
-	mergeInto(dst, node(t, over), "over")
+	mergeInto(dst, node(t, base), "base", "")
+	mergeInto(dst, node(t, over), "over", "")
 
 	var got layer
 	if err := dst.Load(&got, yaml.WithKnownFields()); err != nil {
@@ -61,8 +61,8 @@ renditions:
 	if got.Outdir != "b" {
 		t.Errorf("outdir = %q, want b (scalar replaced)", got.Outdir)
 	}
-	if got.Thumbnails.Enabled {
-		t.Error("thumbnails still set; null should delete it")
+	if !got.Thumbnails.Enabled {
+		t.Error("thumbnails erased; null outside a named map should change nothing")
 	}
 	x := got.Encoders["x"]
 	if x.Codec != "libx264" || !slices.Equal(x.Args, []string{"-preset", "slow"}) {
@@ -154,6 +154,34 @@ renditions:
 	}
 	if !strings.Contains(string(out), "quality: 30 # "+filepath.Join(proj, "hike"+SidecarSuffix)) {
 		t.Errorf("provenance missing for the sidecar's value:\n%s", out)
+	}
+}
+
+// TestLoadBareSection checks that a section left empty in a sidecar,
+// "tune:" with its contents commented out, keeps the inherited
+// settings, while null still deletes a named entry.
+func TestLoadBareSection(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "v"+SidecarSuffix), `
+sources: {sdr: v.mov}
+tune:
+#  duration: 30s
+renditions:
+  av1-4320: null
+`)
+	l := &Loader{GlobalPath: filepath.Join(dir, "none.yaml")}
+	r, err := l.Load(Video{Name: "v", Dir: dir})
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	if err := r.Validate(); err != nil {
+		t.Errorf("Validate() = %v", err)
+	}
+	if got, want := r.Tune.Duration, "8s"; got != want {
+		t.Errorf("tune.duration = %q, want the default %q", got, want)
+	}
+	if _, ok := r.Renditions["av1-4320"]; ok {
+		t.Error("rendition av1-4320 survived a null")
 	}
 }
 

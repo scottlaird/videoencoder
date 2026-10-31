@@ -1,6 +1,7 @@
 # Built-in defaults: the lowest config layer. Every layer uses this
 # same schema; maps merge key by key, scalars and lists replace, and
-# null deletes an inherited key.
+# null deletes an entry of a map keyed by name (sources, encoders,
+# renditions, videos, publish.targets) and changes nothing elsewhere.
 
 # Where intermediate renditions and the finished stream go. Relative
 # paths are relative to the video's directory; {name} is the video's

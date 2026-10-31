@@ -75,7 +75,7 @@ func (l *Loader) Load(v Video) (*Resolved, error) {
 
 	merged := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 	for _, s := range layers {
-		mergeInto(merged, s.node, s.label)
+		mergeInto(merged, s.node, s.label, "")
 	}
 
 	r := &Resolved{Video: v, Merged: merged}

@@ -93,9 +93,11 @@ Settings are YAML, merged from several layers, lowest priority first:
 5. the video's sidecar, `<name>.video.yaml`,
 6. `--outdir`, `--streamdir`, `--thumbnails` and `--to` on the command line.
 
-Maps merge key by key, other values replace, and `null` deletes an
-inherited key.  Renditions and encoders are maps keyed by name, so a
-layer can change or drop one rendition:
+Maps merge key by key and other values replace.  Renditions,
+encoders, sources, videos and publish targets are maps keyed by name,
+so a layer can change one rendition, or drop it with `null`.  Anywhere
+else `null` changes nothing, so a section left empty, like a bare
+`tune:` with its settings commented out, keeps what it inherits:
 
 ```yaml
 # trip/videoencoder.yaml: applies to every video in trip/ and below
