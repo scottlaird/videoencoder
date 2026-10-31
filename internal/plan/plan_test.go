@@ -129,7 +129,7 @@ func TestJob(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		j := tt.target.Job(src, "out")
+		j := tt.target.Job(src, "out", false)
 		if got := strings.Join(j.Args, " "); got != tt.wantArgs {
 			t.Errorf("%s: args =\n %q\nwant\n %q", tt.name, got, tt.wantArgs)
 		}
@@ -148,7 +148,7 @@ func TestJobKey(t *testing.T) {
 			Encoder: config.Encoder{Codec: "libsvtav1", QualityFlag: "-crf"}}
 	}
 	src := Source{Label: "main", Path: "/a/in.mov", ID: "id1"}
-	base := target(30).Job(src, "out").Key
+	base := target(30).Job(src, "out", false).Key
 
 	moved := src
 	moved.Path = "/b/in.mov"
@@ -159,11 +159,11 @@ func TestJobKey(t *testing.T) {
 		key  string
 		same bool
 	}{
-		{"same inputs", target(30).Job(src, "out").Key, true},
-		{"moved source", target(30).Job(moved, "out").Key, true},
-		{"other outdir", target(30).Job(src, "elsewhere").Key, true},
-		{"new quality", target(31).Job(src, "out").Key, false},
-		{"edited source", target(30).Job(edited, "out").Key, false},
+		{"same inputs", target(30).Job(src, "out", false).Key, true},
+		{"moved source", target(30).Job(moved, "out", false).Key, true},
+		{"other outdir", target(30).Job(src, "elsewhere", false).Key, true},
+		{"new quality", target(31).Job(src, "out", false).Key, false},
+		{"edited source", target(30).Job(edited, "out", false).Key, false},
 	}
 	for _, tt := range tests {
 		if (tt.key == base) != tt.same {
@@ -287,5 +287,22 @@ func TestGainMapPosterKeys(t *testing.T) {
 	hdrVD.ColorTransfer = "smpte2084"
 	if g := GainMapPosters(p, hdr, hdrVD, hdr, "out")[0]; !g.ToneMap || g.Key == base {
 		t.Errorf("HDR-only poster: tonemap %v, key %s", g.ToneMap, g.Key)
+	}
+}
+
+func TestToneMappedJob(t *testing.T) {
+	tg := &Target{Name: "h264-720", EncoderName: "h264", Width: 1280, Height: 720, Quality: 18,
+		Encoder: config.Encoder{Codec: "libx264", QualityFlag: "-crf", Args: []string{"-pix_fmt", "yuv420p"}, SDROnly: true}}
+	src := Source{Label: "hdr", Path: "in.mov", ID: "id1"}
+	plain, mapped := tg.Job(src, "out", false), tg.Job(src, "out", true)
+	args := strings.Join(mapped.Args, " ")
+	if !strings.HasPrefix(args, "-vf "+ToneMapSDR+" -s 1280x720") || !strings.Contains(args, "-color_trc bt709") {
+		t.Errorf("tone-mapped args = %q", args)
+	}
+	if strings.Contains(strings.Join(plain.Args, " "), "tonemap") {
+		t.Errorf("plain job is tone-mapped: %q", plain.Args)
+	}
+	if plain.Key == mapped.Key {
+		t.Error("tone-mapped and plain jobs share a key")
 	}
 }

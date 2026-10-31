@@ -29,6 +29,8 @@ type fakeFFmpeg struct {
 	prefilter []string           // filtergraphs used for scoring
 	quality   map[string]float64 // encoded file -> quality
 	height    map[string]uint64  // encoded file -> rendition height
+	// toneMapped is set if any trial encode was tone-mapped.
+	toneMapped bool
 }
 
 func cutoff(h uint64) float64 { return 20 + float64(h)/240 } // 480p: 22, 2160p: 29
@@ -64,6 +66,9 @@ func (f *fakeFFmpeg) Exec(_ context.Context, argv []string) (bench.Measurement, 
 		size := argv[slices.Index(argv, "-s")+1]
 		h, _ := strconv.ParseUint(strings.Split(size, "x")[1], 10, 64)
 		f.quality[out], f.height[out] = q, h
+		if i := slices.Index(argv, "-vf"); i >= 0 && strings.Contains(argv[i+1], "tonemap=") {
+			f.toneMapped = true
+		}
 		f.encodes[fmt.Sprint(h)]++
 		return bench.Measurement{}, os.WriteFile(out, bytes.Repeat([]byte("x"), int(h*1000/uint64(q))), 0o644)
 	}
@@ -131,6 +136,33 @@ func TestTune(t *testing.T) {
 	}
 	if b := got["av1-2160"].Bitrate; b == 0 || b < got["av1-480"].Bitrate {
 		t.Errorf("bitrates 480p %d, 2160p %d", got["av1-480"].Bitrate, b)
+	}
+}
+
+// An SDR-only encoder tunes HDR as a render would make it: tone-mapped,
+// and judged against a tone-mapped reference with no further filtering.
+func TestTuneSDROnly(t *testing.T) {
+	h264 := config.Encoder{Codec: "libx264", QualityFlag: "-crf", SDROnly: true}
+	targets := plan.Targets{
+		{Name: "h264-480", EncoderName: "h264", Encoder: h264, Width: 852, Height: 480, Quality: 23},
+		{Name: "h264-1080", EncoderName: "h264", Encoder: h264, Width: 1920, Height: 1080, Quality: 23},
+	}
+	f := &fakeFFmpeg{encodes: map[string]int{}, quality: map[string]float64{}, height: map[string]uint64{}}
+	tu := &Tuner{Exec: f, Prober: fakeProber{}, Threads: 1}
+	vd := probe.VideoData{Width: 3840, Height: 2160, ColorTransfer: "smpte2084"}
+	if _, err := tu.Tune(context.Background(), tuneConfig(), "src.mov", vd, targets, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(slices.Compact(f.scoredAt), []string{"ref-1080-sdr.mkv"}) {
+		t.Errorf("references used: %v, want only ref-1080-sdr.mkv", f.scoredAt)
+	}
+	for _, g := range f.prefilter {
+		if strings.Contains(g, "tonemap=") {
+			t.Errorf("tone-mapped encode scored with a tone map: %q", g)
+		}
+	}
+	if !f.toneMapped {
+		t.Error("trial encodes weren't tone-mapped")
 	}
 }
 

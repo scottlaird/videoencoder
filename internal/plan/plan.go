@@ -154,12 +154,22 @@ func newJobWithBase(src Source, base []string, outdir, slot, stem, ext string, a
 
 // Job returns the ffmpeg job that encodes src to t under outdir, as
 // "<rendition>.<source label>.<key>.mp4".
-func (t *Target) Job(src Source, outdir string) *ffmpeg.Job {
-	args := []string{
+//
+// With toneMap, src is HDR and is tone-mapped to BT.709 SDR first, for
+// encoders that only make SDR (see config.Encoder.SDROnly).
+func (t *Target) Job(src Source, outdir string, toneMap bool) *ffmpeg.Job {
+	var args []string
+	if toneMap {
+		args = append(args, "-vf", ToneMapSDR)
+	}
+	args = append(args,
 		"-s", fmt.Sprintf("%dx%d", t.Width, t.Height),
 		"-c:v", t.Encoder.Codec,
-	}
+	)
 	args = append(args, t.Encoder.Args...)
+	if toneMap {
+		args = append(args, "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709")
+	}
 	args = append(args, t.Encoder.QualityFlag, strconv.FormatFloat(t.Quality, 'f', -1, 64))
 	if t.Encoder.CapBitrate && t.Bitrate > 0 {
 		burst := fmt.Sprint(t.Bitrate * 3 / 2)
