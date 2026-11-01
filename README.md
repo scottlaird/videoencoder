@@ -1,319 +1,499 @@
 # videoencoder
 
-Wrapper around ffmpeg for creating streaming videos with DASH and HLS.
+videoencoder turns a video file into a directory you can serve over
+plain HTTP. The directory holds a ladder of H.264, H.265 and AV1
+renditions, DASH and HLS manifests, posters and seek thumbnails, and
+any adaptive player, such as Shaka Player, hls.js or Safari, can
+stream it.
 
-This will be a tool for turning a single video file into a directory
-full of streamable video content, including DASH and HLS manifests, to
-allow streaming video over HTTP.
+Each video is described by a small YAML file next to its sources, so a
+library of videos can be rebuilt at any time without hunting down
+sources or remembering settings. Re-running is cheap. Only outputs
+whose source or settings changed are rebuilt, and only changed files
+are uploaded when publishing.
 
-Requirements:
+The repository also contains **encbench**, a tool for comparing
+encoder settings. It finds the cheapest quality setting that reaches a
+target VMAF for each set of flags on a set of sample clips. See
+[encbench](#encbench) below.
 
-- ffmpeg + ffprobe
-- [Shaka Packager](https://github.com/shaka-project/shaka-packager), installed in the path as `packager`.
-- For gain-mapped AVIF posters of HDR videos, `avifgainmaputil` from
-  [libavif](https://github.com/AOMediaCodec/libavif) (`brew install
-  libavif`).  Gain-mapped JPEGs need nothing extra.
+## Requirements
 
-## Usage
+- Go 1.26 or later, to build.
+- `ffmpeg` and `ffprobe`. You need a build with libx264, libx265 and
+  libsvtav1 for the default encoders, and libvmaf for
+  `videoencoder tune` and encbench.
+- [Shaka Packager](https://github.com/shaka-project/shaka-packager),
+  installed in your path as `packager`.
+- Optionally, `avifgainmaputil` from
+  [libavif](https://github.com/AOMediaCodec/libavif)
+  (`brew install libavif`), for gain-mapped AVIF posters of HDR
+  videos. Gain-mapped JPEGs need nothing extra.
 
-- Install via `go install ./cmd/videoencoder` (or `go build ./cmd/videoencoder`).
-- Make sure that `ffmpeg`, `ffprobe`, and `packager` are installed.
-- Run `videoencoder file.mov` to encode one file, or describe your
-  videos in config files (below) and run `videoencoder` in their
-  directory.
+## Installation
 
-`videoencoder` will recognize when source files, destination files,
-or transcoding settings change, and will rebuild/re-transcode as few
-files as possible.  Each output's name includes a hash of its source
-and settings (`av1-2160.hdr.7c3e1a09bd.mp4`), so changing one
+```
+go install github.com/scottlaird/videoencoder/cmd/videoencoder@latest
+go install github.com/scottlaird/videoencoder/cmd/encbench@latest
+```
+
+Or, from a checkout, `go install ./cmd/...`.
+
+## Quick start
+
+To encode one file with the built-in defaults:
+
+```
+videoencoder clip.mov
+```
+
+This writes renditions to `transcodes/clip/` and the stream to
+`stream/clip/`, both next to `clip.mov`. To keep the settings with the
+video, put them in a sidecar file named `clip.video.yaml`:
+
+```yaml
+# clip.video.yaml
+sources:
+  sdr: clip.mov
+```
+
+Then `videoencoder clip.video.yaml`, or just `videoencoder` in that
+directory, renders it. Usually you'll want to tune the quality
+settings for the video first, as described in
+[Tuning quality](#tuning-quality).
+
+## What it produces
+
+For each video, videoencoder makes:
+
+- **Renditions.** One per rung of the ladder, for each source. The
+  default ladder is H.264 up to 1080p, H.265 up to 2160p and AV1 up to
+  4320p, but never above the source's resolution.
+- **Audio.** Encoded once from the first source.
+- **Manifests.** `dash.mpd` and `hls.m3u8`, which list every rendition.
+  With both an SDR and an HDR source, one stream carries both, and the
+  player picks whichever the display supports.
+- **Posters.** Still frames taken at `poster.offset`, in several
+  widths and formats, listed in `poster.json`.
+  - When there's an HDR source, there are also gain-mapped JPEG and
+    AVIF posters, which HDR displays show brighter.
+  - The best poster at each width is also copied to a fixed name,
+    `poster-<width>.<format>`, and the full-resolution one to
+    `poster.<format>`.
+- **Seek thumbnails.** Tiled JPEGs, listed in a `thumbnails.vtt` track
+  and added to both manifests.
+
+Media files are named after what they are and a hash of their source
+and settings, such as `av1-2160.hdr.7c3e1a09bd.mp4`. Changing one
 rendition's settings produces one new file and leaves every other
-file, and its name, alone.  Outputs are written under a `.partial`
-name and renamed when ffmpeg finishes, so an interrupted run never
-leaves a truncated file that looks complete.  Replaced and removed
-outputs are deleted once the new stream is complete.  `--rebuild GLOB`
-forces a rebuild (`'*'`, `'av1-*'`, `sdr/h264-1080`, `poster`), for
-example after upgrading ffmpeg.
+file, and its name, alone. That's also what lets a CDN cache them
+forever.
 
-By default, `videoencoder` will transcode to H.264 up to 1080p, H.265
-up to 4k, and AV1 up to 8k, never above the source's resolution.
-Intermediate renditions go in `transcodes/<name>/` and the stream in
-`stream/<name>/`, next to the video.
+## Commands
 
-Each stream also gets posters, still images taken at `poster.offset`
-in several widths and formats, plus gain-mapped JPEG and AVIF posters
-when there's an HDR source, listed in `poster.json`.  The best one of
-each size is always at `poster-<width>.<format>` (gain-mapped if
-possible, SDR otherwise), and the full-resolution one at
-`poster.<format>`.  There are also seek
-thumbnails, tiled JPEGs added to `dash.mpd` and `hls.m3u8` and listed
-in a `thumbnails.vtt` WebVTT track (turn
-them off with `thumbnails: {enabled: false}` or `--thumbnails=false`).
+```
+videoencoder [flags] [dir | name.video.yaml | media files ...]
+videoencoder plan    [flags] [same]
+videoencoder tune    [flags] [same]
+videoencoder publish [flags] [same]
+```
 
-### Tuning quality
+- **`videoencoder`** renders. Given a directory, which defaults to the
+  current one, it renders every video defined beneath it. Given
+  sidecars, it renders those videos. Given media files, it makes a
+  one-off video from them, named after the first file.
+- **`videoencoder plan`** renders nothing. It prints each video's
+  merged configuration, with a comment on each value saying which file
+  it came from. It then lists every output and whether it would be
+  rebuilt and why: new, source changed, settings changed, or output
+  missing.
+- **`videoencoder tune`** picks quality settings for each video and
+  writes them into its sidecar. See [Tuning quality](#tuning-quality).
+- **`videoencoder publish`** copies finished streams to their publish
+  targets without rendering.
 
-`videoencoder tune` picks each rendition's quality setting for you.  It
-encodes a few seconds of the video (`tune.start`, `tune.duration`) at
-the shortest and tallest rendition of each encoder, searching for the
-setting that just reaches `tune.target_vmaf` (95 by default; a
-rendition's own `target_vmaf` overrides it), interpolates the
-renditions in between, and writes `quality` (and, for encoders with
-bitrate caps, `bitrate`) into the video's sidecar with a comment saying
-where each value came from.  Review the sidecar, then render as usual.
-A rendition with `tune: false` is left as configured, for fixed rungs
-such as a bitrate-capped one for slow networks.  So is any rendition
-taller than 2160p: VMAF has no model for 6K or 8K, so set those by
-hand.
+Flags:
+
+| Flag | Meaning |
+|:--|:--|
+| `--config FILE` | Global config file (default `~/.config/videoencoder/config.yaml`) |
+| `--rebuild GLOB` | Rebuild matching outputs even if they're up to date: `'*'`, `'av1-*'`, `sdr/h264-1080`, `audio`, `'poster/*'` |
+| `--outdir DIR` | Override `outdir` |
+| `--streamdir DIR` | Override `streamdir` |
+| `--thumbnails=false` | Skip seek thumbnails |
+| `--to a,b` | Publish to these targets instead of `publish.to` |
+| `--publish=false` | Don't publish after rendering |
+| `--prune` | When publishing, delete objects that are no longer part of the stream |
+
+## Configuration
+
+Settings are YAML. The full default configuration, with comments, is
+[`internal/config/default.yaml`](internal/config/default.yaml).
+
+### Where settings come from
+
+Settings are merged from these layers, lowest priority first:
+
+1. The built-in defaults.
+2. `~/.config/videoencoder/config.yaml`, or the file given with
+   `--config`.
+3. Every `videoencoder.yaml` from `/` down to the video's directory,
+   shallowest first. A file applies to every video at or below its
+   directory.
+4. The video's entry under `videos:` in its own directory's
+   `videoencoder.yaml`, if it has one.
+5. The video's sidecar, `<name>.video.yaml`.
+6. Flags on the command line.
+
+Maps merge key by key, and everything else replaces what's below it.
+`sources`, `encoders`, `renditions`, `videos` and `publish.targets` are
+maps keyed by name, so a layer can change a single rendition without
+repeating the rest, or remove one with `null`. Anywhere else, `null`
+does nothing. A section left empty, such as `tune:` with its contents
+commented out, keeps the settings it would have inherited.
+
+Unknown keys are an error, so a typo fails instead of being ignored.
+
+Relative paths are relative to the directory of the video they belong
+to, and `{name}` in a path is the video's name.
+
+### A source library
+
+One way to organize videos is a directory per video, with shared
+settings at the top:
+
+```
+webvideo/
+  source/
+    videoencoder.yaml          # settings for every video below
+    20261025-snow2/
+      20261025-snow2.mov
+      20261025-snow2.video.yaml
+  transcodes/                  # renditions, safe to delete
+  stream/                      # finished streams, safe to delete
+```
+
+```yaml
+# source/videoencoder.yaml
+outdir: ../../transcodes/{name}
+streamdir: ../../stream/{name}
+publish:
+  to: [web]
+  targets:
+    web: {s3: {bucket: video, prefix: "{name}/"}}
+```
+
+```yaml
+# source/20261025-snow2/20261025-snow2.video.yaml
+sources:
+  sdr: 20261025-snow2.mov
+poster: {offset: 12.5s}
+renditions:
+  h264-480: null               # not for this one
+  av1-2160: {quality: 30}      # only this rendition re-encodes
+```
+
+Running `videoencoder` in `source/` renders every video in the
+library. Videos can also be defined without a sidecar, as entries
+under `videos:` in a `videoencoder.yaml`:
+
+```yaml
+videos:
+  hike:
+    sources: {hdr: hike-hdr.mov, sdr: hike-sdr.mov}
+```
+
+### Settings
+
+| Key | Meaning |
+|:--|:--|
+| `sources` | Source files by label, such as `sdr` and `hdr`. Sources are encoded in label order, and the first supplies the audio and poster. |
+| `outdir` | Where renditions and the video's state file go. Default `transcodes/{name}`. |
+| `streamdir` | Where the finished stream goes. Default `stream/{name}`. |
+| `encoders` | ffmpeg encoders by name, described below. |
+| `renditions` | The ladder, described below. |
+| `tune` | How `videoencoder tune` works: `target_vmaf` (default 95), `start` (0s), `duration` (8s) and `anchors` (2). |
+| `poster` | `offset`, `widths`, `formats` (`avif`, `jpg`, `webp`), `gainmap_formats`, and `hdr` for plain PQ HDR posters. |
+| `thumbnails` | `enabled`, `interval` in seconds, `height`, and `columns` × `rows` per tile. |
+| `publish` | `to` and `targets`; see [Publishing](#publishing). |
+
+An encoder is an ffmpeg codec with its fixed options:
+
+```yaml
+encoders:
+  av1:
+    codec: libsvtav1
+    quality_flag: -crf
+    args: [-preset, "5", -pix_fmt, yuv420p10le]
+  h264:
+    codec: libx264
+    quality_flag: -crf
+    args: [-preset, faster, -pix_fmt, yuv420p, -profile:v, high]
+    cap_bitrate: true   # pass each rendition's bitrate as -b:v, with -maxrate and -bufsize at 1.5x
+    sdr_only: true      # never make HDR H.264
+```
+
+Pixel formats should be explicit, since encoders otherwise keep the
+source's, and 4:2:2 or 10-bit H.264 plays almost nowhere. Without
+`cap_bitrate`, a rendition's bitrate is just a label in the manifest.
+
+A rendition is one rung of the ladder:
 
 ```yaml
 renditions:
+  av1-1080:  {encoder: av1,  height: 1080, quality: 31, bitrate: 2M}
   h264-480-capped: {encoder: h264, height: 480, quality: 23, bitrate: 1.5M, tune: false}
 ```
 
-Each rendition is judged against the sample scaled to its own size
-(with VMAF's 4K model at 2160p), so the score measures
-what the encoder lost rather than what the smaller size can't hold.
-HDR-only videos are tone-mapped to SDR for scoring; with an SDR source
-as well, that's used instead.
+- `quality` is the value passed with the encoder's `quality_flag`.
+- `bitrate` takes an optional `k` or `M` suffix.
+- `args` adds options for this rendition only.
+- `target_vmaf` overrides `tune.target_vmaf` for this rendition.
+- `tune: false` keeps tune from changing it.
+
+The width follows the source's aspect ratio. Renditions taller than
+the source are dropped. The exception is an encoder whose renditions
+all fall short of the source: that encoder's next taller rendition is
+made at the source's own resolution.
+
+### SDR and HDR
+
+videoencoder handles SDR and HDR (PQ or HLG) sources without extra
+settings. To make a stream that carries both, list both sources, or
+run `videoencoder hdr.mov sdr.mov`. They should be the same length,
+and ideally the same resolution. Each is encoded separately, and both
+go into the same manifests.
+
+An encoder with `sdr_only: true` encodes only the SDR source. If the
+video has only an HDR source, that encoder gets a tone-mapped copy of
+it instead.
+
+## Rebuilding
+
+An output is up to date when a file with its key in the name exists.
+The key is a hash of everything that went into the output except the
+input's path. So:
+
+- Changing a rendition's settings rebuilds only that rendition.
+- Re-exporting a source rebuilds everything made from it.
+- Moving or renaming a source rebuilds nothing.
+
+Upgrading ffmpeg doesn't count as a change, so use `--rebuild '*'` if
+you want to re-encode everything with a new version.
+
+Outputs are written under a `.partial` name and renamed when they're
+complete, so an interrupted run never leaves a truncated file that
+looks finished. The rest of the cleanup waits until the new stream is
+complete: replaced and removed outputs are deleted then. Each video's
+`<name>.state.json` in its `outdir` records what was built, so a
+deletion only ever touches files that video made, and several videos
+can share an `outdir` or `streamdir`.
+
+Every stale rendition of a source is encoded in one ffmpeg process,
+because decoding is often a large share of the cost.
+
+## Tuning quality
+
+The default quality settings are a starting point. Footage differs
+enormously in how hard it is to compress, so the setting that's
+plenty for one clip falls well short for another.
+`videoencoder tune` measures this for each video:
+
+1. It cuts a sample from the first SDR source, `tune.duration`
+   seconds from `tune.start`. For an HDR-only video, it uses the HDR
+   source.
+2. For each encoder, it searches the anchor renditions, the shortest
+   and tallest (plus the middle with `anchors: 3`), for the quality
+   setting that just reaches the target VMAF.
+3. It interpolates the renditions in between, linearly in log height.
+4. It writes each rendition's `quality`, and `bitrate` for encoders
+   that cap it, into the video's sidecar. Each value gets a comment
+   saying how it was found.
+
+Review the sidecar, then render as usual.
+
+```yaml
+# written by videoencoder tune
+renditions:
+  av1-2160:
+    quality: 31 # tuned 2026-10-31: VMAF 90.5 (target 90)
+  av1-1440:
+    quality: 29 # interpolated by tune 2026-10-31 for VMAF 90
+```
+
+Each rendition is scored against the sample scaled to its own size, a
+lossless reference, using VMAF's 4K model at 2160p. The score
+therefore measures what the encoder lost, not detail the smaller size
+couldn't hold anyway. HDR is tone-mapped to SDR for scoring, since
+VMAF is an SDR metric.
+
+Two kinds of rendition are left as configured. Ones marked
+`tune: false` are useful for fixed rungs, such as a bitrate-capped one
+for slow networks. Ones taller than 2160p are left alone because VMAF
+has no model for 6K or 8K, so set those by hand.
 
 Every trial encode is logged to `tune-results.csv` in the video's
-`outdir`, keyed by everything that decides its score: the source's
-content, `tune.start` and `tune.duration`, the encoder's arguments,
-the reference it's judged against, and the ffmpeg version.  A later
-run reuses the trials that still apply, so asking for VMAF 93 after
-95 starts from the bracket the earlier encodes give, and repeating a
-run encodes nothing.  Changing an encoder's flags starts fresh, and
-deleting the file forgets everything.
+`outdir`. Each trial is keyed by everything that affects its score:
+the source's content, the sample's position and length, the encoder's
+arguments, the reference, and the ffmpeg version. A later run reuses
+the trials that still apply. Asking for VMAF 93 after 95 starts from
+what the earlier run found, and repeating a run encodes nothing.
+Delete the file to start over.
 
-### Publishing
+VMAF 95 is a demanding target. Very noisy footage, such as falling
+snow, can look fine at 90 for a fraction of the bits.
 
-With `publish.to` set, each render ends by copying the stream to a
-local directory or an S3-compatible bucket (SeaweedFS, MinIO, AWS).
-Only files that are new or changed are uploaded, and manifests go
-last.  `videoencoder publish` publishes without rendering, `--to`
-picks targets, and `--prune` deletes objects that are no longer part
-of the stream.  S3 credentials come from the usual `AWS_*` variables
-or `~/.aws/credentials`, and the endpoint from `s3.endpoint` or
-`$S3_ENDPOINT_URL`.
+## Publishing
+
+With `publish.to` set, each render ends by copying the stream to the
+named targets. A target is either a local directory or an
+S3-compatible bucket (SeaweedFS, MinIO, AWS):
 
 ```yaml
 publish:
   to: [seaweed]
   targets:
+    www:     {dir: /srv/www/videos/{name}}
     seaweed: {s3: {bucket: video, prefix: "{name}/"}}
 ```
 
-### Configuration
+- **What's uploaded.** Only new or changed files. Manifests go last,
+  so a player never sees one that points at a missing file.
+- **Caching.** Key-named files are marked immutable, and manifests are
+  marked `no-cache`. Every file gets its proper `Content-Type`.
+- **Deleting.** Nothing is deleted unless you pass `--prune`. Even
+  then, a target can only be pruned if its `dir` or `prefix` contains
+  `{name}`, so pruning one video can never touch another.
+- **S3 settings.** An `s3` target also accepts `endpoint`, `region`
+  and `profile`. With no `endpoint`, `$S3_ENDPOINT_URL` is used.
+- **Credentials** never go in config files. They come from
+  `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, or from
+  `~/.aws/credentials`.
 
-Settings are YAML, merged from several layers, lowest priority first:
-
-1. the built-in defaults ([`internal/config/default.yaml`](internal/config/default.yaml)),
-2. `~/.config/videoencoder/config.yaml` (or `--config`),
-3. every `videoencoder.yaml` from `/` down to the video's directory,
-4. the video's entry under `videos:` in its directory's `videoencoder.yaml`,
-5. the video's sidecar, `<name>.video.yaml`,
-6. `--outdir`, `--streamdir`, `--thumbnails` and `--to` on the command line.
-
-Maps merge key by key and other values replace.  Renditions,
-encoders, sources, videos and publish targets are maps keyed by name,
-so a layer can change one rendition, or drop it with `null`.  Anywhere
-else `null` changes nothing, so a section left empty, like a bare
-`tune:` with its settings commented out, keeps what it inherits:
-
-```yaml
-# trip/videoencoder.yaml: applies to every video in trip/ and below
-renditions:
-  av1-4320: null              # no 8K for this project
-videos:
-  hike:
-    sources: {hdr: hike-hdr.mov, sdr: hike-sdr.mov}
-
-# trip/hike.video.yaml: just this video
-renditions:
-  av1-2160: {quality: 30}     # only this rendition re-encodes
-```
-
-`videoencoder` (or `videoencoder dir`) renders every video defined
-under a directory, and `videoencoder plan` prints each video's merged
-config, annotated with the file each value came from, plus which
-renditions would be rebuilt and why.  Relative paths are relative to
-the video's directory, and `{name}` in `outdir`/`streamdir` is the
-video's name.
-
-`videoencoder` can handle both SDR and HDR videos with no additional
-flags.  It can also combine SDR and HDR versions of the same source
-into a single SDR+HDR stream, where the client can choose which flavor
-to stream.  To do this, run `videoencoder hdr.mov sdr.mov`, or list
-both under `sources:`.  Sources are encoded in label order, and the
-first supplies the audio and poster.  The two
-videos should be the same length and ideally the same resolution.
-They will be individually transcoded and then bundled into the same
-DASH and HLS manifests for streaming.
+To serve a bucket straight to browsers, it needs public read access
+and CORS headers that allow your site's origin and the `Range` header.
 
 ## encbench
 
-`encbench` finds, for each candidate set of encoder flags, the quality
-setting (CRF or equivalent) that just reaches a target VMAF on a set of
-sample clips, and records the size, encode time and quality of each
-answer.  It searches rather than sweeping, typically 3–8 encodes per
-flagset and sample, and logs every encode in `results.csv`, so adding
-a flagset or a sample only runs the new combinations.
+encbench answers the question "which encoder settings give the
+smallest file at a given quality, and at what cost in encoding time?"
+
+You give it a directory of sample clips and a set of named flagsets.
+For each sample and flagset, it searches for the quality setting
+(CRF or the encoder's equivalent) that just reaches a target VMAF. It
+then records the answer's size, bitrate, encode time and quality
+scores.
+
+It searches rather than sweeping the range, which typically takes
+3–8 encodes per pair. Every encode is logged, so adding a sample or a
+flagset only runs the new combinations.
+
+### encbench configuration
 
 ```yaml
 # bench.yaml
-samples: samples        # directory of ~30s clips
+samples: samples        # directory of sample clips, about 30 s each
 workdir: work
-scales: [1080]          # test at 1080p; taller samples are downscaled once
+scales: [2160, 1080]    # test at these heights; taller samples are downscaled once
 target_vmaf: 95
-max_color_shift: 2.7    # fail local color casts, which VMAF can't see
-max_color_flicker: 1.25 # and casts that come and go
-references:             # score a sample against another file in samples/:
-  yuri-h265.mov: yuri.mov   # an H.265 export against its ProRes master
+vmaf_threads: 4         # libvmaf n_threads
+vmaf_jobs: 3            # scorings run at once
+references:             # score a sample against another file in samples/
+  yuri-h265.mov: yuri.mov
 flagsets:
-  x265-slow:
-    args: [-c:v, libx265, -preset, slow]
+  x265-medium:
+    args: [-pix_fmt, yuv420p10le, -c:v, libx265, -preset, medium]
   svtav1-p5:
     args: [-c:v, libsvtav1, -preset, "5"]
-  x264-medium:
-    args: [-c:v, libx264, -preset, medium, -pix_fmt, yuv420p]
+  x264-faster:
+    args: [-pix_fmt, yuv420p, -c:v, libx264, -preset, faster]
     sdr_only: true      # skip HDR samples
+  nvenc-hevc:
+    args: [-c:v, hevc_nvenc, -preset, p7]
+    quality: {flag: -cq:v, min: 20, max: 45, step: 0.5}
 ```
 
-```
-go install ./cmd/encbench
-encbench run            # -n for a dry run; -sample/-flagset globs to limit
-encbench report         # Markdown tables of the answers
-encbench prune          # delete kept encodes of removed samples/flagsets
-```
+- **Quality ranges.** Each flagset's quality flag, range and step
+  default from its encoder. x264 and x265 search CRF 10–40, SVT-AV1
+  and libaom 10–63, and VideoToolbox `-q:v`, where higher is better.
+  Override them with `quality`.
+- **Scales.** A sample taller than a scale is downscaled once with
+  Lanczos, and the copy is cached in `workdir`. A sample no taller
+  than a scale is used as it is. Encodes are scored at the sample's
+  size, with the 4K model at 2160p.
+- **References.** A sample is normally scored against itself. To
+  measure what a lossy master costs, use `references` to score an
+  export against the original it was made from.
+- **Color limits.** `min_ciede2000`, `min_chroma_psnr`,
+  `max_color_shift` and `max_color_flicker` can fail encodes for color
+  errors, which VMAF ignores entirely. All of them are off by default.
+  The color measures are always recorded either way, and reports flag
+  outliers.
 
-The best encode for each sample and flagset is kept under
-`work/keep/` for comparing by eye.  HDR samples are tone-mapped to SDR
-on both sides for scoring, since VMAF is an SDR metric.  See `DESIGN.md` for details.
-
-## TODO
-
-- Optimize the default transcoding settings.
-
-## Notes
-
-
-- Render a thumbnail: `ffmpeg -i input.mp4 -ss 00:00:01.000 -vframes 1 thumbnail.jpg`
-- Use `*_nvenv` where possible.  **Or not, it's terrible for H.265**
-- Keep original frame rate.
-- Render at an assortment of resolutions and bitrates up to the
-  original resolution.
-- Need a config file to select bitrate/resolution/codec preferences.
-- There are ~3 useful codecs today: h.264, h.265, and av1.  Where
-  possible, prefer av1, but many older clients can't play it back
-  well.  Apple is the biggest issue; they support AV1 on A17 Pro/M3
-  and up.  Older CPUs probably won't be able to play AV1.  H.265/HEVC
-  has wider support, basically newer Windows and all current Apple
-  hardware.  Everything recent supports H.264/AVC.  AV1 is
-  substantailly better at low-to-moderate bit rates than either of the
-  others, so a reasonable strategy is probably to provide 720p and
-  1080p in H.264, maybe add 1440p in H.265, and then provide all
-  useful resolutions in AV1.
-- For nVidia's renderer, there are flags that will allow parallelism
-  in encoding: `-hwaccel cuda -hwaccel_output_format cuda
-  -split_encode_mode <int>`.  Setting the split mode to `0` should let
-  ffmpeg automate the setting.  Other settings force enable or
-  disable.  *Not clear that these aren't obsolete.*
-- It's not clear what the best way to encode video on nVidia is -- do
-  we render multiples at once, try to use parallelism up front, or what?
-
-My current Makefile includes these lines:
-
-```make
-define encode_h264
-        -s:$(1) $(2) -c:v:$(1) libx264 -pix_fmt:$(1) yuv420p -crf:$(1) 23 -b:v:$(1) $(3) -maxrate:$(1) $(4) -bufsize:$(1) $(4)
-endef
-#       -s:$(1) $(2) -c:v:$(1) h264_nvenc -rgb_mode:$(1) yuv420 -b:v:$(1) $(3) -maxrate:$(1) $(4) -bufsize:$(1) $(4)
-
-define encode_h265
-        -s:$(1) $(2) -c:v:$(1) hevc_nvenc -b:v:$(1) $(3) -maxrate:$(1) $(4) -bufsize:$(1) $(4)
-endef
-#       -s:$(1) $(2) -c:v:$(1) hevc -crf:$(1) 23 -b:v:$(1) $(3) -maxrate:$(1) $(4) -bufsize:$(1) $(4)
-
-define encode_av1
-        -s:$(1) $(2) -c:v:$(1) av1_nvenc -preset:$(1) p4 -tune:$(1) hq -b:v:$(1) $(3) -maxrate:$(1) $(4) -bufsize:$(1) $(4) -rc:$(1) vbr -cq:$(1) 19
-endef
-
-.SECONDEXPANSION:
-web/%/dash.mpd: $$(notdir $$(@D)).mov
-        mkdir -p `dirname $@`
-        ffmpeg -i $< \
-          -preset ${PRESET} \
-          -keyint_min ${GOP_SIZE} -g ${GOP_SIZE} \
-          -sc_threshold 0 \
-          -r ${FPS} \
-          -c:a aac -b:a 32k -ac 1 -ar 48000 \
-          $(call encode_h264,0,1280x720,3M,6M) \
-          $(call encode_h265,1,1280x720,0.95M,2M) \
-          $(call encode_av1,2,1280x720,0.5M,1.0M,) \
-          $(call encode_av1,3,1280x720,2M,4M) \
-          $(call encode_h264,4,1920x1080,8M,16M) \
-          $(call encode_h265,5,1920x1080,3M,6M) \
-          $(call encode_av1,6,1920x1080,3.5M,5M) \
-          $(call encode_h265,7,3840x2160,10M,20M) \
-          $(call encode_av1,8,2560x1440,4M,6M) \
-          $(call encode_av1,9,3840x2160,5M,10M) \
-          -map v:0 -map v:0 -map v:0 -map v:0 -map v:0 -map v:0 \
-          -map v:0 -map v:0 -map v:0 -map v:0 \
-          -map a:0 \
-          -single_file_name '$(basename $<)-stream$$RepresentationID$$.$$ext$$' \
-          -adaptation_sets "id=0,streams=v id=1,streams=a" \
-          -hls_playlist true \
-          -f dash $@
-```
-
-
-### Timing measurements
-
-*Note that `time` below is the video length, not the elapsed time.  Compare the `speed` numbers instead.*
+### encbench commands
 
 ```
-$ $ ffmpeg -i ../../20250301-deception1.mov  -s 1920x1080 -c:v av1_nvenc -preset p4 -tune hq -b:v 1.5M -maxrate 2.5M -bufsize 5M -rc vbr -cq:v 19  test1080.mp4
-frame=14411 fps=218 q=50.0 Lsize=   63444kB time=00:04:00.17 bitrate=2164.0kbits/s speed=3.63x
-
-$ ffmpeg -i ../../20250301-deception1.mov  -s 1920x1080 -c:v av1_nvenc -preset p4 -tune hq -b:v 3.5M -maxrate 5M -bufsize 5M -rc vbr -cq:v 19 test1080.mp4
-...
-frame=14411 fps=212 q=29.0 Lsize=  144205kB time=00:04:00.17 bitrate=4918.7kbits/s speed=3.54x
-
-$ ffmpeg -i ../../20250301-deception1.mov  -s 3840x2160 -c:v av1_nvenc -preset p4 -tune hq -b:v 3.5M -maxrate 5M -bufsize 5M -rc vbr -cq:v 19  test2160.mp4
-frame=14411 fps=138 q=109.0 Lsize=   73816kB time=00:04:00.17 bitrate=2517.8kbits/s speed= 2.3x
-
-$ ffmpeg -i ../../20250301-deception1.mov  -s 5376x3024 -c:v av1_nvenc -preset p4 -tune hq -b:v 3.5M -maxrate 5M -bufsize 5M -rc vbr -cq:v 19  test3024.mp4   # source resolution
-frame=14411 fps= 70 q=152.0 Lsize=   75012kB time=00:04:00.17 bitrate=2558.6kbits/s speed=1.17x
-
-# my Q is getting high there.  Looks... chunky.  Not horrid, but too low of a bitrate.
-
-$ ffmpeg -i ../../20250301-deception1.mov  -s 5376x3024 -c:v av1_nvenc -preset p4 -tune hq -b:v 10M -maxrate 15M -bufsize 15M -rc vbr -cq:v 19  test3024_10M.mp4
-frame=14411 fps= 70 q=95.0 Lsize=  237425kB time=00:04:00.17 bitrate=8098.3kbits/s speed=1.17x
-
-
-$ ffmpeg -i ../../20250301-deception1.mov  -s 5376x3024 -c:v libsvtav1 -b:v 10M -maxrate 15M -bufsize 15M -crf 19  test3024_10Msvt.mp4
-frame=14411 fps= 92 q=20.0 Lsize=  448378kB time=00:04:00.17 bitrate=15293.7kbits/s speed=1.54x
-
-$ ffmpeg -i ../../20250301-deception1.mov  -s 5376x3024 -c:v libsvtav1 -b:v 10M -maxrate 15M -bufsize 15M -crf 35  test3024_10Msvt_crf35.mp4
-frame=14411 fps=113 q=33.0 Lsize=  105312kB time=00:04:00.17 bitrate=3592.1kbits/s speed=1.89x
-
-
-$ ffmpeg -i ../../20250301-deception1.mov  -s 3840x2160 -c:v libsvtav1 -b:v 10M -maxrate 15M -bufsize 15M -crf 35  test2160_10Msvt_crf35.mp4
-frame=14411 fps=142 q=33.0 Lsize=   58455kB time=00:04:00.17 bitrate=1993.8kbits/s speed=2.37x
+encbench [-config bench.yaml] run [-n] [-sample GLOB] [-flagset GLOB]
+encbench [-config bench.yaml] report
+encbench [-config bench.yaml] prune [-n]
 ```
 
-Looking at just 1440p; high enough resolution to look good, but small enough to make encoder settings interesting, maybe.
+- **`run`** searches every unfinished sample and flagset pair. `-n`
+  shows what would be encoded, and `-sample` and `-flagset` limit the
+  run.
+- **`report`** prints the answers as Markdown tables, one per sample.
+- **`prune`** deletes kept encodes of samples and flagsets no longer in
+  the config.
 
-| Encoder   | Settings                                  |  Bitrate |  Q | Speed | Notes                            |
-|-----------|-------------------------------------------|---------:|---:|------:|----------------------------------|
-| SVT-AV1   | -maxrate 15M -crf 35                      |  1093.1k | 33 | 2.78x | Maybe slight blockiness          |
-| SVT-AV1   | -maxrate 15M -crf 30                      |  1646.2k | 28 | 2.76x |                                  |
-| SVT-AV1   | -maxrate 15M -crf 25                      |  2510.5k | 24 | 2.76x | LGTM                             |
-| av1_nvenc | -maxrate 15M -cq:v 19 -preset p4 -tune hq | 15150.5k | 22 | 3.46x | so. many. bits.                  |
-| av1_nvenc | -maxrate 15M -cq:v 30 -preset p4 -tune hq |  5236.4k | 42 |  3.5x | Probably fine, but loads of bits |
-| av1_nvenc | -maxrate 4M -cq:v 30 -preset p4 -tune hq  |  2941.1k | 59 | 3.51x | Probably fine.                   |
+Encodes run one at a time, so timings are comparable. Scoring runs in
+parallel between encodes. Don't run anything else CPU-heavy on the
+machine while encbench is running, or the timings will be meaningless.
 
-Honestly, I'm having a hard time seeing a win for av1_nvenc here.  I'm
-not sure that `Q` is comparable across codecs, but it's so much easier
-to use and only slightly slower.
+### encbench output
 
-So, maybe just stick w/ the software codecs for now?  Do them one at a time, and then build a MPD from those?
+These are all in `workdir`:
+
+- **`results.csv`.** One row per encode, appended as it finishes:
+  - the sample, flagset, arguments and quality setting
+  - size and bitrate
+  - wall, user and system time, and peak memory
+  - VMAF: mean, harmonic mean, 1st percentile and NEG
+  - PSNR for each plane
+  - CIEDE2000 and the color shift and flicker measures
+  - the ffmpeg version and host
+
+  Interrupting a run loses only the scorings in progress.
+- **`best.csv`.** The answer for each pair, regenerated on every run.
+  Changing `target_vmaf` re-ranks the results without re-encoding
+  anything already measured.
+- **`keep/`.** The best encode of each pair, kept for comparing by eye.
+  Other encodes are deleted once they've been scored.
+
+### How encbench measures quality
+
+- **Frame pairing.** Frames are paired by position, not timestamp.
+  Timestamps round differently between containers, and pairing by
+  timestamp can compare frames that don't match.
+- **Upscaling.** Encodes smaller than their reference are scaled back
+  up (bicubic) before scoring.
+- **HDR.** HDR samples are encoded as HDR, but both sides are
+  tone-mapped to SDR for VMAF. The color shift measures are computed
+  in HDR itself.
+- **Recorded scores.** Each row records the mean VMAF, its harmonic
+  mean and 1st-percentile frame score, and VMAF NEG. The 1st percentile
+  catches a bad second that the mean hides. NEG discounts the score
+  boost that sharpening earns.
+- **Color.** Each row also records chroma PSNR, CIEDE2000, and
+  ΔE_ITP block measures of local and flickering color casts. VMAF is
+  blind to chroma: a 20° hue rotation still scores 99.9.
+
+Bitrate at a fixed VMAF varies by more than a factor of 100 across
+footage:
+- **Nearly static clips** reach VMAF 95 at 4K in a few Mb/s.
+- **Handheld and action footage** needs tens of Mb/s.
+- **Dense noise** like falling snow needs 100 Mb/s or more.
+
+AV1 usually needs the fewest bits and H.264 the most.
+
+[`DESIGN.md`](DESIGN.md) has the details and the reasoning behind
+them.
