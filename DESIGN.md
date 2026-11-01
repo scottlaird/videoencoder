@@ -342,7 +342,10 @@ thumbnails: {enabled: true, interval: 5, height: 180, columns: 5, rows: 5}
    `thumbnails.m3u8`, an `#EXT-X-IMAGES-ONLY` playlist with
    `#EXT-X-TILES:RESOLUTION=320x180,LAYOUT=5x5,DURATION=5.000` per
    tile. That's the Roku/Apple image-playlist form, which Shaka Player
-   also reads.
+   also reads. The `EXT-X-IMAGE-STREAM-INF` RESOLUTION is one
+   thumbnail's size too, not the tile's: Shaka multiplies it by the
+   layout, so a tile-sized value made it report 5x too-large
+   dimensions and offsets from `getThumbnails()`.
 
 4. WebVTT: `thumbnails.vtt` has one cue per thumbnail, pointing into
    its tile with a `#xywh=x,y,w,h` fragment, the form Video.js, Plyr

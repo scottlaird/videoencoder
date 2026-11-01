@@ -131,9 +131,12 @@ func addDASHThumbnails(mpd []byte, t Thumbnails) ([]byte, error) {
 	return bytes.Replace(mpd, []byte("  </Period>"), []byte(set), 1), nil
 }
 
+// addHLSThumbnails appends the image stream to master. Its RESOLUTION
+// is one thumbnail's, as in EXT-X-TILES, not the whole tile's: Shaka
+// Player multiplies it by the layout to get the tile size.
 func addHLSThumbnails(master []byte, t Thumbnails) []byte {
 	line := fmt.Sprintf("#EXT-X-IMAGE-STREAM-INF:BANDWIDTH=%d,RESOLUTION=%dx%d,CODECS=\"jpeg\",URI=\"%s\"\n",
-		t.bandwidth(), t.Columns*t.ThumbWidth, t.Rows*t.ThumbHeight, thumbnailPlaylist)
+		t.bandwidth(), t.ThumbWidth, t.ThumbHeight, thumbnailPlaylist)
 	if !bytes.HasSuffix(master, []byte("\n")) {
 		master = append(master, '\n')
 	}
