@@ -39,6 +39,8 @@ func tuneVideo(ctx context.Context, r *config.Resolved, adHoc bool, d deps) erro
 	var targets plan.Targets
 	for _, t := range ladder.Filter(vd) {
 		switch {
+		case r.Renditions[t.Name].Follows() != "":
+			fmt.Fprintf(d.stdout, "#   %-10s follows %s\n", t.Name, r.Renditions[t.Name].Follows())
 		case !r.Renditions[t.Name].Tuned():
 			fmt.Fprintf(d.stdout, "#   %-10s quality %-5g kept: tune: false\n", t.Name, t.Quality)
 		case t.Height > tune.MaxHeight:

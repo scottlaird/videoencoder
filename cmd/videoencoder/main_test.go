@@ -559,7 +559,8 @@ tune: {duration: 1s, target_vmaf: 90}
 renditions: {h264-480: null, h264-720: null, h265-480: null, h265-720: null, h265-1080: null,
   h265-1440: null, h265-2160: null, av1-720: null, av1-1080: null, av1-1440: null, av1-2160: null,
   av1-3240: null, av1-4320: null,
-  h264-180-capped: {encoder: h264, height: 180, quality: 30, bitrate: 300k, tune: false}}
+  h264-180-capped: {encoder: h264, height: 180, quality: 30, bitrate: 300k, tune: false},
+  av1-180: {encoder: av1, height: 180, quality_from: av1-480, quality_offset: -2}}
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -588,6 +589,13 @@ renditions: {h264-480: null, h264-720: null, h265-480: null, h265-720: null, h26
 	if !strings.Contains(out.String(), "h264-180-capped quality 30    kept: tune: false") {
 		t.Errorf("tune output doesn't report the kept rendition:\n%s", out.String())
 	}
+	// One with quality_from follows the tuned value instead.
+	if strings.Contains(string(sidecar), "av1-180") {
+		t.Errorf("sidecar tunes av1-180 despite quality_from:\n%s", sidecar)
+	}
+	if !strings.Contains(out.String(), "av1-180    follows av1-480 - 2") {
+		t.Errorf("tune output doesn't report the following rendition:\n%s", out.String())
+	}
 	// The tuned values are what the next render uses.
 	o.mode = "plan"
 	out.Reset()
@@ -596,6 +604,9 @@ renditions: {h264-480: null, h264-720: null, h265-480: null, h265-720: null, h26
 	}
 	if !strings.Contains(out.String(), "clip.video.yaml") {
 		t.Errorf("plan doesn't show values from the tuned sidecar:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "# av1-480 - 2") {
+		t.Errorf("plan doesn't show where av1-180's quality comes from:\n%s", out.String())
 	}
 }
 

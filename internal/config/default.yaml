@@ -75,8 +75,8 @@ encoders:
 # Each rendition is scored against the sample at its own size (with
 # the 4K model at 2160p); HDR is tone-mapped to SDR for scoring. A
 # rendition's own target_vmaf overrides this one. Renditions with
-# tune: false, and any taller than 2160p, which VMAF can't judge, are
-# left as configured. Every trial is logged to
+# tune: false or quality_from, and any taller than 2160p, which VMAF
+# can't judge, are left as configured. Every trial is logged to
 # tune-results.csv in outdir, and later runs reuse the ones that still
 # apply.
 tune:
@@ -87,7 +87,11 @@ tune:
 
 # Renditions taller than the source are dropped. If an encoder's
 # tallest rendition is shorter than the source, that encoder also gets
-# one rendition at the source's own resolution.
+# one rendition at the source's own resolution. A rendition can take
+# its quality from another of the same encoder, resolved after every
+# layer is merged, so it follows tune:
+#
+#   av1-3240: {quality_from: av1-2160, quality_offset: 2}
 renditions:
   h264-480:  {encoder: h264, height: 480,  quality: 18, bitrate: 1M}
   h264-720:  {encoder: h264, height: 720,  quality: 18, bitrate: 2M}

@@ -250,6 +250,22 @@ renditions:
 - `args` adds options for this rendition only.
 - `target_vmaf` overrides `tune.target_vmaf` for this rendition.
 - `tune: false` keeps tune from changing it.
+- `quality_from` and `quality_offset` take the quality from another
+  rendition of the same encoder, plus an offset, in place of
+  `quality`. The reference can be set in any layer, so this works in a
+  project file for a rendition that only the defaults define:
+
+  ```yaml
+  renditions:
+    av1-3240: {quality_from: av1-2160, quality_offset: 2}
+    av1-4320: {quality_from: av1-2160, quality_offset: 4}
+  ```
+
+  It's worked out after all the layers are merged, so it follows the
+  value tune writes for `av1-2160`, and `plan` shows the result with a
+  comment like `# av1-2160 + 2`. Chains are allowed. A later layer can
+  turn it off with `quality_from: ""`. The bitrate isn't derived, so
+  set a cap by hand.
 
 The width follows the source's aspect ratio. Renditions taller than
 the source are dropped. The exception is an encoder whose renditions
@@ -327,10 +343,12 @@ therefore measures what the encoder lost, not detail the smaller size
 couldn't hold anyway. HDR is tone-mapped to SDR for scoring, since
 VMAF is an SDR metric.
 
-Two kinds of rendition are left as configured. Ones marked
+Three kinds of rendition are left as configured. Ones marked
 `tune: false` are useful for fixed rungs, such as a bitrate-capped one
 for slow networks. Ones taller than 2160p are left alone because VMAF
-has no model for 6K or 8K, so set those by hand.
+has no model for 6K or 8K, so set those by hand, or with
+`quality_from` relative to a tuned rendition. Ones with `quality_from`
+follow their reference, which tune may change.
 
 Every trial encode is logged to `tune-results.csv` in the video's
 `outdir`. Each trial is keyed by everything that affects its score:
