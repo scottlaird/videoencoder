@@ -179,17 +179,34 @@ func TestTuneSDROnly(t *testing.T) {
 }
 
 func TestReferenceSize(t *testing.T) {
-	vd := probe.VideoData{Width: 8192, Height: 4320}
-	tests := []struct{ w, h, wantW, wantH uint64 }{
-		{852, 480, 852, 480}, {1920, 1080, 1920, 1080}, {3840, 2160, 3840, 2160},
-		{8192, 4320, 4096, 2160}, // capped at 2160p
-	}
+	vd := probe.VideoData{Width: 7680, Height: 4320}
+	tests := []struct{ w, h uint64 }{{852, 480}, {1920, 1080}, {3840, 2160}}
 	tu := &Tuner{}
 	for _, tt := range tests {
 		ref := tu.reference(map[refKey]reference{}, vd, &plan.Target{Width: tt.w, Height: tt.h}, false, "w")
-		if ref.width != tt.wantW || ref.height != tt.wantH {
-			t.Errorf("reference for %dx%d is %dx%d, want %dx%d", tt.w, tt.h, ref.width, ref.height, tt.wantW, tt.wantH)
+		if ref.width != tt.w || ref.height != tt.h {
+			t.Errorf("reference for %dx%d is %dx%d, want its own size", tt.w, tt.h, ref.width, ref.height)
 		}
+	}
+}
+
+// VMAF can't judge renditions above 2160p, so Tune refuses them
+// rather than scoring something meaningless.
+func TestTuneTooTall(t *testing.T) {
+	av1 := config.Encoder{Codec: "libsvtav1", QualityFlag: "-crf"}
+	targets := plan.Targets{
+		{Name: "av1-2160", EncoderName: "av1", Encoder: av1, Width: 3840, Height: 2160, Quality: 32},
+		{Name: "av1-4320", EncoderName: "av1", Encoder: av1, Width: 7680, Height: 4320, Quality: 32},
+	}
+	f := &fakeFFmpeg{encodes: map[string]int{}, quality: map[string]float64{}, height: map[string]uint64{}}
+	tu := &Tuner{Exec: f, Prober: fakeProber{}, Threads: 1}
+	vd := probe.VideoData{Width: 7680, Height: 4320}
+	_, err := tu.Tune(context.Background(), tuneConfig(), source(t), vd, targets, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "av1-4320") {
+		t.Errorf("Tune with an 8K rendition: err = %v, want one naming av1-4320", err)
+	}
+	if len(f.encodes) != 0 {
+		t.Errorf("encoded %v before refusing", f.encodes)
 	}
 }
 

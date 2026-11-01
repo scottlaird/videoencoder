@@ -72,11 +72,11 @@ encoders:
 # encoder's anchor renditions (shortest and tallest; 3 adds the middle)
 # for the quality setting that just reaches target_vmaf, interpolates
 # the rest, and writes quality and bitrate into the video's sidecar.
-# Each rendition is scored against the sample at its own size, up to
-# 2160p (with the 4K model there); HDR is tone-mapped to SDR for
-# scoring. A rendition's
-# own target_vmaf overrides this one, and a rendition with tune: false
-# is left as configured. Every trial is logged to
+# Each rendition is scored against the sample at its own size (with
+# the 4K model at 2160p); HDR is tone-mapped to SDR for scoring. A
+# rendition's own target_vmaf overrides this one. Renditions with
+# tune: false, and any taller than 2160p, which VMAF can't judge, are
+# left as configured. Every trial is logged to
 # tune-results.csv in outdir, and later runs reuse the ones that still
 # apply.
 tune:
