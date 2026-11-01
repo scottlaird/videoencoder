@@ -450,6 +450,15 @@ renditions: {h264-480: null, h264-720: null, h265-480: null, h265-720: null, h26
 	if err != nil || !strings.Contains(string(out), "Alternate headroom") {
 		t.Errorf("avifgainmaputil printmetadata %s: %v\n%s", gmAVIF[0], err, out)
 	}
+	// Its base is sRGB, as the JPEG's is, not the BT.709 transfer in the
+	// PNG ffmpeg hands avifgainmaputil.
+	vd, err = probe.FFProbe{}.Probe(context.Background(), gmAVIF[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vd.ColorTransfer != "iec61966-2-1" {
+		t.Errorf("gain-mapped AVIF base has transfer %q, want sRGB (iec61966-2-1)", vd.ColorTransfer)
+	}
 }
 
 // TestPublishDir renders into a directory target, then republishes
