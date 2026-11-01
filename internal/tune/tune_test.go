@@ -291,3 +291,81 @@ func TestWithoutQuality(t *testing.T) {
 		t.Errorf("withoutQuality = %v, want %v", got, want)
 	}
 }
+
+// An HDR VMAF model scores HDR renditions as HDR, converted for the
+// model rather than tone-mapped, and SDR-only ones with the built-in
+// model. Its trials don't share a cache with the built-in model's.
+func TestTuneHDRModel(t *testing.T) {
+	model := filepath.Join(t.TempDir(), "hdr_vmaf_v1.1.8_3d0h.json")
+	if err := os.WriteFile(model, []byte(`{"model_dict": {"conversion_target": {"colorspace": {"trc": "smpte2084"}}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	av1 := config.Encoder{Codec: "libsvtav1", QualityFlag: "-crf"}
+	h264 := config.Encoder{Codec: "libx264", QualityFlag: "-crf", SDROnly: true}
+	targets := plan.Targets{
+		{Name: "av1-480", EncoderName: "av1", Encoder: av1, Width: 852, Height: 480, Quality: 28},
+		{Name: "av1-1080", EncoderName: "av1", Encoder: av1, Width: 1920, Height: 1080, Quality: 30},
+		{Name: "h264-480", EncoderName: "h264", Encoder: h264, Width: 852, Height: 480, Quality: 23},
+	}
+	src := source(t)
+	file := filepath.Join(t.TempDir(), ResultsFile)
+	vd := probe.VideoData{Width: 3840, Height: 2160, ColorTransfer: "smpte2084"}
+	run := func(vmafModel string) (*fakeFFmpeg, map[string]Result) {
+		t.Helper()
+		f := &fakeFFmpeg{encodes: map[string]int{}, quality: map[string]float64{}, height: map[string]uint64{}}
+		tu := &Tuner{Exec: f, Prober: fakeProber{}, Threads: 1, Results: file}
+		r := tuneConfig()
+		r.Tune.VMAFModel = vmafModel
+		results, err := tu.Tune(context.Background(), r, src, vd, targets, t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]Result{}
+		for _, res := range results {
+			got[res.Rendition] = res
+		}
+		return f, got
+	}
+
+	if f, _ := run(config.BuiltinVMAFModel); len(f.prefilter) == 0 {
+		t.Fatal("no trials with the built-in model")
+	}
+	f, got := run(model)
+	if len(f.prefilter) == 0 {
+		t.Fatal("HDR model reused the built-in model's trials")
+	}
+	for i, g := range f.prefilter {
+		sdr := strings.HasSuffix(f.scoredAt[i], "-sdr.mkv")
+		hdrScored := strings.Contains(g, "path="+model) && strings.Contains(g, "m=ictcp") && !strings.Contains(g, "tonemap=")
+		if sdr == hdrScored || sdr != strings.Contains(g, "version=vmaf_v0.6.1") {
+			t.Errorf("against %s: scored with %q", f.scoredAt[i], g)
+		}
+	}
+	for name, want := range map[string]string{"av1-480": "hdr_vmaf_v1.1.8_3d0h", "av1-1080": "hdr_vmaf_v1.1.8_3d0h", "h264-480": ""} {
+		if got[name].Model != want {
+			t.Errorf("%s model = %q, want %q", name, got[name].Model, want)
+		}
+	}
+
+	if f, _ := run(model); len(f.prefilter) != 0 {
+		t.Errorf("HDR model again: %d scorings, want all cached", len(f.prefilter))
+	}
+	// An SDR model scores just as the built-in one does, but its scores
+	// are its own.
+	sdrModel := filepath.Join(t.TempDir(), "vmaf_v1.0.16_3d0h.json")
+	if err := os.WriteFile(sdrModel, []byte(`{"model_dict": {}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if f, got := run(sdrModel); len(f.prefilter) == 0 || got["av1-480"].Model != "vmaf_v1.0.16_3d0h" {
+		t.Errorf("SDR model: %d scorings, model %q; want fresh trials with vmaf_v1.0.16_3d0h", len(f.prefilter), got["av1-480"].Model)
+	}
+	if _, err := ScoresHDR(config.Tune{VMAFModel2160: model}); err != nil {
+		t.Fatal(err)
+	}
+	if hdr, _ := ScoresHDR(config.Tune{VMAFModel2160: model}); !hdr {
+		t.Error("ScoresHDR with an HDR 2160p model = false")
+	}
+	if hdr, _ := ScoresHDR(config.Tune{VMAFModel: config.BuiltinVMAFModel}); hdr {
+		t.Error("ScoresHDR with the built-in model = true")
+	}
+}

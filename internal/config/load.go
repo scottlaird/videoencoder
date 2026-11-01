@@ -266,6 +266,12 @@ func (r *Resolved) resolvePaths() {
 	}
 	r.Outdir = abs(r.Outdir)
 	r.Streamdir = abs(r.Streamdir)
+	if r.Tune.VMAFModel != BuiltinVMAFModel {
+		r.Tune.VMAFModel = abs(r.Tune.VMAFModel)
+	}
+	if r.Tune.VMAFModel2160 != BuiltinVMAFModel {
+		r.Tune.VMAFModel2160 = abs(r.Tune.VMAFModel2160)
+	}
 	for label, src := range r.Sources {
 		r.Sources[label] = abs(src)
 	}

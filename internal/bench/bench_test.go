@@ -142,7 +142,7 @@ func TestParseColorLog(t *testing.T) {
 }
 
 func TestScoreArgvEscaping(t *testing.T) {
-	argv := scoreArgv("d.mp4", "r.mov", 3840, 2160, 8, "/tmp/a:b/log.json", "/tmp/c.json", "/tmp/d.blocks", "/tmp/r.blocks", "", "")
+	argv := scoreArgv("d.mp4", "r.mov", 3840, 2160, 8, "/tmp/a:b/log.json", "/tmp/c.json", "/tmp/d.blocks", "/tmp/r.blocks", "", "", VMAFModel{}, "")
 	graph := argv[slices.Index(argv, "-filter_complex")+1]
 	for _, want := range []string{
 		`log_path=/tmp/a\:b/log.json`, "log_path=/tmp/c.json", "version=vmaf_4k_v0.6.1\\:name=vmaf|",
@@ -155,7 +155,7 @@ func TestScoreArgvEscaping(t *testing.T) {
 }
 
 func TestScoreArgvPrefilter(t *testing.T) {
-	argv := scoreArgv("d.mp4", "r.mov", 1920, 1080, 4, "/l.json", "/c.json", "/d.blocks", "/r.blocks", "tonemap=hable", "zscale=t=smpte2084")
+	argv := scoreArgv("d.mp4", "r.mov", 1920, 1080, 4, "/l.json", "/c.json", "/d.blocks", "/r.blocks", "tonemap=hable", "zscale=t=smpte2084", VMAFModel{}, "")
 	graph := argv[slices.Index(argv, "-filter_complex")+1]
 	// Once per input, before the 4:4:4 conversion (after it, VMAF
 	// scores about 0.8 low), and not on the block images.

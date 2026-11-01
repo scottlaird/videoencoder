@@ -68,7 +68,8 @@ encoders:
     args: [-preset, "5", -pix_fmt, yuv420p10le]
 
 # How "videoencoder tune" picks rendition qualities: it encodes
-# duration seconds of the first source from start, searching each
+# duration seconds of a source from start (the SDR one if there is one,
+# or with an HDR vmaf_model the HDR one), searching each
 # encoder's anchor renditions (shortest and tallest; 3 adds the middle)
 # for the quality setting that just reaches target_vmaf, interpolates
 # the rest, and writes quality and bitrate into the video's sidecar.
@@ -79,11 +80,25 @@ encoders:
 # can't judge, are left as configured. Every trial is logged to
 # tune-results.csv in outdir, and later runs reuse the ones that still
 # apply.
+#
+# vmaf_model is "v0", libvmaf's built-in v0.6.1 (and its 4K variant at
+# 2160p), or the path of a libvmaf JSON model, relative to the video's
+# directory; vmaf_model_2160, if set, replaces it for 2160p and up.
+# Scores, and so target_vmaf, mean different things for each model. An
+# HDR model (one with a PQ conversion_target, like Netflix's
+# hdr_vmaf_v1.1.8) scores HDR sources as HDR, without tone-mapping them;
+# renditions of SDR-only encoders still use v0.
+#
+#   tune:
+#     target_vmaf: 93
+#     vmaf_model: /opt/vmaf/hdr_vmaf_v1.1.8_3d0h.json
+#     vmaf_model_2160: /opt/vmaf/hdr_vmaf_v1.1.8_1d5h_2160.json
 tune:
   target_vmaf: 95
   start: 0s
   duration: 8s
   anchors: 2
+  vmaf_model: v0
 
 # Renditions taller than the source are dropped. If an encoder's
 # tallest rendition is shorter than the source, that encoder also gets

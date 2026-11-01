@@ -53,7 +53,16 @@ type Tune struct {
 	Start      string  `yaml:"start"`
 	Duration   string  `yaml:"duration"`
 	Anchors    int     `yaml:"anchors"`
+	// VMAFModel is "v0" (or "") for libvmaf's built-in v0.6.1 models,
+	// or the path of a libvmaf JSON model file. VMAFModel2160, if set,
+	// replaces it for renditions 2160p and up; the built-in model
+	// switches to its 4K variant there by itself.
+	VMAFModel     string `yaml:"vmaf_model"`
+	VMAFModel2160 string `yaml:"vmaf_model_2160"`
 }
+
+// BuiltinVMAFModel is the vmaf_model value for libvmaf's own model.
+const BuiltinVMAFModel = "v0"
 
 // Thumbnails says how to make seek thumbnails.
 type Thumbnails struct {
