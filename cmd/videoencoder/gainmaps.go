@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/scottlaird/videoencoder/internal/ffmpeg"
@@ -111,10 +110,11 @@ func buildGainMap(ctx context.Context, r ffmpeg.Runner, g plan.GainMapPoster) er
 		if err := frame(g.HDR, g.HDRFilter(), hdrPNG); err != nil {
 			return err
 		}
-		// CICP: BT.709/sRGB base, BT.2020/PQ alternate.
+		// CICP: BT.709/sRGB base, BT.2020/PQ alternate. The headroom
+		// cap is left to libavif, whose default is gainmap.MaxHeadroom:
+		// --max-headroom only exists from 1.4, and Ubuntu has 1.3.
 		argv := []string{avifGainMapTool, "combine", sdrPNG, hdrPNG, partial,
-			"--cicp-base", "1/13/6", "--cicp-alternate", "9/16/9",
-			"--max-headroom", strconv.FormatFloat(gainmap.MaxHeadroom, 'f', -1, 64)}
+			"--cicp-base", "1/13/6", "--cicp-alternate", "9/16/9"}
 		err := r.Run(ctx, append(argv, plan.GainMapAVIFArgs...))
 		if err != nil {
 			return err

@@ -31,7 +31,9 @@ type Metadata struct {
 // the display has, so a value matched to real HDR displays (here 16x
 // SDR white, libavif's default) gives brighter results on them than
 // the image's full range would, at the cost of clipping its most
-// extreme highlights on lesser displays.
+// extreme highlights on lesser displays. AVIF gain maps get libavif's
+// own cap, which is the same; libavif before 1.4 has none, which only
+// matters for highlights brighter than 16x SDR white.
 const MaxHeadroom = 4.0
 
 // Offset is the default for both offsets: small enough not to matter
