@@ -219,9 +219,15 @@ type Poster struct {
 // Encoder settings for gain-mapped posters, chosen by measurement (see
 // DESIGN.md). They are part of each poster's key, so changing them
 // rebuilds the posters.
+//
+// --ignore-profile makes avifgainmaputil take color only from the
+// --cicp flags. Otherwise libavif 1.4 takes the base's from ffmpeg's
+// PNG cICP chunk (BT.709 transfer, not the sRGB the JPEG path assumes),
+// and 1.3, which doesn't read cICP, builds an ICC profile from the
+// gAMA and cHRM chunks and then refuses to compute a gain map.
 var (
 	GainMapJPEGQuality = gainmap.Quality{Base: 85, GainMap: 70}
-	GainMapAVIFArgs    = []string{"-q", "55", "--qgain-map", "50", "--yuv-gain-map", "400", "-s", "6"}
+	GainMapAVIFArgs    = []string{"-q", "55", "--qgain-map", "50", "--yuv-gain-map", "400", "-s", "6", "--ignore-profile"}
 )
 
 // GainMapPoster is a gain-mapped poster: an SDR base taken from SDR
