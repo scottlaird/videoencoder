@@ -687,7 +687,9 @@ being encoded, varying only the quality setting.
   encoder's bench range, and steps no finer than 0.5.
 - **Scoring at the rendition's own size.** Each rendition is compared
   with a lossless (FFV1) reference of the sample scaled to its own
-  size, capped at 2160p, where the 4K model is used. Scoring at viewing
+  size, with the 4K model at 2160p. Renditions above 2160p aren't
+  tuned at all: VMAF has no model for them, and scoring a downscale
+  would hide most of what an 8K encode loses. Scoring at viewing
   size, as Netflix's per-title encoding does, also charges a rendition
   for the detail its size can't hold: snow2's 480p rendition can't reach
   VMAF 95 at 1080p however well it's encoded, and tune then fell back to

@@ -47,8 +47,14 @@ type Tuner struct {
 
 // Tune searches r's anchor renditions on a sample of src (whose video
 // is vd) and interpolates the others. targets are r's renditions as
-// filtered for the source. Scratch files go in workdir.
+// filtered for the source, none taller than MaxHeight. Scratch files
+// go in workdir.
 func (tu *Tuner) Tune(ctx context.Context, r *config.Resolved, src string, vd probe.VideoData, targets plan.Targets, workdir string) ([]Result, error) {
+	for _, t := range targets {
+		if t.Height > MaxHeight {
+			return nil, fmt.Errorf("can't tune %s: taller than %dp", t.Name, MaxHeight)
+		}
+	}
 	if err := os.MkdirAll(workdir, 0o755); err != nil {
 		return nil, err
 	}
@@ -133,21 +139,19 @@ type reference struct {
 	toneMap       bool   // tone-mapped to SDR from an HDR sample
 }
 
-// maxScoreHeight is the tallest a rendition is scored at: VMAF's
-// largest model is trained for 2160p, and scoring 8K is slow.
-const maxScoreHeight = 2160
+// MaxHeight is the tallest rendition tune can judge: VMAF's largest
+// model is trained for 2160p, and its scores say nothing reliable
+// about 6K or 8K.
+const MaxHeight = 2160
 
 // reference returns the reference that t is judged against, without
 // making it; makeReference does that when a trial first needs it.
-// Each rendition is judged at its own size, up to 2160p, so its score
-// measures what the encoder lost rather than what the smaller size
-// can't hold: the snow in a 4K clip can't survive a scale to 480p
-// however well that's encoded.
+// Each rendition is judged at its own size, so its score measures
+// what the encoder lost rather than what the smaller size can't hold:
+// the snow in a 4K clip can't survive a scale to 480p however well
+// that's encoded.
 func (tu *Tuner) reference(refs map[refKey]reference, vd probe.VideoData, t *plan.Target, toneMap bool, workdir string) reference {
 	w, h := t.Width, t.Height
-	if h > maxScoreHeight {
-		w, h = uint64(float64(vd.Width)*maxScoreHeight/float64(vd.Height)+0.5)&^1, maxScoreHeight
-	}
 	key := refKey{w, h, toneMap}
 	if ref, ok := refs[key]; ok {
 		return ref

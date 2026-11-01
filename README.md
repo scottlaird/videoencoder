@@ -60,15 +60,17 @@ renditions in between, and writes `quality` (and, for encoders with
 bitrate caps, `bitrate`) into the video's sidecar with a comment saying
 where each value came from.  Review the sidecar, then render as usual.
 A rendition with `tune: false` is left as configured, for fixed rungs
-such as a bitrate-capped one for slow networks:
+such as a bitrate-capped one for slow networks.  So is any rendition
+taller than 2160p: VMAF has no model for 6K or 8K, so set those by
+hand.
 
 ```yaml
 renditions:
   h264-480-capped: {encoder: h264, height: 480, quality: 23, bitrate: 1.5M, tune: false}
 ```
 
-Each rendition is judged against the sample scaled to its own size,
-up to 2160p (with VMAF's 4K model from 2160p), so the score measures
+Each rendition is judged against the sample scaled to its own size
+(with VMAF's 4K model at 2160p), so the score measures
 what the encoder lost rather than what the smaller size can't hold.
 HDR-only videos are tone-mapped to SDR for scoring; with an SDR source
 as well, that's used instead.
