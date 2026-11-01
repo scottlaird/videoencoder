@@ -84,7 +84,7 @@ func TestAddThumbnails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasSuffix(string(master), "\n#EXT-X-IMAGE-STREAM-INF:BANDWIDTH=8000,RESOLUTION=1600x900,CODECS=\"jpeg\",URI=\"thumbnails.m3u8\"\n") {
+	if !strings.HasSuffix(string(master), "\n#EXT-X-IMAGE-STREAM-INF:BANDWIDTH=8000,RESOLUTION=320x180,CODECS=\"jpeg\",URI=\"thumbnails.m3u8\"\n") {
 		t.Errorf("hls.m3u8 doesn't end with the image stream:\n%s", master)
 	}
 
