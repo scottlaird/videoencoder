@@ -19,7 +19,8 @@ import (
 // encoder caps bitrate, since there the bitrate sets the cap.
 func tuneVideo(ctx context.Context, r *config.Resolved, adHoc bool, d deps) error {
 	// Score against SDR where there is an SDR source: VMAF is
-	// calibrated for SDR, and the tone map is one more variable.
+	// calibrated for SDR, and the tone map is one more variable. An HDR
+	// VMAF model wants the HDR source instead.
 	var vds []probe.VideoData
 	for _, l := range r.SourceLabels() {
 		vd, err := d.prober.Probe(ctx, r.Sources[l])
@@ -28,9 +29,16 @@ func tuneVideo(ctx context.Context, r *config.Resolved, adHoc bool, d deps) erro
 		}
 		vds = append(vds, vd)
 	}
-	sdr, _ := toneSources(vds)
-	label := r.SourceLabels()[sdr]
-	vd := vds[sdr]
+	pick, hdr := toneSources(vds)
+	scoresHDR, err := tune.ScoresHDR(r.Tune)
+	if err != nil {
+		return err
+	}
+	if scoresHDR && hdr >= 0 {
+		pick = hdr
+	}
+	label := r.SourceLabels()[pick]
+	vd := vds[pick]
 
 	ladder, err := plan.FromConfig(&r.Config)
 	if err != nil {
@@ -83,13 +91,17 @@ func tuneVideo(ctx context.Context, r *config.Resolved, adHoc bool, d deps) erro
 		if targets[i].Encoder.CapBitrate {
 			u.Bitrate = tune.FormatBitrate(res.Bitrate)
 		}
+		metric := "VMAF"
+		if res.Model != "" {
+			metric = res.Model
+		}
 		switch {
 		case res.Interpolated:
-			u.Comment = fmt.Sprintf("interpolated by tune %s for VMAF %g", date, res.Target)
+			u.Comment = fmt.Sprintf("interpolated by tune %s for %s %g", date, metric, res.Target)
 		case res.Outcome == bench.Found:
-			u.Comment = fmt.Sprintf("tuned %s: VMAF %.1f (target %g)", date, res.VMAF, res.Target)
+			u.Comment = fmt.Sprintf("tuned %s: %s %.1f (target %g)", date, metric, res.VMAF, res.Target)
 		default:
-			u.Comment = fmt.Sprintf("tuned %s: VMAF %.1f, target %g out of range (%s)", date, res.VMAF, res.Target, res.Outcome)
+			u.Comment = fmt.Sprintf("tuned %s: %s %.1f, target %g out of range (%s)", date, metric, res.VMAF, res.Target, res.Outcome)
 		}
 		updates = append(updates, u)
 		fmt.Fprintf(d.stdout, "#   %-10s quality %-5g bitrate %-6s %s\n", res.Rendition, res.Quality, tune.FormatBitrate(res.Bitrate), u.Comment)

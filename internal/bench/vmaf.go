@@ -22,7 +22,7 @@ type Metrics struct {
 	VMAF      float64 // mean
 	VMAFHMean float64 // harmonic mean
 	VMAFP1    float64 // 1st-percentile frame
-	VMAFNeg   float64 // mean of the "no enhancement gain" model
+	VMAFNeg   float64 // mean of the "no enhancement gain" model; NaN for models without one
 	PSNRY     float64
 	PSNRCb    float64
 	PSNRCr    float64
@@ -93,8 +93,11 @@ func blockSize(width, height uint64) (uint64, uint64) {
 // The block images skip it: color is compared in HDR as HDR, where a
 // tone map would squeeze the error in highlights. blockFilter, if not
 // "", converts them first (HLG to PQ, say).
-func scoreArgv(distorted, reference string, width, height uint64, threads int, logPath, colorLogPath, distBlocks, refBlocks, prefilter, blockFilter string) []string {
-	model := vmafModel(height)
+//
+// model is what VMAF is scored with. vmafConv, if not "", converts both
+// inputs once more for VMAF alone, after the 4:4:4 conversion: what an
+// HDR model expects (see hdrConversion).
+func scoreArgv(distorted, reference string, width, height uint64, threads int, logPath, colorLogPath, distBlocks, refBlocks, prefilter, blockFilter string, model VMAFModel, vmafConv string) []string {
 	pre := ""
 	if prefilter != "" {
 		pre = prefilter + ","
@@ -105,6 +108,10 @@ func scoreArgv(distorted, reference string, width, height uint64, threads int, l
 	}
 	sample := fmt.Sprintf("select='not(mod(n,%d))',scale=%d:%d:flags=area", colorFrameStep, (width/2)&^1, (height/2)&^1)
 	bw, bh := blockSize(width, height)
+	vmafIn := "[d][r]"
+	if vmafConv != "" {
+		vmafIn = fmt.Sprintf("[d]%s[dq];[r]%s[rq];[dq][rq]", vmafConv, vmafConv)
+	}
 	// The 16-bit 4:4:4 step matters: swscale's direct 8-bit YUV to RGB
 	// path is imprecise enough to read a lossless 8-bit copy as a color
 	// shift of 2.7.
@@ -120,13 +127,13 @@ func scoreArgv(distorted, reference string, width, height uint64, threads int, l
 			"[1:v]"+frameIndexPTS+",split[rv][rbs];"+
 			"[rv]%sformat=yuv444p10le,split[r][rc];"+
 			"[rbs]%s[rbo];"+
-			"[d][r]libvmaf=log_fmt=json:log_path=%s:n_threads=%d"+
-			":model='version=%s\\:name=vmaf|version=%sneg\\:name=vmaf_neg'"+
+			"%slibvmaf=log_fmt=json:log_path=%s:n_threads=%d"+
+			":model='%s'"+
 			":feature='name=psnr'[quality];"+
 			"[dc]%s[ds];[rc]%s[rs];"+
 			"[ds][rs]libvmaf=log_fmt=json:log_path=%s:n_threads=%d:feature='name=ciede'[color]",
 		pre, width, height, width, height, blocks, pre, blocks,
-		escapeFilterValue(logPath), threads, model, model,
+		vmafIn, escapeFilterValue(logPath), threads, model.option(height),
 		sample, sample, escapeFilterValue(colorLogPath), threads)
 	return []string{
 		"ffmpeg", "-hide_banner", "-loglevel", "error", "-nostats", "-y",
@@ -145,8 +152,17 @@ func scoreArgv(distorted, reference string, width, height uint64, threads int, l
 // Score measures distorted against reference, which must be width x
 // height (distorted is scaled to match), and whose color transfer
 // (ffprobe's name: "smpte2084", "bt709", ...) is transfer. Scratch logs
-// go in tmpDir, named after name. See scoreArgv for prefilter.
-func Score(ctx context.Context, e Executor, distorted, reference string, width, height uint64, threads int, tmpDir, name, prefilter, transfer string) (Metrics, error) {
+// go in tmpDir, named after name. See scoreArgv for prefilter. VMAF is
+// scored with model; an HDR model needs an HDR reference, and no tone
+// map in prefilter.
+func Score(ctx context.Context, e Executor, distorted, reference string, width, height uint64, threads int, tmpDir, name, prefilter, transfer string, model VMAFModel) (Metrics, error) {
+	vmafConv := ""
+	if model.HDR {
+		var err error
+		if vmafConv, err = hdrConversion(transfer); err != nil {
+			return Metrics{}, err
+		}
+	}
 	logPath := filepath.Join(tmpDir, name+".vmaf.json")
 	colorLogPath := filepath.Join(tmpDir, name+".ciede.json")
 	distBlocks := filepath.Join(tmpDir, name+".dist.blocks")
@@ -155,7 +171,7 @@ func Score(ctx context.Context, e Executor, distorted, reference string, width, 
 		defer os.Remove(p)
 	}
 	space, blockFilter := colorSpaceFor(transfer)
-	argv := scoreArgv(distorted, reference, width, height, threads, logPath, colorLogPath, distBlocks, refBlocks, prefilter, blockFilter)
+	argv := scoreArgv(distorted, reference, width, height, threads, logPath, colorLogPath, distBlocks, refBlocks, prefilter, blockFilter, model, vmafConv)
 	if _, err := e.Exec(ctx, argv); err != nil {
 		return Metrics{}, fmt.Errorf("scoring: %w", err)
 	}
@@ -203,12 +219,18 @@ func parseVMAFLog(data []byte) (Metrics, error) {
 
 	var m Metrics
 	var err error
+	// Only the built-in model has a no-enhancement-gain variant.
+	m.VMAFNeg = math.NaN()
+	if _, ok := l.Pooled["vmaf_neg"]; ok {
+		if m.VMAFNeg, err = mean("vmaf_neg"); err != nil {
+			return Metrics{}, err
+		}
+	}
 	for _, f := range []struct {
 		name string
 		dst  *float64
 	}{
 		{"vmaf", &m.VMAF},
-		{"vmaf_neg", &m.VMAFNeg},
 		{"psnr_y", &m.PSNRY},
 		{"psnr_cb", &m.PSNRCb},
 		{"psnr_cr", &m.PSNRCr},
