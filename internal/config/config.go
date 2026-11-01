@@ -137,12 +137,32 @@ type Rendition struct {
 	// as configured. For fixed rungs, like a bitrate-capped one for
 	// slow networks.
 	Tune *bool `yaml:"tune"`
+	// QualityFrom names a rendition of the same encoder whose quality,
+	// plus QualityOffset, replaces Quality. It's resolved after every
+	// layer is merged, so it follows that rendition's tuned value, and
+	// "" turns it off again. Tune leaves such renditions alone.
+	QualityFrom   string  `yaml:"quality_from"`
+	QualityOffset float64 `yaml:"quality_offset"`
 }
 
 // Tuned reports whether "videoencoder tune" sets r's quality: unless
-// it says tune: false. A rendition with no config of its own is tuned.
+// it says tune: false or takes its quality from another rendition. A
+// rendition with no config of its own is tuned.
 func (r *Rendition) Tuned() bool {
-	return r == nil || r.Tune == nil || *r.Tune
+	return r == nil || (r.QualityFrom == "" && (r.Tune == nil || *r.Tune))
+}
+
+// Follows describes where r's quality comes from, like "av1-2160 + 2",
+// or is "" if r sets its own.
+func (r *Rendition) Follows() string {
+	switch {
+	case r == nil || r.QualityFrom == "":
+		return ""
+	case r.QualityOffset < 0:
+		return fmt.Sprintf("%s - %g", r.QualityFrom, -r.QualityOffset)
+	default:
+		return fmt.Sprintf("%s + %g", r.QualityFrom, r.QualityOffset)
+	}
 }
 
 // SourceLabels returns the source labels in encoding order.

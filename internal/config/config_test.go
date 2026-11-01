@@ -242,6 +242,22 @@ func TestLoadErrors(t *testing.T) {
 			wantErr: "exactly one of dir and s3",
 		},
 		{
+			name:    "quality_from an unknown rendition",
+			files:   map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\nrenditions: {av1-3240: {quality_from: av1-9999}}"},
+			wantErr: `quality_from: no rendition "av1-9999"`,
+		},
+		{
+			name:    "quality_from another encoder",
+			files:   map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\nrenditions: {av1-3240: {quality_from: h265-2160}}"},
+			wantErr: `uses encoder "h265"`,
+		},
+		{
+			name: "quality_from loop",
+			files: map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\n" +
+				"renditions: {av1-3240: {quality_from: av1-4320}, av1-4320: {quality_from: av1-3240}}"},
+			wantErr: "quality_from loops",
+		},
+		{
 			name:    "bad bitrate",
 			files:   map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\nrenditions: {av1-720: {bitrate: fast}}"},
 			wantErr: "bad bitrate",
@@ -467,11 +483,66 @@ func TestRenditionTuned(t *testing.T) {
 		r    *Rendition
 		want bool
 	}{
-		{nil, true}, {&Rendition{}, true}, {&Rendition{Tune: &yes}, true}, {&Rendition{Tune: &no}, false},
+		{nil, true}, {&Rendition{}, true}, {&Rendition{Tune: &yes}, true}, {&Rendition{Tune: &no}, false}, {&Rendition{QualityFrom: "x"}, false},
 	}
 	for _, tt := range tests {
 		if got := tt.r.Tuned(); got != tt.want {
 			t.Errorf("%+v.Tuned() = %v, want %v", tt.r, got, tt.want)
+		}
+	}
+}
+
+// TestQualityFrom checks that quality_from follows a rendition defined
+// in another layer, including its tuned value from the sidecar.
+func TestQualityFrom(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, ProjectFile), `
+renditions:
+  av1-3240: {quality_from: av1-2160, quality_offset: 2}
+  av1-4320: {quality_from: av1-3240, quality_offset: 1.5}
+  av1-1440: {quality_from: av1-2160, quality_offset: -1}
+`)
+	write(t, filepath.Join(dir, "v"+SidecarSuffix), `
+sources: {main: v.mov}
+renditions:
+  av1-2160: {quality: 35}
+  av1-1440: {quality_from: ""}
+`)
+	r, err := (&Loader{}).Load(Video{Name: "v", Dir: dir})
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	for name, want := range map[string]float64{"av1-3240": 37, "av1-4320": 38.5, "av1-1440": 32} {
+		if got := r.Renditions[name].Quality; got != want {
+			t.Errorf("%s quality = %g, want %g", name, got, want)
+		}
+	}
+	if r.Renditions["av1-3240"].Tuned() || !r.Renditions["av1-1440"].Tuned() {
+		t.Error("tune should skip av1-3240, which follows av1-2160, and tune av1-1440, which turned it off")
+	}
+	out, err := yaml.Dump(r.Merged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "quality: 37 # av1-2160 + 2") {
+		t.Errorf("merged config doesn't show the computed quality:\n%s", out)
+	}
+}
+
+func TestRenditionFollows(t *testing.T) {
+	tests := []struct {
+		r    *Rendition
+		want string
+	}{
+		{nil, ""},
+		{&Rendition{Quality: 30}, ""},
+		{&Rendition{QualityFrom: "av1-2160", QualityOffset: 2}, "av1-2160 + 2"},
+		{&Rendition{QualityFrom: "av1-2160", QualityOffset: -1.5}, "av1-2160 - 1.5"},
+		{&Rendition{QualityFrom: "av1-2160"}, "av1-2160 + 0"},
+	}
+	for _, tt := range tests {
+		if got := tt.r.Follows(); got != tt.want {
+			t.Errorf("%+v.Follows() = %q, want %q", tt.r, got, tt.want)
 		}
 	}
 }

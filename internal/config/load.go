@@ -86,7 +86,48 @@ func (l *Loader) Load(v Video) (*Resolved, error) {
 	if err := r.Validate(); err != nil {
 		return nil, fmt.Errorf("video %s in %s: %w", v.Name, v.Dir, err)
 	}
+	if err := r.resolveQualities(); err != nil {
+		return nil, fmt.Errorf("video %s in %s: %w", v.Name, v.Dir, err)
+	}
 	return r, nil
+}
+
+// resolveQualities sets the quality of each rendition with
+// quality_from, following chains, and shows the result in Merged.
+func (r *Resolved) resolveQualities() error {
+	done := map[string]bool{}
+	var resolve func(name string, path []string) error
+	resolve = func(name string, path []string) error {
+		rd := r.Renditions[name]
+		if done[name] || rd.QualityFrom == "" {
+			return nil
+		}
+		path = append(path, name)
+		if slices.Contains(path[:len(path)-1], name) {
+			return fmt.Errorf("rendition %q: quality_from loops: %s", name, strings.Join(path, " -> "))
+		}
+		from, ok := r.Renditions[rd.QualityFrom]
+		if !ok {
+			return fmt.Errorf("rendition %q: quality_from: no rendition %q", name, rd.QualityFrom)
+		}
+		if from.Encoder != rd.Encoder {
+			return fmt.Errorf("rendition %q: quality_from %q uses encoder %q, not %q", name, rd.QualityFrom, from.Encoder, rd.Encoder)
+		}
+		if err := resolve(rd.QualityFrom, path); err != nil {
+			return err
+		}
+		rd.Quality = from.Quality + rd.QualityOffset
+		done[name] = true
+		m := child(child(r.Merged, "renditions"), name)
+		setScalar(m, "quality", formatQuality(rd.Quality), "!!float").LineComment = rd.Follows()
+		return nil
+	}
+	for _, name := range r.RenditionNames() {
+		if err := resolve(name, nil); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (l *Loader) layers(v Video) ([]source, error) {

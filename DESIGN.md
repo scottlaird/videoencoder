@@ -689,7 +689,10 @@ being encoded, varying only the quality setting.
   with a lossless (FFV1) reference of the sample scaled to its own
   size, with the 4K model at 2160p. Renditions above 2160p aren't
   tuned at all: VMAF has no model for them, and scoring a downscale
-  would hide most of what an 8K encode loses. Scoring at viewing
+  would hide most of what an 8K encode loses. `quality_from` and
+  `quality_offset` can set them relative to a tuned rendition instead;
+  they're resolved after the layers merge, so the offset applies to
+  the tuned value in the sidecar. Scoring at viewing
   size, as Netflix's per-title encoding does, also charges a rendition
   for the detail its size can't hold: snow2's 480p rendition can't reach
   VMAF 95 at 1080p however well it's encoded, and tune then fell back to
