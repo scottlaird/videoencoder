@@ -546,3 +546,21 @@ func TestRenditionFollows(t *testing.T) {
 		}
 	}
 }
+
+func TestVMAFModelPaths(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "v"+SidecarSuffix), `
+sources: {main: v.mov}
+tune: {vmaf_model_2160: models/hdr_2160.json}
+`)
+	r, err := (&Loader{}).Load(Video{Name: "v", Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := r.Tune.VMAFModel, BuiltinVMAFModel; got != want {
+		t.Errorf("default vmaf_model = %q, want %q", got, want)
+	}
+	if got, want := r.Tune.VMAFModel2160, filepath.Join(dir, "models", "hdr_2160.json"); got != want {
+		t.Errorf("vmaf_model_2160 = %q, want %q", got, want)
+	}
+}

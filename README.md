@@ -212,7 +212,7 @@ videos:
 | `streamdir` | Where the finished stream goes. Default `stream/{name}`. |
 | `encoders` | ffmpeg encoders by name, described below. |
 | `renditions` | The ladder, described below. |
-| `tune` | How `videoencoder tune` works: `target_vmaf` (default 95), `start` (0s), `duration` (8s) and `anchors` (2). |
+| `tune` | How `videoencoder tune` works: `target_vmaf` (default 95), `start` (0s), `duration` (8s), `anchors` (2), and `vmaf_model` and `vmaf_model_2160` (see below). |
 | `poster` | `offset`, `widths`, `formats` (`avif`, `jpg`, `webp`), `gainmap_formats`, and `hdr` for plain PQ HDR posters. |
 | `thumbnails` | `enabled`, `interval` in seconds, `height`, and `columns` × `rows` per tile. |
 | `publish` | `to` and `targets`; see [Publishing](#publishing). |
@@ -337,11 +337,35 @@ renditions:
     quality: 29 # interpolated by tune 2026-10-31 for VMAF 90
 ```
 
+With a `vmaf_model`, the comments name it instead of "VMAF".
+
 Each rendition is scored against the sample scaled to its own size, a
 lossless reference, using VMAF's 4K model at 2160p. The score
 therefore measures what the encoder lost, not detail the smaller size
 couldn't hold anyway. HDR is tone-mapped to SDR for scoring, since
 VMAF is an SDR metric.
+
+`tune.vmaf_model` picks the VMAF model. The default, `v0`, is
+libvmaf's built-in v0.6.1, with its 4K variant at 2160p. Anything else
+is the path of a libvmaf JSON model, such as Netflix's v1 models.
+`vmaf_model_2160` replaces it for 2160p and up. Each model scores on
+its own scale, so pick `target_vmaf` for the model. Trials scored with
+one model are never reused for another.
+
+```yaml
+tune:
+  target_vmaf: 93
+  vmaf_model: /opt/vmaf/hdr_vmaf_v1.1.8_3d0h.json
+  vmaf_model_2160: /opt/vmaf/hdr_vmaf_v1.1.8_1d5h_2160.json
+```
+
+An HDR model, one whose JSON has a PQ `conversion_target`, judges HDR
+as HDR. Tune samples the HDR source instead of the SDR one, and
+converts both sides to the PQ ICtCp 4:2:0 16-bit pictures the model
+expects instead of tone-mapping them. libvmaf 3.2 doesn't do that
+conversion itself. SDR-only encoders' renditions, which an HDR model
+can't judge, fall back to `v0`. These models are clipped to 0–100,
+like the others.
 
 Three kinds of rendition are left as configured. Ones marked
 `tune: false` are useful for fixed rungs, such as a bitrate-capped one
