@@ -7,9 +7,10 @@ import (
 
 // runSearch drives a Search against score(i) with threshold 95 and
 // returns the outcome, answer and number of measurements taken.
-func runSearch(t *testing.T, n, seed int, score func(int) float64) (Outcome, int, int) {
+func runSearch(t *testing.T, n, seed int, withinStep bool, score func(int) float64) (Outcome, int, int) {
 	t.Helper()
 	s := NewSearch(n, seed)
+	s.WithinStep = withinStep
 	seen := map[int]bool{}
 	for evals := 0; evals < 100; {
 		i, out := s.Next()
@@ -33,11 +34,35 @@ func TestSearch(t *testing.T) {
 	curved := func(i int) float64 { return 100 - 5*math.Pow(float64(i)/180, 2) }
 	// NVENC-style plateaus: groups of 7 indexes share one score.
 	plateau := func(i int) float64 { return 100 - 0.3*float64(i/7) }
+	// nooksack2's av1-2160 trials (CRF 10-63, so index = CRF-10): 32
+	// 95.885, 35 95.386, 37 94.9905, 41 94.135, and a parabola through
+	// them elsewhere.
+	nooksack := map[int]float64{22: 95.885, 25: 95.386, 27: 94.9905, 31: 94.135, 26: 95.1}
+	av1 := func(i int) float64 {
+		if v, ok := nooksack[i]; ok {
+			return v
+		}
+		x := float64(i)
+		return 96.92 - 0.0213*x - 0.00131*x*x
+	}
+	// nooksack2's h265-480 trials (CRF 10-40 in tune's 0.5 steps, so
+	// index = 2*(CRF-10)): 20 93.48, 18.5 94.10, 16 94.91, 15.5 95.049,
+	// joined by lines.
+	h265 := func(i int) float64 {
+		xs := []float64{11, 12, 17, 20}
+		ys := []float64{95.049, 94.91, 94.10, 93.48}
+		k := 1
+		for k < len(xs)-1 && float64(i) > xs[k] {
+			k++
+		}
+		return ys[k-1] + (float64(i)-xs[k-1])*(ys[k]-ys[k-1])/(xs[k]-xs[k-1])
+	}
 
 	tests := []struct {
 		name     string
 		n, seed  int
 		score    func(int) float64
+		step     bool
 		want     Outcome
 		answer   int
 		maxEvals int
@@ -48,12 +73,16 @@ func TestSearch(t *testing.T) {
 		{name: "curved", n: 300, seed: 150, score: curved, want: Found, answer: 180, maxEvals: 9},
 		{name: "plateaus", n: 300, seed: 150, score: plateau, want: Found, answer: 118, maxEvals: 10},
 		{name: "integer range", n: 53, seed: 26, score: func(i int) float64 { return 100 - float64(i)/3 }, want: Found, answer: 15, maxEvals: 6},
+		{name: "nooksack2 av1-2160", n: 53, seed: 22, score: av1, want: Found, answer: 26, maxEvals: 4},
+		{name: "nooksack2 h265-480", n: 60, seed: 20, score: h265, want: Found, answer: 11, maxEvals: 5},
+		{name: "nooksack2 h265-480 within a step", n: 60, seed: 20, score: h265, step: true, want: Found, answer: 11, maxEvals: 4},
+		{name: "within a step still closes a wide bracket", n: 53, seed: 22, score: av1, step: true, want: Found, answer: 26, maxEvals: 4},
 		{name: "everything passes", n: 50, seed: 25, score: func(int) float64 { return 99 }, want: AllPass, answer: 50, maxEvals: 6},
 		{name: "nothing passes", n: 50, seed: 25, score: func(int) float64 { return 90 }, want: NonePass, answer: -1, maxEvals: 6},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			out, answer, evals := runSearch(t, tt.n, tt.seed, tt.score)
+			out, answer, evals := runSearch(t, tt.n, tt.seed, tt.step, tt.score)
 			if out != tt.want || answer != tt.answer {
 				t.Errorf("got %v at %d, want %v at %d", out, answer, tt.want, tt.answer)
 			}
