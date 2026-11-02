@@ -214,6 +214,30 @@ func TestAuxJobs(t *testing.T) {
 	}
 }
 
+func TestSeekThumbnailToneMap(t *testing.T) {
+	src := Source{Label: "main", Path: "in.mov", ID: "id1"}
+	thumbs := config.Thumbnails{Interval: 5, Height: 180, Columns: 5, Rows: 5}
+	tests := []struct {
+		transfer string
+		want     bool
+	}{
+		{"bt709", false},
+		{"smpte2084", true},
+		{"arib-std-b67", true},
+	}
+	for _, tt := range tests {
+		vd := probe.VideoData{Width: 3840, Height: 2160, ColorTransfer: tt.transfer}
+		j := SeekThumbnailJob(thumbs, vd, src, "out")
+		vf := j.Args[slices.Index(j.Args, "-vf")+1]
+		if got := strings.Contains(vf, ToneMapSDR); got != tt.want {
+			t.Errorf("%s: tone-mapped = %v, want %v (-vf %s)", tt.transfer, got, tt.want, vf)
+		}
+		if !strings.Contains(vf, Scale(320, 180)) {
+			t.Errorf("%s: -vf %s doesn't scale with %s", tt.transfer, vf, Scale(320, 180))
+		}
+	}
+}
+
 func TestPosters(t *testing.T) {
 	p := config.Poster{Offset: "2s", Widths: []uint64{320, 1920, 7680}, Formats: []string{"avif", "jpg"}}
 	src := Source{Label: "hdr", Path: "in.mov", ID: "id1"}

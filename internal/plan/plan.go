@@ -180,11 +180,17 @@ func (t *Target) Job(src Source, outdir string, toneMap bool) *ffmpeg.Job {
 // SeekThumbnailJob writes src's seek-thumbnail tiles into a
 // "thumbs.<key>" directory as tile-1.jpg, tile-2.jpg, ...: one frame
 // every t.Interval seconds, t.Height high, tiled t.Columns x t.Rows.
+// The tiles are SDR JPEGs; an HDR src is tone-mapped, as SDR posters
+// are, so pass an SDR source when there is one.
 func SeekThumbnailJob(t config.Thumbnails, vd probe.VideoData, src Source, outdir string) *ffmpeg.Job {
 	// select, unlike fps, takes the first frame even when the video is
 	// shorter than one interval. MJPEG needs full-range YUV.
-	filter := fmt.Sprintf(`select='isnan(prev_selected_t)+gte(t-prev_selected_t\,%s)',scale=%d:%d,format=yuvj420p,tile=%dx%d`,
-		strconv.FormatFloat(t.Interval, 'f', -1, 64), scaledWidth(vd, t.Height), t.Height, t.Columns, t.Rows)
+	filter := fmt.Sprintf(`select='isnan(prev_selected_t)+gte(t-prev_selected_t\,%s)',`,
+		strconv.FormatFloat(t.Interval, 'f', -1, 64))
+	if vd.Tone() == probe.HDR {
+		filter += ToneMapSDR + ","
+	}
+	filter += fmt.Sprintf("%s,format=yuvj420p,tile=%dx%d", Scale(scaledWidth(vd, t.Height), t.Height), t.Columns, t.Rows)
 	j := newJob(src, outdir, "thumbs", "thumbs", "", []string{
 		"-vf", filter,
 		"-fps_mode", "vfr",

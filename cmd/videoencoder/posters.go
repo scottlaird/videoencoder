@@ -214,7 +214,7 @@ func publishThumbnails(r *config.Resolved, b *built) ([]string, error) {
 		Tiles:       len(tiles),
 		Columns:     int(t.Columns),
 		Rows:        int(t.Rows),
-		ThumbWidth:  int(plan.ThumbWidth(t, b.vd)),
+		ThumbWidth:  int(plan.ThumbWidth(t, b.vds[b.thumbSrc])),
 		ThumbHeight: int(t.Height),
 		Interval:    t.Interval,
 		Duration:    b.vd.Duration.Seconds(),

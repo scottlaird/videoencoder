@@ -322,9 +322,12 @@ plus a post-processing step, on by default:
 thumbnails: {enabled: true, interval: 5, height: 180, columns: 5, rows: 5}
 ```
 
-1. ffmpeg, in the same process as the first source's renditions so the
-   decode is shared, runs `select='isnan(prev_selected_t)+gte(t-prev_selected_t,5)',
-   scale=…:180,format=yuvj420p,tile=5x5` into `thumbs.<key>/tile-%d.jpg`.
+1. ffmpeg, in the same process as the first SDR source's renditions so
+   the decode is shared, runs `select='isnan(prev_selected_t)+gte(t-prev_selected_t,5)',
+   scale=…:180:flags=lanczos,format=yuvj420p,tile=5x5` into
+   `thumbs.<key>/tile-%d.jpg`. The tiles are SDR JPEGs: with only an HDR
+   source, it is tone-mapped first, as SDR posters are. Taken from PQ
+   without one, they came out washed out.
    `select` is used rather than `fps=1/5` because `fps` writes nothing
    for a video shorter than one interval. Each tile covers 25 × 5 s =
    125 s.

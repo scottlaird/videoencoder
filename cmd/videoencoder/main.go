@@ -11,7 +11,8 @@
 // them by a <name>.video.yaml sidecar or a videos: entry in a
 // videoencoder.yaml. With media files, they are versions of one video
 // (e.g. HDR and SDR), all offered in one stream; audio comes from the
-// first, and posters from the first of each tone. "plan" prints each video's merged config, with
+// first, posters from the first of each tone, and seek thumbnails from
+// the first SDR one. "plan" prints each video's merged config, with
 // where each value came from, and which renditions would be rebuilt.
 // After rendering, the stream is published to the config's publish.to
 // targets; "publish" does only that, for streams already rendered.
@@ -204,6 +205,7 @@ type built struct {
 	posters   []plan.Poster
 	gainmaps  []plan.GainMapPoster
 	thumbs    *ffmpeg.Job // nil unless thumbnails are on
+	thumbSrc  int         // index of the source thumbs is taken from
 	manifest  *state.Manifest
 	desc      map[*ffmpeg.Job]string // for plan output
 }
@@ -284,7 +286,9 @@ func prepare(ctx context.Context, r *config.Resolved, d deps) (*built, error) {
 		b.desc[p.Job] = fmt.Sprintf("%s %dx%d from %s", p.Job.Slot, p.Width, p.Height, p.Source)
 	}
 	if r.Thumbnails.Enabled {
-		b.thumbs = plan.SeekThumbnailJob(r.Thumbnails, b.vd, first, r.Outdir)
+		// Seek thumbnails are SDR, so take them from the SDR source.
+		b.thumbSrc = sdr
+		b.thumbs = plan.SeekThumbnailJob(r.Thumbnails, b.vds[sdr], b.sources[sdr], r.Outdir)
 	}
 	b.manifest, err = state.Load(r.Outdir, r.Name)
 	return b, err
@@ -315,7 +319,7 @@ func render(ctx context.Context, r *config.Resolved, d deps, rebuild string) err
 	var videos []string
 	for i, js := range b.perSource {
 		batch := ffmpeg.Batch{Manifest: b.manifest}
-		if i == 0 && b.thumbs != nil {
+		if i == b.thumbSrc && b.thumbs != nil {
 			js = append(slices.Clone(js), b.thumbs)
 		}
 		for _, j := range js {
