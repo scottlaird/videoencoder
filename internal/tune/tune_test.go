@@ -64,8 +64,9 @@ func (f *fakeFFmpeg) Exec(_ context.Context, argv []string) (bench.Measurement, 
 	out := argv[len(argv)-1]
 	if i := slices.Index(argv, "-crf"); i >= 0 {
 		q, _ := strconv.ParseFloat(argv[i+1], 64)
-		size := argv[slices.Index(argv, "-s")+1]
-		h, _ := strconv.ParseUint(strings.Split(size, "x")[1], 10, 64)
+		vf := argv[slices.Index(argv, "-vf")+1]
+		var w, h uint64
+		fmt.Sscanf(vf[strings.Index(vf, "scale="):], "scale=%d:%d", &w, &h)
 		f.quality[out], f.height[out] = q, h
 		if i := slices.Index(argv, "-vf"); i >= 0 && strings.Contains(argv[i+1], "tonemap=") {
 			f.toneMapped = true
