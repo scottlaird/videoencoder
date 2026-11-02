@@ -492,15 +492,28 @@ and there's a little noise. The goal for each (sample, flagset) is the
    different sample, or from a similar flagset (same encoder) on this
    sample. Otherwise start at the middle of the range.
 2. **Bracket**: step outward from the seed until one point passes and
-   one fails. If a range bound still passes or fails, record that and
-   stop.
-3. **Narrow**: interpolate between the bracket's (q, VMAF) points
-   to pick the next q (regula falsi), falling back to bisection if
-   interpolation stalls. Round to `step`. Stop when the bracket is
-   one step wide.
+   one fails. Once two points are on the same side, extrapolate the
+   line through the two nearest the boundary to where it crosses the
+   target (no further than twice the stride); otherwise step by a
+   stride that doubles each time. If a range bound still passes or
+   fails, record that and stop.
+3. **Narrow**: fit a parabola through the bracket's ends and the
+   nearest other point, since VMAF falls faster as quality drops, and
+   pick the q where it crosses the target. When the parabola doesn't
+   fall across the whole bracket, interpolate a line between the ends
+   (regula falsi). Fall back to bisection if interpolation stalls.
+   Round to `step`. Stop when the bracket is one step wide.
 4. **Answer**: the passing end of the final bracket. Plateaus need no
    special handling, because the bracket narrows through them like
    anywhere else.
+
+Tune (but not encbench, which compares flagsets by their answers) also
+stops at a pass whose margin is smaller than the drop the slope to the
+nearest other point predicts for one more step, rather than spending an
+encode to confirm that step fails. On simulated VMAF curves with
+realistic noise, the estimates cut SVT-AV1 searches from 4.1 encodes to
+3.8 and the early stop to 3.3. About one search in ten then lands one
+step on the higher-quality side, still passing.
 
 Searches advance in rounds. Each round, every unfinished search asks
 for one encode. The encodes run one after another, then all of them
@@ -685,7 +698,7 @@ being encoded, varying only the quality setting.
 - **Anchors.** Per encoder, the shortest and tallest renditions as
   filtered for the source (`tune.anchors: 3` adds the middle one). Each
   is encoded from the sample with its real arguments, but no bitrate
-  caps, while bench's search (regula falsi plus bisection) varies the
+  caps, while bench's search (stopping within a step of the target) varies the
   quality. The search starts from the configured quality, uses the
   encoder's bench range, and steps no finer than 0.5.
 - **Scoring at the rendition's own size.** Each rendition is compared

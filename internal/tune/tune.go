@@ -217,6 +217,8 @@ func (tu *Tuner) search(ctx context.Context, r *config.Resolved, t *plan.Target,
 	spec := qualitySpec(t.Encoder.Codec)
 	goal := target(r, t)
 	s := bench.NewSearch(spec.Steps(), spec.QualityToIndex(t.Quality))
+	// One step is worth less than a few seconds of sample can measure.
+	s.WithinStep = true
 	src := plan.Source{Label: "tune", Path: sample, ID: "sample"}
 	trialJob := func(q float64) *ffmpeg.Job {
 		tr := *t
