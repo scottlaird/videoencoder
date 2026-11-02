@@ -117,7 +117,7 @@ func TestJob(t *testing.T) {
 				Name: "h264-720", EncoderName: "h264", Width: 1280, Height: 720, Quality: 18, Bitrate: 2000000,
 				Encoder: config.Encoder{Codec: "libx264", QualityFlag: "-crf", Args: []string{"-preset", "faster"}, CapBitrate: true},
 			},
-			wantArgs: "-s 1280x720 -c:v libx264 -preset faster -crf 18 -b:v 2000000 -maxrate 3000000 -bufsize 3000000 -an",
+			wantArgs: "-vf scale=1280:720:flags=lanczos -c:v libx264 -preset faster -crf 18 -b:v 2000000 -maxrate 3000000 -bufsize 3000000 -an",
 		},
 		{
 			name: "uncapped, fractional quality, per-rendition args",
@@ -125,7 +125,7 @@ func TestJob(t *testing.T) {
 				Name: "av1-1080", EncoderName: "av1", Width: 1920, Height: 1080, Quality: 30.5, Bitrate: 2000000, Args: []string{"-svtav1-params", "tune=0"},
 				Encoder: config.Encoder{Codec: "libsvtav1", QualityFlag: "-crf", Args: []string{"-preset", "5"}},
 			},
-			wantArgs: "-s 1920x1080 -c:v libsvtav1 -preset 5 -crf 30.5 -svtav1-params tune=0 -an",
+			wantArgs: "-vf scale=1920:1080:flags=lanczos -c:v libsvtav1 -preset 5 -crf 30.5 -svtav1-params tune=0 -an",
 		},
 	}
 	for _, tt := range tests {
@@ -296,7 +296,7 @@ func TestToneMappedJob(t *testing.T) {
 	src := Source{Label: "hdr", Path: "in.mov", ID: "id1"}
 	plain, mapped := tg.Job(src, "out", false), tg.Job(src, "out", true)
 	args := strings.Join(mapped.Args, " ")
-	if !strings.HasPrefix(args, "-vf "+ToneMapSDR+" -s 1280x720") || !strings.Contains(args, "-color_trc bt709") {
+	if !strings.HasPrefix(args, "-vf "+ToneMapSDR+",scale=1280:720:flags=lanczos ") || !strings.Contains(args, "-color_trc bt709") {
 		t.Errorf("tone-mapped args = %q", args)
 	}
 	if strings.Contains(strings.Join(plain.Args, " "), "tonemap") {

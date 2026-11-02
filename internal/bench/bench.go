@@ -263,7 +263,7 @@ func (b *Bench) downscale(ctx context.Context, src, dst string, w, h uint64) err
 	slog.Info("Making sample", "from", filepath.Base(src), "to", filepath.Base(dst))
 	partial := strings.TrimSuffix(dst, ".mov") + ".partial.mov"
 	_, err := b.Exec.Exec(ctx, []string{"ffmpeg", "-hide_banner", "-loglevel", "error", "-nostats", "-y",
-		"-i", src, "-map", "0:v:0", "-vf", fmt.Sprintf("scale=%d:%d:flags=lanczos", w, h),
+		"-i", src, "-map", "0:v:0", "-vf", plan.Scale(w, h),
 		"-c:v", "prores_ks", "-profile:v", "3", "-pix_fmt", "yuv422p10le", partial})
 	if err != nil {
 		os.Remove(partial)

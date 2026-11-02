@@ -158,14 +158,11 @@ func newJobWithBase(src Source, base []string, outdir, slot, stem, ext string, a
 // With toneMap, src is HDR and is tone-mapped to BT.709 SDR first, for
 // encoders that only make SDR (see config.Encoder.SDROnly).
 func (t *Target) Job(src Source, outdir string, toneMap bool) *ffmpeg.Job {
-	var args []string
+	vf := Scale(t.Width, t.Height)
 	if toneMap {
-		args = append(args, "-vf", ToneMapSDR)
+		vf = ToneMapSDR + "," + vf
 	}
-	args = append(args,
-		"-s", fmt.Sprintf("%dx%d", t.Width, t.Height),
-		"-c:v", t.Encoder.Codec,
-	)
+	args := []string{"-vf", vf, "-c:v", t.Encoder.Codec}
 	args = append(args, t.Encoder.Args...)
 	if toneMap {
 		args = append(args, "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709")
@@ -248,7 +245,7 @@ func (g *GainMapPoster) SourceID() string { return g.SDR.ID + "+" + g.HDR.ID }
 // SDRFilter is the ffmpeg filter giving the SDR base at the poster's
 // size, as 8-bit RGB.
 func (g *GainMapPoster) SDRFilter() string {
-	f := fmt.Sprintf("scale=%d:%d:flags=lanczos,format=rgb24", g.Width, g.Height)
+	f := Scale(g.Width, g.Height) + ",format=rgb24"
 	if g.ToneMap {
 		f = ToneMapSDR + "," + f
 	}
@@ -259,12 +256,12 @@ func (g *GainMapPoster) SDRFilter() string {
 // light with BT.709 primaries, scaled so that 203 nits, the BT.2408
 // reference white, is 1.0, matching SDR white.
 func (g *GainMapPoster) HDRLinearFilter() string {
-	return fmt.Sprintf("scale=%d:%d:flags=lanczos,zscale=t=linear:npl=203,format=gbrpf32le,zscale=p=bt709,format=gbrpf32le", g.Width, g.Height)
+	return Scale(g.Width, g.Height) + ",zscale=t=linear:npl=203,format=gbrpf32le,zscale=p=bt709,format=gbrpf32le"
 }
 
 // HDRFilter gives the HDR rendition as 16-bit RGB, still PQ/BT.2020.
 func (g *GainMapPoster) HDRFilter() string {
-	return fmt.Sprintf("scale=%d:%d:flags=lanczos,format=rgb48be", g.Width, g.Height)
+	return Scale(g.Width, g.Height) + ",format=rgb48be"
 }
 
 // GainMapPosters returns the gain-mapped posters for p, with the SDR
@@ -304,6 +301,14 @@ func posterWidths(p config.Poster, vd probe.VideoData) []uint64 {
 	widths = append(widths, vd.Width)
 	slices.Sort(widths)
 	return slices.Compact(widths)
+}
+
+// Scale is the filter that resizes video to w x h, for renditions and
+// everything judged against them: tune's references and encbench's
+// scaled samples. Lanczos keeps more detail than ffmpeg's default
+// bicubic, at a cost that's negligible next to encoding.
+func Scale(w, h uint64) string {
+	return fmt.Sprintf("scale=%d:%d:flags=lanczos", w, h)
 }
 
 // ToneMapSDR converts HDR (PQ or HLG) to BT.709 SDR.
@@ -346,7 +351,7 @@ func posterArgs(tone probe.Tone, fromHDR bool, format string, w, h uint64) []str
 	if tone == probe.SDR && fromHDR {
 		filters = append(filters, ToneMapSDR)
 	}
-	filters = append(filters, fmt.Sprintf("scale=%d:%d:flags=lanczos", w, h))
+	filters = append(filters, Scale(w, h))
 	pixFmt := map[bool]string{false: "yuv420p", true: "yuv420p10le"}[tone == probe.HDR]
 	if format == "jpg" {
 		pixFmt = "yuvj420p"

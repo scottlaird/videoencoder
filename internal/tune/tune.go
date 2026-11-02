@@ -177,7 +177,7 @@ func (tu *Tuner) makeReference(ctx context.Context, sample string, ref reference
 		return nil
 	}
 	// FFV1 is lossless, so the reference adds no error of its own.
-	vf := fmt.Sprintf("scale=%d:%d:flags=lanczos", ref.width, ref.height)
+	vf := plan.Scale(ref.width, ref.height)
 	if ref.toneMap {
 		vf = plan.ToneMapSDR + "," + vf
 	}
