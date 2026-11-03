@@ -118,6 +118,7 @@ Flags:
 |:--|:--|
 | `--config FILE` | Global config file (default `~/.config/videoencoder/config.yaml`) |
 | `--rebuild GLOB` | Rebuild matching outputs even if they're up to date: `'*'`, `'av1-*'`, `sdr/h264-1080`, `audio`, `'poster/*'` |
+| `--only GLOB` | Build only matching outputs, matched as `--rebuild` matches them, and stop: no packaging, pruning or publishing. For checking one rendition, such as `hdr/av1-2160`, after a change that leaves many stale. The next full render updates the stream. Works with `plan` too. |
 | `--outdir DIR` | Override `outdir` |
 | `--streamdir DIR` | Override `streamdir` |
 | `--thumbnails=false` | Skip seek thumbnails |
