@@ -103,6 +103,8 @@ func (tu *Tuner) Tune(ctx context.Context, r *config.Resolved, src string, vd pr
 	for enc, idx := range Anchors(targets, r.Tune.Anchors, scorer) {
 		for _, i := range idx {
 			t, hdrOut := forTone(targets[i], hdr)
+			// A rendition is tuned once per tone, so its logs say which.
+			log := slog.With("rendition", t.Name, "tone", toneName(hdrOut))
 			// SDR-only encoders tone-map HDR, as a render would, and are
 			// judged against a tone-mapped reference. The rest are judged
 			// with both sides tone-mapped, since VMAF is an SDR metric,
@@ -110,8 +112,8 @@ func (tu *Tuner) Tune(ctx context.Context, r *config.Resolved, src string, vd pr
 			toneMap := t.Encoder.SDROnly && hdr
 			model := models.forTarget(t, hdrOut)
 			if m := models.sdr.forHeight(t.Height); !hdrOut && m.HDR {
-				slog.Warn("HDR VMAF model can't judge an SDR rendition; using the built-in model; set tune.hdr.vmaf_model instead",
-					"rendition", t.Name, "model", m.Name())
+				log.Warn("HDR VMAF model can't judge an SDR rendition; using the built-in model; set tune.hdr.vmaf_model instead",
+					"model", m.Name())
 			}
 			prefilter := ""
 			if hdrOut && !model.HDR {
@@ -128,7 +130,7 @@ func (tu *Tuner) Tune(ctx context.Context, r *config.Resolved, src string, vd pr
 				reference: fmt.Sprintf("%dx%d tonemap=%v %s", ref.width, ref.height, toneMap, ref.transfer),
 				prefilter: prefilter, ffmpeg: tu.FFmpegVersion, scorer: scorer,
 			}
-			res, bitrate, err := tu.search(ctx, target(r, t, hdrOut), t, sample, sampleVD.Duration.Seconds(), ref, toneMap, prefilter, workdir, key, past)
+			res, bitrate, err := tu.search(ctx, log, target(r, t, hdrOut), t, sample, sampleVD.Duration.Seconds(), ref, toneMap, prefilter, workdir, key, past)
 			if err != nil {
 				return nil, fmt.Errorf("tuning %s: %w", t.Name, err)
 			}
@@ -172,6 +174,14 @@ type reference struct {
 	toneMap       bool   // tone-mapped to SDR from an HDR sample
 	// model is what renditions are scored with against it.
 	model bench.VMAFModel
+}
+
+// toneName is how logs name an SDR or HDR rendition.
+func toneName(hdr bool) string {
+	if hdr {
+		return "hdr"
+	}
+	return "sdr"
 }
 
 // forTone returns t as it is encoded from a source that is HDR or
@@ -318,7 +328,7 @@ func target(r *config.Resolved, t *plan.Target, hdr bool) float64 {
 // reaches goal. It returns the result and the bitrate of
 // that encode. Trials recorded in past under key are used instead of
 // encoding again, and new ones are recorded there.
-func (tu *Tuner) search(ctx context.Context, goal float64, t *plan.Target, sample string, seconds float64, ref reference, toneMap bool, prefilter, workdir string, key trialKey, past *results) (Result, float64, error) {
+func (tu *Tuner) search(ctx context.Context, log *slog.Logger, goal float64, t *plan.Target, sample string, seconds float64, ref reference, toneMap bool, prefilter, workdir string, key trialKey, past *results) (Result, float64, error) {
 	spec := qualitySpec(t.Encoder.Codec)
 	s := bench.NewSearch(spec.Steps(), spec.QualityToIndex(t.Quality))
 	// One step is worth less than a few seconds of sample can measure.
@@ -374,7 +384,7 @@ func (tu *Tuner) search(ctx context.Context, goal float64, t *plan.Target, sampl
 				Rendition: t.Name, Quality: spec.IndexToQuality(best), Bitrate: roundBitrate(p.bitrate),
 				VMAF: p.vmaf, Target: goal, Model: ref.model.Name(), Outcome: outcome, Encodes: encodes, Cached: len(seen) - encodes,
 			}
-			slog.Info("Tuned", "rendition", t.Name, "quality", res.Quality, "vmaf", p.vmaf,
+			log.Info("Tuned", "quality", res.Quality, "vmaf", p.vmaf,
 				"bitrate", FormatBitrate(res.Bitrate), "outcome", outcome, "encodes", encodes, "cached", res.Cached)
 			return res, p.bitrate, nil
 		}
@@ -393,7 +403,7 @@ func (tu *Tuner) search(ctx context.Context, goal float64, t *plan.Target, sampl
 			}
 		}
 		margin := p.vmaf - goal
-		slog.Info("Trial", "rendition", t.Name, "quality", q, "vmaf", p.vmaf, "pass", margin >= 0, "cached", cached)
+		log.Info("Trial", "quality", q, "vmaf", p.vmaf, "pass", margin >= 0, "cached", cached)
 		s.Observe(i, margin >= 0, margin)
 	}
 }
