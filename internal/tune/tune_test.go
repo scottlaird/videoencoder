@@ -370,3 +370,36 @@ func TestTuneHDRModel(t *testing.T) {
 		t.Error("ScoresHDR with the built-in model = true")
 	}
 }
+
+// argvRecorder records each command it's asked to run and writes its
+// output file.
+type argvRecorder struct{ argvs [][]string }
+
+func (r *argvRecorder) Exec(_ context.Context, argv []string) (bench.Measurement, error) {
+	r.argvs = append(r.argvs, argv)
+	return bench.Measurement{}, os.WriteFile(argv[len(argv)-1], []byte("media"), 0o644)
+}
+
+func TestMakeReferenceFormat(t *testing.T) {
+	tests := []struct {
+		toneMap bool
+		want    string // the -vf's last filter
+	}{
+		{false, plan.Scale(852, 480)},
+		{true, "format=gbrp16le"},
+	}
+	for _, tt := range tests {
+		r := &argvRecorder{}
+		tu := &Tuner{Exec: r, Threads: 1}
+		ref := reference{path: filepath.Join(t.TempDir(), "ref.mkv"), width: 852, height: 480, toneMap: tt.toneMap}
+		if err := tu.makeReference(context.Background(), "sample.mov", ref); err != nil {
+			t.Fatal(err)
+		}
+		argv := r.argvs[0]
+		vf := argv[slices.Index(argv, "-vf")+1]
+		filters := strings.Split(vf, ",")
+		if got := filters[len(filters)-1]; got != tt.want {
+			t.Errorf("toneMap %v: -vf ends with %q, want %q (-vf %s)", tt.toneMap, got, tt.want, vf)
+		}
+	}
+}
