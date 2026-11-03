@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -397,9 +398,27 @@ func TestTuneHDRSettings(t *testing.T) {
 	r.Tune.HDR = config.TuneHDR{TargetVMAF: 93, VMAFModel: model}
 	r.Renditions = map[string]*config.Rendition{"av1-1080": {TargetVMAF: 97, HDR: &config.RenditionHDR{TargetVMAF: 92}}}
 	vd := probe.VideoData{Width: 3840, Height: 2160, ColorTransfer: "smpte2084"}
+	var logs bytes.Buffer
+	defer slog.SetDefault(slog.Default())
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	results, err := tu.Tune(context.Background(), r, source(t), vd, targets, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Each trial says which tone it tuned.
+	seen := 0
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		if !strings.Contains(line, "msg=Trial") && !strings.Contains(line, "msg=Tuned") {
+			continue
+		}
+		seen++
+		hdrOut := !strings.Contains(line, "rendition=h264-480")
+		if want := "tone=" + toneName(hdrOut); !strings.Contains(line, want) {
+			t.Errorf("log line lacks %s: %s", want, line)
+		}
+	}
+	if seen == 0 {
+		t.Errorf("no Trial or Tuned log lines:\n%s", logs.String())
 	}
 	want := map[string]struct {
 		hdr    bool

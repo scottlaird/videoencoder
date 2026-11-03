@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -108,6 +109,7 @@ func tuneVideo(ctx context.Context, r *config.Resolved, adHoc bool, d deps) erro
 		// Each pass has its own scratch directory, since references are
 		// named by height alone.
 		pw := filepath.Join(work, p.label)
+		slog.Info("Tuning", "source", p.label, "renditions", len(p.targets))
 		results, err := tu.Tune(ctx, r, r.Sources[p.label], p.vd, p.targets, pw)
 		if err != nil {
 			return err
