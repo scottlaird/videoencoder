@@ -85,9 +85,10 @@ func TestFromConfig(t *testing.T) {
 		Renditions: map[string]*config.Rendition{
 			"h264-1080": {Encoder: "h264", Height: 1080, Quality: 18, Bitrate: "4M"},
 			"h264-720":  {Encoder: "h264", Height: 720, Quality: 18, Bitrate: "2M"},
-			"av1-1080":  {Encoder: "av1", Height: 1080, Quality: 31},
+			"av1-1080":  {Encoder: "av1", Height: 1080, Quality: 31, HDR: &config.RenditionHDR{Quality: new(25.0)}},
 		},
 	}
+	c.Renditions["h264-720"].HDR = &config.RenditionHDR{Bitrate: "1M"}
 	got, err := FromConfig(c)
 	if err != nil {
 		t.Fatal(err)
@@ -101,6 +102,18 @@ func TestFromConfig(t *testing.T) {
 	}
 	if got[2].Bitrate != 4000000 || got[2].Encoder.Codec != "libx264" {
 		t.Errorf("h264-1080 = %+v", got[2])
+	}
+	// HDR settings override the SDR ones field by field.
+	for i, want := range []struct {
+		quality float64
+		bitrate uint64
+	}{{25, 0}, {18, 1000000}, {18, 4000000}} {
+		if h := got[i].ForHDR(); h.Quality != want.quality || h.Bitrate != want.bitrate {
+			t.Errorf("%s ForHDR() quality %g bitrate %d, want %g, %d", got[i].Name, h.Quality, h.Bitrate, want.quality, want.bitrate)
+		}
+	}
+	if got[0].Quality != 31 {
+		t.Errorf("ForHDR changed av1-1080's SDR quality to %g", got[0].Quality)
 	}
 }
 

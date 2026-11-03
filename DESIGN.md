@@ -696,8 +696,17 @@ Combines the two: encbench's search and scoring, applied to the video
 being encoded, varying only the quality setting.
 
 - **Sample.** `tune.duration` (default 8 s) from `tune.start` (default
-  0) of the first SDR source, or the HDR source if there isn't one.
-  It's cut by stream copy, so it starts at a keyframe.
+  0) of the first SDR source, and the same of the first HDR source.
+  Each is cut by stream copy, so it starts at a keyframe.
+- **Tones.** SDR and HDR renditions are tuned apart, each on its own
+  source, because one quality setting doesn't fit both: at the same
+  CRF, AV1 HDR files came out about 0.65× the size of SDR ones, at a
+  slightly lower score, and an HDR model's scale isn't an SDR one's.
+  HDR results go into each rendition's `hdr.quality`, with
+  `tune.hdr`'s target and models. SDR-only encoders are tuned on the
+  SDR source, or on the HDR one tone-mapped if there isn't one. Unset
+  HDR settings follow the SDR ones, so a config without any renders
+  as before.
 - **Anchors.** Per encoder, the shortest and tallest renditions as
   filtered for the source (`tune.anchors: 3` adds the middle one). Each
   is encoded from the sample with its real arguments, but no bitrate
@@ -728,8 +737,8 @@ being encoded, varying only the quality setting.
   1.5× maxrate/bufsize then follows from it. The sample may be calmer
   than the rest of the video, so `tune.start` is worth pointing at a
   busy part.
-- **Output.** `quality`/`bitrate` are written into
-  `<name>.video.yaml` by editing the YAML node tree, so other settings
+- **Output.** `quality`/`bitrate` (under `hdr` for HDR results) are
+  written into `<name>.video.yaml` by editing the YAML node tree, so other settings
   and comments survive. Each value gets a comment such as `tuned
   2026-10-24: VMAF 95.1 (target 95)` or `interpolated by tune …`.
   A sidecar is created if needed, with `sources` for ad hoc videos.

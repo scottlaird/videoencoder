@@ -68,11 +68,12 @@ encoders:
     args: [-preset, "5", -pix_fmt, yuv420p10le]
 
 # How "videoencoder tune" picks rendition qualities: it encodes
-# duration seconds of a source from start (the SDR one if there is one,
-# or with an HDR vmaf_model the HDR one), searching each
+# duration seconds of each source from start (SDR renditions from the
+# SDR source, HDR ones from the HDR source), searching each
 # encoder's anchor renditions (shortest and tallest; 3 adds the middle)
 # for the quality setting that just reaches target_vmaf, interpolates
-# the rest, and writes quality and bitrate into the video's sidecar.
+# the rest, and writes quality and bitrate into the video's sidecar
+# (under hdr for HDR renditions).
 # Each rendition is scored against the sample at its own size (with
 # the 4K model at 2160p); HDR is tone-mapped to SDR for scoring. A
 # rendition's own target_vmaf overrides this one. Renditions with
@@ -86,13 +87,16 @@ encoders:
 # directory; vmaf_model_2160, if set, replaces it for 2160p and up.
 # Scores, and so target_vmaf, mean different things for each model. An
 # HDR model (one with a PQ conversion_target, like Netflix's
-# hdr_vmaf_v1.1.8) scores HDR sources as HDR, without tone-mapping them;
-# renditions of SDR-only encoders still use v0.
+# hdr_vmaf_v1.1.8) scores HDR as HDR, without tone-mapping it. hdr sets
+# target_vmaf and the models for HDR renditions; unset, they follow the
+# SDR ones.
 #
 #   tune:
-#     target_vmaf: 93
-#     vmaf_model: /opt/vmaf/hdr_vmaf_v1.1.8_3d0h.json
-#     vmaf_model_2160: /opt/vmaf/hdr_vmaf_v1.1.8_1d5h_2160.json
+#     target_vmaf: 95
+#     hdr:
+#       target_vmaf: 93
+#       vmaf_model: /opt/vmaf/hdr_vmaf_v1.1.8_3d0h.json
+#       vmaf_model_2160: /opt/vmaf/hdr_vmaf_v1.1.8_1d5h_2160.json
 tune:
   target_vmaf: 95
   start: 0s

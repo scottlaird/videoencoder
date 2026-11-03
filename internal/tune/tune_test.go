@@ -105,10 +105,10 @@ func tuneConfig() *config.Resolved {
 func TestTune(t *testing.T) {
 	av1 := config.Encoder{Codec: "libsvtav1", QualityFlag: "-crf", Args: []string{"-preset", "5"}}
 	targets := plan.Targets{
-		{Name: "av1-480", EncoderName: "av1", Encoder: av1, Width: 852, Height: 480, Quality: 28},
-		{Name: "av1-720", EncoderName: "av1", Encoder: av1, Width: 1280, Height: 720, Quality: 30},
-		{Name: "av1-1080", EncoderName: "av1", Encoder: av1, Width: 1920, Height: 1080, Quality: 31},
-		{Name: "av1-2160", EncoderName: "av1", Encoder: av1, Width: 3840, Height: 2160, Quality: 32},
+		{Name: "av1-480", EncoderName: "av1", Encoder: av1, Width: 852, Height: 480, Quality: 28, HDRQuality: 28},
+		{Name: "av1-720", EncoderName: "av1", Encoder: av1, Width: 1280, Height: 720, Quality: 30, HDRQuality: 30},
+		{Name: "av1-1080", EncoderName: "av1", Encoder: av1, Width: 1920, Height: 1080, Quality: 31, HDRQuality: 31},
+		{Name: "av1-2160", EncoderName: "av1", Encoder: av1, Width: 3840, Height: 2160, Quality: 32, HDRQuality: 32},
 	}
 	f := &fakeFFmpeg{encodes: map[string]int{}, quality: map[string]float64{}, height: map[string]uint64{}}
 	tu := &Tuner{Exec: f, Prober: fakeProber{}, Threads: 1}
@@ -304,9 +304,9 @@ func TestTuneHDRModel(t *testing.T) {
 	av1 := config.Encoder{Codec: "libsvtav1", QualityFlag: "-crf"}
 	h264 := config.Encoder{Codec: "libx264", QualityFlag: "-crf", SDROnly: true}
 	targets := plan.Targets{
-		{Name: "av1-480", EncoderName: "av1", Encoder: av1, Width: 852, Height: 480, Quality: 28},
-		{Name: "av1-1080", EncoderName: "av1", Encoder: av1, Width: 1920, Height: 1080, Quality: 30},
-		{Name: "h264-480", EncoderName: "h264", Encoder: h264, Width: 852, Height: 480, Quality: 23},
+		{Name: "av1-480", EncoderName: "av1", Encoder: av1, Width: 852, Height: 480, Quality: 28, HDRQuality: 28},
+		{Name: "av1-1080", EncoderName: "av1", Encoder: av1, Width: 1920, Height: 1080, Quality: 30, HDRQuality: 30},
+		{Name: "h264-480", EncoderName: "h264", Encoder: h264, Width: 852, Height: 480, Quality: 23, HDRQuality: 23},
 	}
 	src := source(t)
 	file := filepath.Join(t.TempDir(), ResultsFile)
@@ -366,14 +366,53 @@ func TestTuneHDRModel(t *testing.T) {
 	if f, got := run(sdrModel); len(f.prefilter) == 0 || got["av1-480"].Model != "vmaf_v1.0.16_3d0h" {
 		t.Errorf("SDR model: %d scorings, model %q; want fresh trials with vmaf_v1.0.16_3d0h", len(f.prefilter), got["av1-480"].Model)
 	}
-	if _, err := ScoresHDR(config.Tune{VMAFModel2160: model}); err != nil {
+	for name, want := range map[string]bool{"av1-480": true, "av1-1080": true, "h264-480": false} {
+		if got[name].HDR != want {
+			t.Errorf("%s HDR = %v, want %v", name, got[name].HDR, want)
+		}
+	}
+}
+
+// TestTuneHDRSettings checks that HDR renditions are tuned with tune's
+// HDR model and target, from their HDR quality, while SDR-only ones keep
+// the SDR settings.
+func TestTuneHDRSettings(t *testing.T) {
+	model := filepath.Join(t.TempDir(), "hdr_vmaf_v1.1.8_3d0h.json")
+	if err := os.WriteFile(model, []byte(`{"model_dict": {"conversion_target": {"colorspace": {"trc": "smpte2084"}}}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if hdr, _ := ScoresHDR(config.Tune{VMAFModel2160: model}); !hdr {
-		t.Error("ScoresHDR with an HDR 2160p model = false")
+	av1 := config.Encoder{Codec: "libsvtav1", QualityFlag: "-crf"}
+	h264 := config.Encoder{Codec: "libx264", QualityFlag: "-crf", SDROnly: true}
+	targets := plan.Targets{
+		{Name: "av1-480", EncoderName: "av1", Encoder: av1, Width: 852, Height: 480, Quality: 28, HDRQuality: 20},
+		{Name: "av1-1080", EncoderName: "av1", Encoder: av1, Width: 1920, Height: 1080, Quality: 30, HDRQuality: 22},
+		{Name: "h264-480", EncoderName: "h264", Encoder: h264, Width: 852, Height: 480, Quality: 23, HDRQuality: 10},
 	}
-	if hdr, _ := ScoresHDR(config.Tune{VMAFModel: config.BuiltinVMAFModel}); hdr {
-		t.Error("ScoresHDR with the built-in model = true")
+	f := &fakeFFmpeg{encodes: map[string]int{}, quality: map[string]float64{}, height: map[string]uint64{}}
+	tu := &Tuner{Exec: f, Prober: fakeProber{}, Threads: 1}
+	r := tuneConfig()
+	r.Tune.VMAFModel = config.BuiltinVMAFModel
+	r.Tune.HDR = config.TuneHDR{TargetVMAF: 93, VMAFModel: model}
+	r.Renditions = map[string]*config.Rendition{"av1-1080": {TargetVMAF: 97, HDR: &config.RenditionHDR{TargetVMAF: 92}}}
+	vd := probe.VideoData{Width: 3840, Height: 2160, ColorTransfer: "smpte2084"}
+	results, err := tu.Tune(context.Background(), r, source(t), vd, targets, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]struct {
+		hdr    bool
+		target float64
+		model  string
+	}{
+		"av1-480":  {true, 93, "hdr_vmaf_v1.1.8_3d0h"},
+		"av1-1080": {true, 92, "hdr_vmaf_v1.1.8_3d0h"},
+		"h264-480": {false, 95, ""},
+	}
+	for _, res := range results {
+		w := want[res.Rendition]
+		if res.HDR != w.hdr || res.Target != w.target || res.Model != w.model {
+			t.Errorf("%s: HDR %v, target %g, model %q; want %v, %g, %q", res.Rendition, res.HDR, res.Target, res.Model, w.hdr, w.target, w.model)
+		}
 	}
 }
 

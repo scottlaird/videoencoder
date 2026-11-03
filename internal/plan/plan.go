@@ -28,6 +28,18 @@ type Target struct {
 	Quality       float64
 	Bitrate       uint64
 	Args          []string
+	// HDRQuality and HDRBitrate replace Quality and Bitrate for HDR
+	// encodes; see ForHDR.
+	HDRQuality float64
+	HDRBitrate uint64
+}
+
+// ForHDR returns t as it encodes an HDR source to HDR, with its HDR
+// quality and bitrate.
+func (t *Target) ForHDR() *Target {
+	h := *t
+	h.Quality, h.Bitrate = t.HDRQuality, t.HDRBitrate
+	return &h
 }
 
 type Targets []*Target
@@ -42,6 +54,10 @@ func FromConfig(c *config.Config) (Targets, error) {
 		if err != nil {
 			return nil, fmt.Errorf("rendition %q: %w", name, err)
 		}
+		hdrBitrate, err := config.ParseBitrate(r.HDRBitrate())
+		if err != nil {
+			return nil, fmt.Errorf("rendition %q: hdr: %w", name, err)
+		}
 		t = append(t, &Target{
 			Name:        name,
 			EncoderName: r.Encoder,
@@ -50,6 +66,8 @@ func FromConfig(c *config.Config) (Targets, error) {
 			Quality:     r.Quality,
 			Bitrate:     bitrate,
 			Args:        r.Args,
+			HDRQuality:  r.HDRQuality(),
+			HDRBitrate:  hdrBitrate,
 		})
 	}
 	return t, nil

@@ -265,7 +265,11 @@ func prepare(ctx context.Context, r *config.Resolved, d deps) (*built, error) {
 			if toneMap && hasSDR {
 				continue
 			}
-			j := t.Job(src, r.Outdir, toneMap)
+			tt := t
+			if hdr && !toneMap {
+				tt = t.ForHDR()
+			}
+			j := tt.Job(src, r.Outdir, toneMap)
 			desc := fmt.Sprintf("%s/%s %dx%d", src.Label, t.Name, t.Width, t.Height)
 			if toneMap {
 				desc += " tone-mapped"
