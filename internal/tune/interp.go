@@ -13,20 +13,29 @@ import (
 )
 
 // Anchors returns, for each encoder, the indexes into targets of the
-// renditions to search: the shortest and tallest, plus the middle one
-// if n >= 3. targets must be ordered by encoder, then height, as
-// plan.FromConfig returns them.
-func Anchors(targets plan.Targets, n int) map[string][]int {
-	byEncoder := map[string][]int{}
+// renditions to search. scorer(i) names the VMAF model that scores
+// targets[i]; each model's shortest and tallest renditions are
+// anchors, plus the middle one if n >= 3, so no rendition is
+// interpolated across a change of model. Models score on their own
+// scales, so qualities found with one don't line up with another's:
+// interpolating 1440p between 480p and the 4K model's 2160p set it as
+// much as 25 CRF too high. targets must be ordered by encoder, then
+// height, as plan.FromConfig returns them.
+func Anchors(targets plan.Targets, n int, scorer func(i int) string) map[string][]int {
+	type group struct{ encoder, scorer string }
+	groups := map[group][]int{}
 	for i, t := range targets {
-		byEncoder[t.EncoderName] = append(byEncoder[t.EncoderName], i)
+		g := group{t.EncoderName, scorer(i)}
+		groups[g] = append(groups[g], i)
 	}
 	out := map[string][]int{}
-	for enc, idx := range byEncoder {
-		pick := []int{idx[0], idx[len(idx)-1]}
+	for g, idx := range groups {
+		out[g.encoder] = append(out[g.encoder], idx[0], idx[len(idx)-1])
 		if n >= 3 && len(idx) >= 3 {
-			pick = append(pick, idx[len(idx)/2])
+			out[g.encoder] = append(out[g.encoder], idx[len(idx)/2])
 		}
+	}
+	for enc, pick := range out {
 		slices.Sort(pick)
 		out[enc] = slices.Compact(pick)
 	}

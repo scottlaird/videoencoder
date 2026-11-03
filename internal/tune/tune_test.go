@@ -129,19 +129,21 @@ func TestTune(t *testing.T) {
 	if r := got["av1-2160"]; r.Quality != 29 || r.Interpolated {
 		t.Errorf("av1-2160 = %+v, want crf 29", r)
 	}
-	// The rest are interpolated in log height and rounded to the step.
-	if r := got["av1-1080"]; !r.Interpolated || r.Quality != 26 {
-		t.Errorf("av1-1080 = %+v, want interpolated crf 26", r)
+	// 1080p is the tallest rendition the 1080 model scores, so it's an
+	// anchor too, and the 4K model's 2160p isn't interpolated across.
+	if r := got["av1-1080"]; r.Interpolated || r.Quality != 24 {
+		t.Errorf("av1-1080 = %+v, want searched crf 24", r)
 	}
-	if r := got["av1-720"]; r.Target != 94 {
-		t.Errorf("av1-720 target = %v, want its own 94", r.Target)
+	// The rest are interpolated in log height and rounded to the step.
+	if r := got["av1-720"]; !r.Interpolated || r.Quality != 23 || r.Target != 94 {
+		t.Errorf("av1-720 = %+v, want interpolated crf 23 for its own target 94", r)
 	}
 	// Only the anchors were encoded, each in a handful of tries.
-	if f.encodes["720"] != 0 || f.encodes["1080"] != 0 || f.encodes["480"] == 0 || f.encodes["480"] > 6 {
+	if f.encodes["720"] != 0 || f.encodes["1080"] == 0 || f.encodes["480"] == 0 || f.encodes["480"] > 6 {
 		t.Errorf("encodes by height = %v", f.encodes)
 	}
 	// Each anchor is judged at its own size; HDR is tone-mapped first.
-	if !slices.Contains(f.scoredAt, "ref-480.mkv") || !slices.Contains(f.scoredAt, "ref-2160.mkv") || slices.Contains(f.scoredAt, "ref-1080.mkv") {
+	if !slices.Contains(f.scoredAt, "ref-480.mkv") || !slices.Contains(f.scoredAt, "ref-2160.mkv") || slices.Contains(f.scoredAt, "ref-720.mkv") {
 		t.Errorf("references used: %v", f.scoredAt)
 	}
 	if !strings.Contains(f.prefilter[0], "tonemap=") {
