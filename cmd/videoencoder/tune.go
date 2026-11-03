@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/scottlaird/videoencoder/internal/bench"
@@ -114,7 +115,11 @@ func tuneVideo(ctx context.Context, r *config.Resolved, adHoc bool, d deps) erro
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(d.stdout, "# %s: tuned on %s of %s from %s\n", r.Name, r.Tune.Duration, p.label, r.Tune.Start)
+		var ranges []string
+		for _, tr := range r.Tune.Ranges {
+			ranges = append(ranges, tr.String())
+		}
+		fmt.Fprintf(d.stdout, "# %s: tuned on %s of %s\n", r.Name, strings.Join(ranges, " and "), p.label)
 		for i, res := range results {
 			u := config.RenditionUpdate{Name: res.Rendition, Quality: res.Quality, HDR: res.HDR}
 			if p.targets[i].Encoder.CapBitrate {

@@ -165,7 +165,7 @@ func TestLoadBareSection(t *testing.T) {
 	write(t, filepath.Join(dir, "v"+SidecarSuffix), `
 sources: {sdr: v.mov}
 tune:
-#  duration: 30s
+#  ranges: [{start: 0s, duration: 30s}]
 renditions:
   av1-4320: null
 `)
@@ -177,8 +177,8 @@ renditions:
 	if err := r.Validate(); err != nil {
 		t.Errorf("Validate() = %v", err)
 	}
-	if got, want := r.Tune.Duration, "8s"; got != want {
-		t.Errorf("tune.duration = %q, want the default %q", got, want)
+	if got, want := r.Tune.Ranges, []TuneRange{{"0s", "8s"}}; !slices.Equal(got, want) {
+		t.Errorf("tune.ranges = %v, want the default %v", got, want)
 	}
 	if _, ok := r.Renditions["av1-4320"]; ok {
 		t.Error("rendition av1-4320 survived a null")
@@ -215,6 +215,26 @@ func TestLoadErrors(t *testing.T) {
 			name:    "HDR 2160p model without a base one",
 			files:   map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\ntune: {hdr: {vmaf_model_2160: m.json}}"},
 			wantErr: "vmaf_model_2160 needs vmaf_model",
+		},
+		{
+			name:    "old tune.duration",
+			files:   map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\ntune: {duration: 4s}"},
+			wantErr: "now ranges",
+		},
+		{
+			name:    "no tune ranges",
+			files:   map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\ntune: {ranges: []}"},
+			wantErr: "tune.ranges: at least one",
+		},
+		{
+			name:    "tune range without a start",
+			files:   map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\ntune: {ranges: [{start: 0s, duration: 4s}, {duration: 8s}]}"},
+			wantErr: "tune.ranges[1].start",
+		},
+		{
+			name:    "empty tune range",
+			files:   map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\ntune: {ranges: [{start: 30s, duration: 0s}]}"},
+			wantErr: "tune.ranges[0].duration: must be positive",
 		},
 		{
 			name:    "no sources",
