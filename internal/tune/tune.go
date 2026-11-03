@@ -248,7 +248,10 @@ func (tu *Tuner) makeReference(ctx context.Context, sample string, ref reference
 	// FFV1 is lossless, so the reference adds no error of its own.
 	vf := plan.Scale(ref.width, ref.height)
 	if ref.toneMap {
-		vf = plan.ToneMapSDR + "," + vf
+		// ToneMapSDR leaves float RGB, which FFV1 stores only at level
+		// 4 in ffmpeg 8 and up (older ones converted it silently), so
+		// convert to 16-bit RGB, which is lossless enough to score.
+		vf = plan.ToneMapSDR + "," + vf + ",format=gbrp16le"
 	}
 	if err := tu.ffmpeg(ctx, "-i", sample, "-vf", vf, "-c:v", "ffv1", "-level", "3", ref.path); err != nil {
 		return fmt.Errorf("making %dp reference: %w", ref.height, err)
