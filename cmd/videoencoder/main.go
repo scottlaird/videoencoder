@@ -53,6 +53,7 @@ type options struct {
 	publish    bool   // publish after rendering
 	prune      bool
 	rebuild    string // glob over slots, such as "*/av1-*"
+	only       string // glob over slots: build just these, without packaging
 	globalPath string
 	overrides  map[string]any
 	paths      []string
@@ -70,6 +71,7 @@ func parseArgs(args []string, stderr io.Writer) (options, error) {
 	fs.BoolVar(&o.prune, "prune", false, "when publishing, delete objects that are no longer part of the stream")
 	to := fs.String("to", "", "override publish.to: comma-separated target names")
 	fs.StringVar(&o.rebuild, "rebuild", "", `rebuild matching outputs even if up to date: "*" for all, "av1-*", "hdr/h264-1080", "audio", "poster/*"`)
+	fs.StringVar(&o.only, "only", "", `build only matching outputs, as --rebuild matches them, and skip packaging and publishing: "hdr/av1-2160"`)
 	outdir := fs.String("outdir", "", "override outdir: directory for intermediate renditions")
 	streamdir := fs.String("streamdir", "", "override streamdir: directory for the finished stream")
 	thumbnails := fs.Bool("thumbnails", true, "override thumbnails.enabled: add seek thumbnails to the stream")
@@ -94,6 +96,9 @@ func parseArgs(args []string, stderr io.Writer) (options, error) {
 			o.overrides["publish"] = map[string]any{"to": names}
 		}
 	})
+	if o.only != "" && o.mode != "render" && o.mode != "plan" {
+		return o, fmt.Errorf("--only works with render and plan, not %s", o.mode)
+	}
 	o.paths = fs.Args()
 	if len(o.paths) == 0 {
 		o.paths = []string{"."}
@@ -176,14 +181,16 @@ func run(ctx context.Context, o options, d deps) error {
 		}
 		switch o.mode {
 		case "plan":
-			err = printPlan(ctx, r, d)
+			err = printPlan(ctx, r, d, o.only)
 		case "publish":
 			err = publishVideo(ctx, r, o.prune)
 		case "tune":
 			err = tuneVideo(ctx, r, it.adHoc, d)
 		default:
-			err = render(ctx, r, d, o.rebuild)
-			if err == nil && o.publish {
+			err = render(ctx, r, d, o.rebuild, o.only)
+			// With --only the stream wasn't updated, so there's nothing
+			// new to publish.
+			if err == nil && o.publish && o.only == "" {
 				err = publishVideo(ctx, r, o.prune)
 			}
 		}
@@ -298,25 +305,65 @@ func prepare(ctx context.Context, r *config.Resolved, d deps) (*built, error) {
 	return b, err
 }
 
-// forced reports whether the --rebuild glob matches j's slot. A glob
-// without a "/" matches the part after the source label, so "av1-*"
-// covers every source's AV1 renditions and "*" covers everything.
+// forced reports whether the --rebuild glob matches j's slot.
 func forced(rebuild string, j *ffmpeg.Job) bool {
-	if rebuild == "" {
-		return false
-	}
-	name := j.Slot
-	if !strings.Contains(rebuild, "/") {
+	return rebuild != "" && matches(rebuild, j.Slot)
+}
+
+// matches reports whether glob matches slot. A glob without a "/"
+// matches the part after the source label, so "av1-*" covers every
+// source's AV1 renditions and "*" covers everything.
+func matches(glob, slot string) bool {
+	name := slot
+	if !strings.Contains(glob, "/") {
 		name = path.Base(name)
 	}
-	ok, _ := path.Match(rebuild, name)
+	ok, _ := path.Match(glob, name)
 	return ok
 }
 
-func render(ctx context.Context, r *config.Resolved, d deps, rebuild string) error {
+// restrict drops the outputs whose slots don't match the --only glob,
+// returning an error if none is left.
+func (b *built) restrict(only string) error {
+	drop := func(slot string) bool { return !matches(only, slot) }
+	n := 0
+	for i, js := range b.perSource {
+		b.perSource[i] = slices.DeleteFunc(slices.Clone(js), func(j *ffmpeg.Job) bool { return drop(j.Slot) })
+		n += len(b.perSource[i])
+	}
+	if b.audio != nil && drop(b.audio.Slot) {
+		b.audio = nil
+	}
+	if b.thumbs != nil && drop(b.thumbs.Slot) {
+		b.thumbs = nil
+	}
+	b.posters = slices.DeleteFunc(b.posters, func(p plan.Poster) bool { return drop(p.Job.Slot) })
+	b.gainmaps = slices.DeleteFunc(b.gainmaps, func(g plan.GainMapPoster) bool { return drop(g.Slot) })
+	if b.audio != nil {
+		n++
+	}
+	if b.thumbs != nil {
+		n++
+	}
+	if n += len(b.posters) + len(b.gainmaps); n == 0 {
+		return fmt.Errorf("--only %q matches no outputs", only)
+	}
+	return nil
+}
+
+// render builds r's stale outputs and packages them into its stream.
+// With only, it builds just the outputs that glob matches and stops
+// there: packaging needs every rendition, and pruning would delete the
+// ones left out. The next full render updates the stream.
+func render(ctx context.Context, r *config.Resolved, d deps, rebuild, only string) error {
 	b, err := prepare(ctx, r, d)
 	if err != nil {
 		return err
+	}
+	if only != "" {
+		if err := b.restrict(only); err != nil {
+			return err
+		}
 	}
 	slog.Info("Source", "video", r.Name, "file", b.sources[0].Path, "video", fmt.Sprintf("%+v", b.vd))
 
@@ -352,6 +399,10 @@ func render(ctx context.Context, r *config.Resolved, d deps, rebuild string) err
 	}
 	if err := buildGainMaps(ctx, d, b, rebuild); err != nil {
 		return fmt.Errorf("making gain-mapped posters: %w", err)
+	}
+	if only != "" {
+		slog.Info("Built only matching outputs; the stream is unchanged", "video", r.Name, "only", only)
+		return nil
 	}
 
 	p := &pack.Packager{Runner: d.runner, Prober: d.prober}
@@ -417,7 +468,7 @@ func runPosters(ctx context.Context, d deps, b *built, rebuild string) error {
 	return nil
 }
 
-func printPlan(ctx context.Context, r *config.Resolved, d deps) error {
+func printPlan(ctx context.Context, r *config.Resolved, d deps, only string) error {
 	w := d.stdout
 	fmt.Fprintf(w, "# %s in %s\n", r.Name, r.Dir)
 	merged, err := yaml.Dump(r.Merged)
@@ -429,6 +480,11 @@ func printPlan(ctx context.Context, r *config.Resolved, d deps) error {
 	b, err := prepare(ctx, r, d)
 	if err != nil {
 		return err
+	}
+	if only != "" {
+		if err := b.restrict(only); err != nil {
+			return err
+		}
 	}
 	fmt.Fprintln(w, "# outputs:")
 	for _, j := range b.all() {

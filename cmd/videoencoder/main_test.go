@@ -67,6 +67,8 @@ func TestParseArgs(t *testing.T) {
 			overrides: map[string]any{"streamdir": "/s"},
 		},
 		{args: []string{"--nope"}, wantErr: true},
+		{args: []string{"plan", "--only", "av1-*"}, mode: "plan", paths: []string{"."}, overrides: map[string]any{}},
+		{args: []string{"tune", "--only", "av1-*"}, wantErr: true},
 	}
 	for _, tt := range tests {
 		got, err := parseArgs(tt.args, io.Discard)
@@ -802,5 +804,81 @@ renditions: {h264-720: null, h264-1080: null, h265-480: null, h265-720: null, h2
 	}
 	if len(want) != 0 {
 		t.Errorf("no jobs for %v", slices.Sorted(maps.Keys(want)))
+	}
+}
+
+// TestOnly checks that --only builds just the matching stale outputs
+// and leaves the stream alone, so the rest stay stale for the next full
+// render.
+func TestOnly(t *testing.T) {
+	requireTools(t, "ffmpeg", "ffprobe", "packager")
+	dir := t.TempDir()
+	makeClip(t, filepath.Join(dir, "v.mov"))
+	sidecar := filepath.Join(dir, "v.video.yaml")
+	ladder := func(q int) []byte {
+		return fmt.Appendf(nil, `
+sources: {main: v.mov}
+renditions: {h264-720: null, h264-1080: null, h265-480: null, h265-720: null, h265-1080: null,
+  h265-1440: null, h265-2160: null, av1-720: null, av1-1080: null, av1-1440: null, av1-2160: null,
+  av1-3240: null, av1-4320: null, h264-480: {quality: %d}, av1-480: {quality: %d}}
+`, q, q+10)
+	}
+	if err := os.WriteFile(sidecar, ladder(23), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o, err := parseArgs([]string{"--config", "", dir}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, runner := testDeps(io.Discard)
+	if err := run(context.Background(), o, d); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	streamdir := filepath.Join(dir, "stream", "v")
+	before := hashMedia(t, streamdir)
+
+	// Change both renditions, then build only one.
+	if err := os.WriteFile(sidecar, ladder(25), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if o, err = parseArgs([]string{"--config", "", "--only", "av1-*", dir}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	runner.calls = map[string]int{}
+	if err := run(context.Background(), o, d); err != nil {
+		t.Fatalf("--only run: %v", err)
+	}
+	if got := runner.calls["ffmpeg"]; got != 1 {
+		t.Errorf("--only run: %d ffmpeg calls, want 1", got)
+	}
+	if got := runner.calls["packager"]; got != 0 {
+		t.Errorf("--only run packaged the stream (%d packager calls)", got)
+	}
+	if after := hashMedia(t, streamdir); !maps.Equal(before, after) {
+		t.Errorf("--only changed the stream:\n before %v\n after  %v", before, after)
+	}
+
+	// The other rendition is still stale.
+	var out bytes.Buffer
+	d.stdout = &out
+	o.mode, o.only = "plan", ""
+	if err := run(context.Background(), o, d); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"main/h264-480 320x240 -> h264-480.main.", "main/av1-480 320x240 -> av1-480.main."} {
+		i := strings.Index(out.String(), want)
+		if i < 0 {
+			t.Fatalf("plan lacks %q:\n%s", want, out.String())
+		}
+		line, _, _ := strings.Cut(out.String()[i:], "\n")
+		if stale := strings.HasSuffix(line, "settings changed"); stale != strings.Contains(want, "h264") {
+			t.Errorf("plan: %s", line)
+		}
+	}
+
+	// A glob that matches nothing is an error, not a no-op.
+	o.mode, o.only = "render", "vp9-*"
+	if err := run(context.Background(), o, d); err == nil || !strings.Contains(err.Error(), "matches no outputs") {
+		t.Errorf("--only vp9-*: err = %v, want no matches", err)
 	}
 }
