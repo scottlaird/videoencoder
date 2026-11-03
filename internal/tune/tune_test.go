@@ -298,7 +298,7 @@ func TestWithoutQuality(t *testing.T) {
 // model. Its trials don't share a cache with the built-in model's.
 func TestTuneHDRModel(t *testing.T) {
 	model := filepath.Join(t.TempDir(), "hdr_vmaf_v1.1.8_3d0h.json")
-	if err := os.WriteFile(model, []byte(`{"model_dict": {"conversion_target": {"colorspace": {"trc": "smpte2084"}}}}`), 0o644); err != nil {
+	if err := os.WriteFile(model, []byte(`{"model_dict": {"conversion_target": {"colorspace": {"trc": "smpte2084"}, "resolution": {"display": 1080}}}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	av1 := config.Encoder{Codec: "libsvtav1", QualityFlag: "-crf"}
@@ -337,9 +337,15 @@ func TestTuneHDRModel(t *testing.T) {
 	}
 	for i, g := range f.prefilter {
 		sdr := strings.HasSuffix(f.scoredAt[i], "-sdr.mkv")
-		hdrScored := strings.Contains(g, "path="+model) && strings.Contains(g, "m=ictcp") && !strings.Contains(g, "tonemap=")
+		// libvmaf gets a copy of the model without its
+		// conversion_target, which the filtergraph carries out.
+		hdrScored := strings.Contains(g, ".model.json") && strings.Contains(g, "m=ictcp") && !strings.Contains(g, "tonemap=")
 		if sdr == hdrScored || sdr != strings.Contains(g, "version=vmaf_v0.6.1") {
 			t.Errorf("against %s: scored with %q", f.scoredAt[i], g)
+		}
+		// Scaled to the model's 1080-line display.
+		if want := strings.HasSuffix(f.scoredAt[i], "ref-480.mkv"); want != strings.Contains(g, "zscale=w=1918:h=1080:f=bicubic:") {
+			t.Errorf("against %s: display scaling %v, want %v, in %q", f.scoredAt[i], !want, want, g)
 		}
 	}
 	for name, want := range map[string]string{"av1-480": "hdr_vmaf_v1.1.8_3d0h", "av1-1080": "hdr_vmaf_v1.1.8_3d0h", "h264-480": ""} {
