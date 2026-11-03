@@ -87,8 +87,9 @@ func outlier(v, median, margin float64) bool {
 }
 
 // bestByPair finds, for every sample and current flagset, the passing
-// encode with the worst quality setting under the current criteria.
-func bestByPair(c *Config, results *Results) map[pair]Row {
+// encode with the worst quality setting under the current criteria,
+// among encodes scored as sc says the sample is.
+func bestByPair(c *Config, results *Results, sc Scorings) map[pair]Row {
 	byKey := map[string]*Flagset{}
 	for _, name := range c.FlagsetNames() {
 		byKey[flagsetKey(c.Flagsets[name])] = c.Flagsets[name]
@@ -96,7 +97,10 @@ func bestByPair(c *Config, results *Results) map[pair]Row {
 	best := map[pair]Row{}
 	for _, r := range results.Rows {
 		fs, ok := byKey[r.FlagsetKey]
-		if !ok || r.Scorer != scorer || c.margin(r.Metrics) < 0 {
+		if !ok {
+			continue
+		}
+		if s := sc.of(c, r.Sample); r.Scorer != s.Scorer || c.margin(r.Metrics, s.Target) < 0 {
 			continue
 		}
 		p := pair{r.Sample, r.FlagsetKey}
@@ -109,21 +113,22 @@ func bestByPair(c *Config, results *Results) map[pair]Row {
 }
 
 // Bests returns the answers for the current flagsets, sorted by sample
-// and then by size.
-func Bests(c *Config, results *Results) []Best {
+// and then by size. sc says how each sample is judged; see
+// Bench.Scorings.
+func Bests(c *Config, results *Results, sc Scorings) []Best {
 	names := map[string]string{}
 	for _, name := range c.FlagsetNames() {
 		names[flagsetKey(c.Flagsets[name])] = name
 	}
 	counts := map[pair]int{}
 	for _, r := range results.Rows {
-		if r.Scorer == scorer {
+		if r.Scorer == sc.of(c, r.Sample).Scorer {
 			counts[pair{r.Sample, r.FlagsetKey}]++
 		}
 	}
 
 	var out []Best
-	for p, r := range bestByPair(c, results) {
+	for p, r := range bestByPair(c, results, sc) {
 		name := names[p.fkey]
 		q := c.Flagsets[name].Quality
 		outcome := Found
@@ -146,14 +151,14 @@ var bestColumns = []string{
 }
 
 // WriteBest rewrites best.csv from the log.
-func WriteBest(path string, c *Config, results *Results) error {
+func WriteBest(path string, c *Config, results *Results, sc Scorings) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
 	w := csv.NewWriter(f)
 	w.Write(bestColumns)
-	for _, b := range Bests(c, results) {
+	for _, b := range Bests(c, results, sc) {
 		m := b.Metrics
 		w.Write([]string{
 			b.Sample, b.Name, b.Encoder, b.Args, b.QualityFlag, ftoa(b.Quality), b.Outcome.String(),
@@ -171,9 +176,9 @@ func WriteBest(path string, c *Config, results *Results) error {
 }
 
 // Report writes the answers as Markdown tables, one per sample.
-func Report(w io.Writer, c *Config, results *Results) {
+func Report(w io.Writer, c *Config, results *Results, sc Scorings) {
 	sample := ""
-	for _, b := range Bests(c, results) {
+	for _, b := range Bests(c, results, sc) {
 		if b.Sample != sample {
 			sample = b.Sample
 			fmt.Fprintf(w, "\n### %s\n\n", sample)

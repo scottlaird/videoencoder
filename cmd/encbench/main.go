@@ -71,7 +71,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		bench.Report(stdout, cfg, results)
+		sc, err := scorings(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		bench.Report(stdout, cfg, results, sc)
 		return nil
 	case "prune":
 		fs := flag.NewFlagSet("prune", flag.ContinueOnError)
@@ -80,7 +84,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if err := fs.Parse(rest); err != nil {
 			return err
 		}
-		return prune(cfg, *dryRun, stdout)
+		return prune(ctx, cfg, *dryRun, stdout)
 	}
 	global.Usage()
 	return fmt.Errorf("unknown command %q", cmd)
@@ -114,16 +118,27 @@ func runCmd(ctx context.Context, cfg *bench.Config, args []string, stderr io.Wri
 	return b.Run(ctx)
 }
 
+// scorings says how each sample is judged, which picks the logged
+// encodes that count.
+func scorings(ctx context.Context, cfg *bench.Config) (bench.Scorings, error) {
+	b := &bench.Bench{Cfg: cfg, Prober: probe.FFProbe{}}
+	return b.Scorings(ctx)
+}
+
 // prune deletes kept encodes that are no longer an answer for a
 // current sample and flagset.
-func prune(cfg *bench.Config, dryRun bool, stdout io.Writer) error {
+func prune(ctx context.Context, cfg *bench.Config, dryRun bool, stdout io.Writer) error {
 	results, err := bench.LoadResults(filepath.Join(cfg.Workdir, "results.csv"))
+	if err != nil {
+		return err
+	}
+	sc, err := scorings(ctx, cfg)
 	if err != nil {
 		return err
 	}
 	keepDir := filepath.Join(cfg.Workdir, "keep")
 	wanted := map[string]bool{}
-	for _, b := range bench.Bests(cfg, results) {
+	for _, b := range bench.Bests(cfg, results, sc) {
 		wanted[bench.KeeperPath(keepDir, b.Sample, b.Name, b.Quality)] = true
 	}
 	kept, err := filepath.Glob(filepath.Join(keepDir, "*", "*.mp4"))

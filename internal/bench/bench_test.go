@@ -73,6 +73,9 @@ flagsets:
 		{name: "unknown encoder", yaml: "samples: s\nflagsets: {a: {args: [-c:v, mystery]}}", wantErr: "quality.flag"},
 		{name: "quality flag in args", yaml: "samples: s\nflagsets: {a: {args: [-c:v, libx265, -crf, '20']}}", wantErr: "must not contain"},
 		{name: "empty range", yaml: "samples: s\nflagsets: {a: {args: [-c:v, libx265], quality: {min: 30, max: 20}}}", wantErr: "quality.max"},
+		{name: "2160 model alone", yaml: "samples: s\nvmaf_model_2160: m.json\nflagsets: {a: {args: [-c:v, libx265]}}", wantErr: "needs vmaf_model"},
+		{name: "missing model", yaml: "samples: s\nvmaf_model: missing.json\nflagsets: {a: {args: [-c:v, libx265]}}", wantErr: "missing.json"},
+		{name: "HDR target out of range", yaml: "samples: s\nhdr: {target_vmaf: 120}\nflagsets: {a: {args: [-c:v, libx265]}}", wantErr: "hdr.target_vmaf"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -332,7 +335,7 @@ func TestBenchRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bests := Bests(b.Cfg, results)
+	bests := Bests(b.Cfg, results, nil)
 	if len(bests) != 2 {
 		t.Fatalf("got %d answers, want 2", len(bests))
 	}
@@ -417,7 +420,7 @@ func TestBenchColorLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	results, _ := LoadResults(filepath.Join(dir, "work", "results.csv"))
-	if bests := Bests(c, results); len(bests) != 0 {
+	if bests := Bests(c, results, nil); len(bests) != 0 {
 		t.Errorf("got answers %+v despite the color limit", bests)
 	}
 }
@@ -435,7 +438,7 @@ func TestBenchBrokenFlagset(t *testing.T) {
 		t.Fatalf("Run() = %v; a broken flagset should not stop the others", err)
 	}
 	results, _ := LoadResults(filepath.Join(dir, "work", "results.csv"))
-	if bests := Bests(c, results); len(bests) != 1 || bests[0].Name != "fine" {
+	if bests := Bests(c, results, nil); len(bests) != 1 || bests[0].Name != "fine" {
 		t.Errorf("answers = %+v, want just fine", bests)
 	}
 }
@@ -486,7 +489,7 @@ func TestBenchScales(t *testing.T) {
 	}
 	results, _ := LoadResults(filepath.Join(dir, "work", "results.csv"))
 	var names []string
-	for _, best := range Bests(c, results) {
+	for _, best := range Bests(c, results, nil) {
 		names = append(names, best.Sample)
 	}
 	slices.Sort(names)
@@ -528,7 +531,7 @@ func TestBenchSDROnly(t *testing.T) {
 	}
 	results, _ := LoadResults(filepath.Join(dir, "work", "results.csv"))
 	var got []string
-	for _, best := range Bests(c, results) {
+	for _, best := range Bests(c, results, nil) {
 		got = append(got, best.Name+" "+best.Sample)
 	}
 	slices.Sort(got)
@@ -571,7 +574,7 @@ func TestBenchReferences(t *testing.T) {
 	if fake.downscales != 2 {
 		t.Errorf("made %d downscaled copies, want 2", fake.downscales)
 	}
-	if n := len(Bests(c, results)); n != 2 {
+	if n := len(Bests(c, results, nil)); n != 2 {
 		t.Errorf("%d answers, want 2", n)
 	}
 }
@@ -703,7 +706,7 @@ func TestBenchColorShiftLimit(t *testing.T) {
 			t.Fatal(err)
 		}
 		results, _ := LoadResults(filepath.Join(dir, "work", "results.csv"))
-		if got := len(Bests(c, results)); got != tc.answers {
+		if got := len(Bests(c, results, nil)); got != tc.answers {
 			t.Errorf("tint %d: %d answers, want %d", tc.tint, got, tc.answers)
 		}
 		if len(results.Rows) > 0 && results.Rows[0].Scorer != scorer {
@@ -792,7 +795,7 @@ func TestOldScorerRowsIgnored(t *testing.T) {
 		t.Errorf("old row: scorer %q, color shift %v", row.Scorer, row.Metrics.ColorShiftP99)
 	}
 	c := &Config{TargetVMAF: 95, Flagsets: map[string]*Flagset{"x": {Args: []string{"-c:v", "libx265"}, Quality: Quality{Flag: "-crf"}}}}
-	if len(bestByPair(c, r)) != 0 {
+	if len(bestByPair(c, r, nil)) != 0 {
 		t.Error("an old-scorer row counted as an answer")
 	}
 }
@@ -819,5 +822,90 @@ func TestFlagColor(t *testing.T) {
 	}
 	if !maps.Equal(got, want) {
 		t.Errorf("flags = %v, want %v", got, want)
+	}
+}
+
+func TestBenchVMAFModels(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "samples", "big.mov"), "8k hdr")
+	writeFile(t, filepath.Join(dir, "samples", "hd.mov"), "1080p sdr")
+	writeFile(t, filepath.Join(dir, "sdr4k.json"), sdrModel)
+	writeFile(t, filepath.Join(dir, "hdr.json"), hdrModel)
+	path := filepath.Join(dir, "bench.yaml")
+	writeFile(t, path, `
+samples: samples
+workdir: work
+scales: [1080, 2160]
+vmaf_model: v0
+vmaf_model_2160: sdr4k.json
+hdr: {target_vmaf: 90, vmaf_model: hdr.json}
+flagsets:
+  x: {args: [-c:v, libx265]}
+`)
+	c, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := filepath.Join(dir, "bad.yaml")
+	writeFile(t, bad, "samples: samples\nvmaf_model: hdr.json\nflagsets: {x: {args: [-c:v, libx265]}}")
+	if _, err := LoadConfig(bad); err == nil || !strings.Contains(err.Error(), "hdr.vmaf_model") {
+		t.Errorf("LoadConfig with an HDR vmaf_model = %v, want an error pointing at hdr.vmaf_model", err)
+	}
+	ctx := context.Background()
+	fake := newFake(18.7)
+	b := &Bench{Cfg: c, Exec: fake, Prober: sizedProber{}}
+	if err := b.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range fake.graphs {
+		hdr := strings.Contains(g, "m=ictcp")
+		if strings.Contains(g, "tonemap=") || hdr == strings.Contains(g, "version=vmaf_v0.6.1") {
+			t.Errorf("scoring graph %s: want HDR samples scored as HDR with hdr.json, SDR ones with the built-in model", g)
+		}
+	}
+
+	sc, err := b.Scorings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sc["hd.mov"]; got.Scorer != scorer || got.Target != 95 {
+		t.Errorf("hd.mov scoring = %q target %v, want %q target 95", got.Scorer, got.Target, scorer)
+	}
+	if got := sc["big@2160p.mov"]; !strings.HasPrefix(got.Scorer, scorer+" model=") || got.Target != 90 {
+		t.Errorf("big@2160p.mov scoring = %q target %v, want hdr.json's at 90", got.Scorer, got.Target)
+	}
+	results, _ := LoadResults(filepath.Join(dir, "work", "results.csv"))
+	answers := func(sc Scorings) map[string]float64 {
+		got := map[string]float64{}
+		for _, best := range Bests(c, results, sc) {
+			got[best.Sample] = best.Quality
+		}
+		return got
+	}
+	// A 5-point lower target allows 10 more CRF in the fake.
+	want := map[string]float64{"hd.mov": 18.7, "big@1080p.mov": 28.7, "big@2160p.mov": 28.7}
+	if got := answers(sc); !maps.Equal(got, want) {
+		t.Errorf("answers = %v, want %v", got, want)
+	}
+	// Judged as built-in SDR, the HDR samples' encodes don't count.
+	if got := answers(nil); !maps.Equal(got, map[string]float64{"hd.mov": 18.7}) {
+		t.Errorf("answers without scorings = %v, want hd.mov's only", got)
+	}
+
+	// Back on the built-in models, the HDR samples are searched again.
+	c.HDR = HDRScoring{}
+	c.hdrModels = c.sdrModels
+	c.sdrModels.uhd = VMAFModel{}
+	fake.encodes = nil
+	if err := b.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range fake.encodes {
+		if strings.HasPrefix(e, "hd") {
+			t.Errorf("re-encoded %s, whose scoring didn't change", e)
+		}
+	}
+	if len(fake.encodes) == 0 {
+		t.Error("HDR samples weren't searched again with the built-in model")
 	}
 }

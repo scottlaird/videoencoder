@@ -320,9 +320,10 @@ func flagsetKey(f *Flagset) string {
 	return hashKey(append([]string{"flagset/v1", f.Quality.Flag}, f.Args...)...)
 }
 
-// encodeKey identifies one encode. The scoring method is versioned so
-// that changing how scores are computed reruns everything.
-func encodeKey(sampleID, fkey string, quality float64) string {
+// encodeKey identifies one encode and how it was scored (see
+// Scoring.Scorer), so that changing how scores are computed reruns
+// everything.
+func encodeKey(scorer, sampleID, fkey string, quality float64) string {
 	return hashKey("encode/v1", "score/"+scorer, sampleID, fkey, ftoa(quality))
 }
 
