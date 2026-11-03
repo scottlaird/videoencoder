@@ -362,10 +362,16 @@ tune:
 An HDR model, one whose JSON has a PQ `conversion_target`, judges HDR
 as HDR. Tune samples the HDR source instead of the SDR one, and
 converts both sides to the PQ ICtCp 4:2:0 16-bit pictures the model
-expects instead of tone-mapping them. libvmaf 3.2 doesn't do that
-conversion itself. SDR-only encoders' renditions, which an HDR model
-can't judge, fall back to `v0`. These models are clipped to 0–100,
-like the others.
+expects instead of tone-mapping them. Both are also scaled to the
+model's display height (its `resolution.display`, 1080 or 2160), so a
+480p rendition is judged as it looks on a 1080p screen: bicubic to
+enlarge, lanczos to shrink, as libvmaf does it. ffmpeg does all of
+this, and libvmaf is given a copy of the model without its
+`conversion_target`. libvmaf 3.2 ignores it, and newer versions act on
+it only when built with zimg, which static ffmpeg builds often aren't;
+this way scores are the same with any of them. SDR-only encoders'
+renditions, which an HDR model can't judge, fall back to `v0`. These
+models are clipped to 0–100, like the others.
 
 Three kinds of rendition are left as configured. Ones marked
 `tune: false` are useful for fixed rungs, such as a bitrate-capped one

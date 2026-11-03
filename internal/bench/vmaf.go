@@ -159,9 +159,20 @@ func Score(ctx context.Context, e Executor, distorted, reference string, width, 
 	vmafConv := ""
 	if model.HDR {
 		var err error
-		if vmafConv, err = hdrConversion(transfer); err != nil {
+		if vmafConv, err = hdrConversion(transfer, width, height, model.Display); err != nil {
 			return Metrics{}, err
 		}
+	}
+	if model.stripped != nil {
+		p := filepath.Join(tmpDir, name+".model.json")
+		if strings.ContainsAny(p, "|'") {
+			return Metrics{}, fmt.Errorf("scoring: scratch path %s can't contain | or '", p)
+		}
+		if err := os.WriteFile(p, model.stripped, 0o644); err != nil {
+			return Metrics{}, fmt.Errorf("scoring: %w", err)
+		}
+		defer os.Remove(p)
+		model.Path = p
 	}
 	logPath := filepath.Join(tmpDir, name+".vmaf.json")
 	colorLogPath := filepath.Join(tmpDir, name+".ciede.json")

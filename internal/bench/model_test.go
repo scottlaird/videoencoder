@@ -1,6 +1,7 @@
 package bench
 
 import (
+	"encoding/json"
 	"math"
 	"os"
 	"path/filepath"
@@ -60,7 +61,7 @@ func TestLoadVMAFModel(t *testing.T) {
 
 func TestScoreArgvModel(t *testing.T) {
 	m := VMAFModel{Path: "/models/a:b/hdr.json", HDR: true}
-	conv, err := hdrConversion("smpte2084")
+	conv, err := hdrConversion("smpte2084", 1920, 1080, 1080)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,10 +83,10 @@ func TestScoreArgvModel(t *testing.T) {
 		t.Errorf("filtergraph %q converts the CIEDE2000 input", graph)
 	}
 
-	if _, err := hdrConversion("bt709"); err == nil {
+	if _, err := hdrConversion("bt709", 1920, 1080, 0); err == nil {
 		t.Error("hdrConversion(bt709) = nil error, want one")
 	}
-	if c, err := hdrConversion("arib-std-b67"); err != nil || !strings.Contains(c, "tin=arib-std-b67") {
+	if c, err := hdrConversion("arib-std-b67", 1920, 1080, 0); err != nil || !strings.Contains(c, "tin=arib-std-b67") {
 		t.Errorf("hdrConversion(arib-std-b67) = %q, %v", c, err)
 	}
 }
@@ -100,5 +101,84 @@ func TestParseVMAFLogWithoutNeg(t *testing.T) {
 	}
 	if got.VMAF != 93 || !math.IsNaN(got.VMAFNeg) {
 		t.Errorf("VMAF %v, VMAFNeg %v; want 93 and NaN", got.VMAF, got.VMAFNeg)
+	}
+}
+
+func TestLoadVMAFModelConversionTarget(t *testing.T) {
+	body := `{"param_dict": {"C": 4.0}, "model_dict": {"model_type": "LIBSVMNUSVR",
+	  "conversion_target": {"colorspace": {"trc": "smpte2084"}, "resolution": {"display": 1080}},
+	  "feature_names": ["a", "b"]}}`
+	m, err := LoadVMAFModel(writeModel(t, "hdr.json", body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.HDR || m.Display != 1080 {
+		t.Errorf("HDR %v, Display %d; want true and 1080", m.HDR, m.Display)
+	}
+	var got struct {
+		ParamDict map[string]any `json:"param_dict"`
+		ModelDict map[string]any `json:"model_dict"`
+	}
+	if err := json.Unmarshal(m.stripped, &got); err != nil {
+		t.Fatalf("stripped model %s: %v", m.stripped, err)
+	}
+	if _, ok := got.ModelDict["conversion_target"]; ok {
+		t.Errorf("stripped model %s still has a conversion_target", m.stripped)
+	}
+	if got.ModelDict["model_type"] != "LIBSVMNUSVR" || got.ParamDict["C"] != 4.0 || len(got.ModelDict["feature_names"].([]any)) != 2 {
+		t.Errorf("stripped model %s lost other fields", m.stripped)
+	}
+
+	sdr, err := LoadVMAFModel(writeModel(t, "sdr.json", sdrModel))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sdr.stripped != nil || sdr.Display != 0 {
+		t.Errorf("a model without a conversion_target got stripped %s, Display %d", sdr.stripped, sdr.Display)
+	}
+	bad := `{"model_dict": {"conversion_target": {"colorspace": {"trc": "smpte2084"}, "resolution": {"display": 720}}}}`
+	if _, err := LoadVMAFModel(writeModel(t, "bad.json", bad)); err == nil {
+		t.Error("LoadVMAFModel with display 720 = nil error, want one")
+	}
+}
+
+func TestDisplaySize(t *testing.T) {
+	tests := []struct {
+		w, h, display, wantW, wantH uint64
+	}{
+		{1920, 1080, 1080, 1920, 1080},
+		{3840, 2160, 1080, 1920, 1080},
+		{1280, 720, 1080, 1920, 1080},
+		{852, 480, 1080, 1918, 1080},
+		{854, 480, 1080, 1922, 1080},
+		{1920, 1080, 2160, 3840, 2160},
+		{1080, 1920, 2160, 2160, 3840},
+		{852, 480, 0, 852, 480},
+	}
+	for _, tt := range tests {
+		if w, h := displaySize(tt.w, tt.h, tt.display); w != tt.wantW || h != tt.wantH {
+			t.Errorf("displaySize(%d, %d, %d) = %dx%d, want %dx%d", tt.w, tt.h, tt.display, w, h, tt.wantW, tt.wantH)
+		}
+	}
+}
+
+func TestHDRConversionScale(t *testing.T) {
+	tests := []struct {
+		w, h, display uint64
+		want          string
+	}{
+		{852, 480, 1080, "zscale=w=1918:h=1080:f=bicubic:tin="},
+		{3840, 2160, 1080, "zscale=w=1920:h=1080:f=lanczos:tin="},
+		{1920, 1080, 1080, "zscale=tin="},
+		{852, 480, 0, "zscale=tin="},
+	}
+	for _, tt := range tests {
+		c, err := hdrConversion("smpte2084", tt.w, tt.h, tt.display)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(c, tt.want) {
+			t.Errorf("hdrConversion(%dx%d, display %d) = %q, want it to start %q", tt.w, tt.h, tt.display, c, tt.want)
+		}
 	}
 }
