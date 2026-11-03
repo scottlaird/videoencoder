@@ -18,6 +18,8 @@ type RenditionUpdate struct {
 	Bitrate string
 	// Comment is attached to the quality line.
 	Comment string
+	// HDR writes the values under the rendition's hdr settings.
+	HDR bool
 }
 
 // UpdateSidecar writes updates into the sidecar at path, keeping its
@@ -58,6 +60,9 @@ func UpdateSidecar(path string, sources map[string]string, updates []RenditionUp
 	renditions := child(root, "renditions")
 	for _, u := range updates {
 		r := child(renditions, u.Name)
+		if u.HDR {
+			r = child(r, "hdr")
+		}
 		q := setScalar(r, "quality", formatQuality(u.Quality), "!!float")
 		q.LineComment = u.Comment
 		if u.Bitrate != "" {

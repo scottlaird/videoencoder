@@ -212,7 +212,7 @@ videos:
 | `streamdir` | Where the finished stream goes. Default `stream/{name}`. |
 | `encoders` | ffmpeg encoders by name, described below. |
 | `renditions` | The ladder, described below. |
-| `tune` | How `videoencoder tune` works: `target_vmaf` (default 95), `start` (0s), `duration` (8s), `anchors` (2), and `vmaf_model` and `vmaf_model_2160` (see below). |
+| `tune` | How `videoencoder tune` works: `target_vmaf` (default 95), `start` (0s), `duration` (8s), `anchors` (2), `vmaf_model` and `vmaf_model_2160`, and `hdr` with HDR renditions' `target_vmaf`, `vmaf_model` and `vmaf_model_2160` (see below). |
 | `poster` | `offset`, `widths`, `formats` (`avif`, `jpg`, `webp`), `gainmap_formats`, and `hdr` for plain PQ HDR posters. |
 | `thumbnails` | `enabled`, `interval` in seconds, `height`, and `columns` × `rows` per tile. |
 | `publish` | `to` and `targets`; see [Publishing](#publishing). |
@@ -249,6 +249,9 @@ renditions:
 - `bitrate` takes an optional `k` or `M` suffix.
 - `args` adds options for this rendition only.
 - `target_vmaf` overrides `tune.target_vmaf` for this rendition.
+- `hdr` holds `quality`, `bitrate` and `target_vmaf` for the
+  rendition's HDR encodes, in place of the ones above (see
+  [SDR and HDR](#sdr-and-hdr)).
 - `tune: false` keeps tune from changing it.
 - `quality_from` and `quality_offset` take the quality from another
   rendition of the same encoder, plus an offset, in place of
@@ -264,8 +267,9 @@ renditions:
   It's worked out after all the layers are merged, so it follows the
   value tune writes for `av1-2160`, and `plan` shows the result with a
   comment like `# av1-2160 + 2`. Chains are allowed. A later layer can
-  turn it off with `quality_from: ""`. The bitrate isn't derived, so
-  set a cap by hand.
+  turn it off with `quality_from: ""`. If the reference has an
+  `hdr.quality`, the HDR quality follows it with the same offset. The
+  bitrate isn't derived, so set a cap by hand.
 
 The width follows the source's aspect ratio. Renditions taller than
 the source are dropped. The exception is an encoder whose renditions
@@ -283,6 +287,18 @@ go into the same manifests.
 An encoder with `sdr_only: true` encodes only the SDR source. If the
 video has only an HDR source, that encoder gets a tone-mapped copy of
 it instead.
+
+HDR needs fewer bits than SDR at the same quality setting: AV1 at the
+same CRF made HDR files about two-thirds the size of SDR ones, at a
+slightly lower score. So each rendition's HDR encodes can have their
+own settings under `hdr`, and any left unset follow the SDR ones:
+
+```yaml
+renditions:
+  av1-1080: {quality: 32, hdr: {quality: 27}}
+```
+
+Tune writes `hdr.quality` itself (see [Tuning quality](#tuning-quality)).
 
 ## Rebuilding
 
@@ -316,15 +332,17 @@ plenty for one clip falls well short for another.
 `videoencoder tune` measures this for each video:
 
 1. It cuts a sample from the first SDR source, `tune.duration`
-   seconds from `tune.start`. For an HDR-only video, it uses the HDR
-   source.
+   seconds from `tune.start`, and another from the first HDR source.
+   The SDR renditions are tuned on the SDR sample, and the HDR ones on
+   the HDR sample. An HDR-only video's SDR-only encoders are tuned on
+   the HDR sample, tone-mapped as a render would.
 2. For each encoder, it searches the anchor renditions, the shortest
    and tallest (plus the middle with `anchors: 3`), for the quality
    setting that just reaches the target VMAF.
 3. It interpolates the renditions in between, linearly in log height.
 4. It writes each rendition's `quality`, and `bitrate` for encoders
-   that cap it, into the video's sidecar. Each value gets a comment
-   saying how it was found.
+   that cap it, into the video's sidecar, under `hdr` for the HDR
+   encodes. Each value gets a comment saying how it was found.
 
 Review the sidecar, then render as usual.
 
@@ -335,6 +353,8 @@ renditions:
     quality: 31 # tuned 2026-10-31: VMAF 90.5 (target 90)
   av1-1440:
     quality: 29 # interpolated by tune 2026-10-31 for VMAF 90
+    hdr:
+      quality: 24 # interpolated by tune 2026-10-31 for VMAF 90
 ```
 
 With a `vmaf_model`, the comments name it instead of "VMAF".
@@ -352,16 +372,24 @@ is the path of a libvmaf JSON model, such as Netflix's v1 models.
 its own scale, so pick `target_vmaf` for the model. Trials scored with
 one model are never reused for another.
 
+`tune.hdr` sets `target_vmaf`, `vmaf_model` and `vmaf_model_2160` for
+the HDR renditions. Unset, they follow the SDR settings: the target
+falls back to the rendition's `target_vmaf`, then `tune.target_vmaf`,
+and both models follow the SDR ones unless `hdr.vmaf_model` is set. A
+rendition's own `hdr.target_vmaf` beats them all.
+
 ```yaml
 tune:
-  target_vmaf: 93
-  vmaf_model: /opt/vmaf/hdr_vmaf_v1.1.8_3d0h.json
-  vmaf_model_2160: /opt/vmaf/hdr_vmaf_v1.1.8_1d5h_2160.json
+  target_vmaf: 95
+  vmaf_model: /opt/vmaf/vmaf_v1.0.16_3d0h.json
+  hdr:
+    target_vmaf: 93
+    vmaf_model: /opt/vmaf/hdr_vmaf_v1.1.8_3d0h.json
+    vmaf_model_2160: /opt/vmaf/hdr_vmaf_v1.1.8_1d5h_2160.json
 ```
 
 An HDR model, one whose JSON has a PQ `conversion_target`, judges HDR
-as HDR. Tune samples the HDR source instead of the SDR one, and
-converts both sides to the PQ ICtCp 4:2:0 16-bit pictures the model
+as HDR. It converts both sides to the PQ ICtCp 4:2:0 16-bit pictures the model
 expects instead of tone-mapping them. Both are also scaled to the
 model's display height (its `resolution.display`, 1080 or 2160), so a
 480p rendition is judged as it looks on a 1080p screen: bicubic to
@@ -369,8 +397,9 @@ enlarge, lanczos to shrink, as libvmaf does it. ffmpeg does all of
 this, and libvmaf is given a copy of the model without its
 `conversion_target`. libvmaf 3.2 ignores it, and newer versions act on
 it only when built with zimg, which static ffmpeg builds often aren't;
-this way scores are the same with any of them. SDR-only encoders'
-renditions, which an HDR model can't judge, fall back to `v0`. These
+this way scores are the same with any of them. An HDR model can't
+judge SDR, so with one as `tune.vmaf_model` SDR renditions fall back
+to `v0`, with a warning; put it under `tune.hdr` instead. These
 models are clipped to 0–100, like the others.
 
 Three kinds of rendition are left as configured. Ones marked

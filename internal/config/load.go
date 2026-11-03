@@ -120,6 +120,19 @@ func (r *Resolved) resolveQualities() error {
 		done[name] = true
 		m := child(child(r.Merged, "renditions"), name)
 		setScalar(m, "quality", formatQuality(rd.Quality), "!!float").LineComment = rd.Follows()
+		// The HDR quality follows too, so a rendition that follows
+		// one with HDR settings keeps the same offset in both tones.
+		if rd.HDR != nil {
+			rd.HDR.Quality = nil
+		}
+		if from.HDR != nil && from.HDR.Quality != nil {
+			if rd.HDR == nil {
+				rd.HDR = &RenditionHDR{}
+			}
+			q := *from.HDR.Quality + rd.QualityOffset
+			rd.HDR.Quality = &q
+			setScalar(child(m, "hdr"), "quality", formatQuality(q), "!!float").LineComment = rd.Follows()
+		}
 		return nil
 	}
 	for _, name := range r.RenditionNames() {
@@ -271,6 +284,12 @@ func (r *Resolved) resolvePaths() {
 	}
 	if r.Tune.VMAFModel2160 != BuiltinVMAFModel {
 		r.Tune.VMAFModel2160 = abs(r.Tune.VMAFModel2160)
+	}
+	if h := &r.Tune.HDR; h.VMAFModel != BuiltinVMAFModel {
+		h.VMAFModel = abs(h.VMAFModel)
+	}
+	if h := &r.Tune.HDR; h.VMAFModel2160 != BuiltinVMAFModel {
+		h.VMAFModel2160 = abs(h.VMAFModel2160)
 	}
 	for label, src := range r.Sources {
 		r.Sources[label] = abs(src)

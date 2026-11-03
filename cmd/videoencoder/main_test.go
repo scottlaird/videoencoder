@@ -739,3 +739,68 @@ func TestRunMissingSource(t *testing.T) {
 		t.Errorf("run() with a missing source = %v, want an error naming it", err)
 	}
 }
+
+// TestTuneHDRAndSDR checks that a video with HDR and SDR sources has
+// its SDR renditions tuned on the SDR source and its HDR ones on the
+// HDR source, into hdr.quality, which the next render's HDR encodes use.
+func TestTuneHDRAndSDR(t *testing.T) {
+	requireTools(t, "ffmpeg", "ffprobe", "packager")
+	dir := t.TempDir()
+	makeHDRClip(t, filepath.Join(dir, "v-hdr.mov"))
+	makeClip(t, filepath.Join(dir, "v-sdr.mov"))
+	if err := os.WriteFile(filepath.Join(dir, "v.video.yaml"), []byte(`
+sources: {hdr: v-hdr.mov, sdr: v-sdr.mov}
+tune: {duration: 1s, target_vmaf: 90, hdr: {target_vmaf: 85}}
+renditions: {h264-720: null, h264-1080: null, h265-480: null, h265-720: null, h265-1080: null,
+  h265-1440: null, h265-2160: null, av1-720: null, av1-1080: null, av1-1440: null, av1-2160: null,
+  av1-3240: null, av1-4320: null}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o, err := parseArgs([]string{"tune", "--config", "", dir}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	d, _ := testDeps(&out)
+	if err := run(context.Background(), o, d); err != nil {
+		t.Fatalf("tune: %v\n%s", err, out.String())
+	}
+	for _, want := range []string{"tuned on 1s of sdr", "tuned on 1s of hdr", "av1-480 hdr", "(target 85)"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("tune output lacks %q:\n%s", want, out.String())
+		}
+	}
+	r, err := (&config.Loader{}).Load(config.Video{Name: "v", Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	av1, h264 := r.Renditions["av1-480"], r.Renditions["h264-480"]
+	if av1.HDR == nil || av1.HDR.Quality == nil {
+		t.Fatalf("av1-480 has no tuned HDR quality: %+v", av1)
+	}
+	if h264.HDR != nil {
+		t.Errorf("h264-480, which is SDR only, has HDR settings: %+v", h264.HDR)
+	}
+
+	// The render encodes each tone at its own quality.
+	b, err := prepare(context.Background(), r, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]float64{
+		"hdr/av1-480": *av1.HDR.Quality, "sdr/av1-480": av1.Quality, "sdr/h264-480": h264.Quality,
+	}
+	for _, js := range b.perSource {
+		for _, j := range js {
+			i := slices.Index(j.Args, "-crf")
+			if w, ok := want[j.Slot]; !ok || i < 0 || j.Args[i+1] != fmt.Sprint(w) {
+				t.Errorf("%s: args %q, want -crf %v", j.Slot, j.Args, w)
+			}
+			delete(want, j.Slot)
+		}
+	}
+	if len(want) != 0 {
+		t.Errorf("no jobs for %v", slices.Sorted(maps.Keys(want)))
+	}
+}

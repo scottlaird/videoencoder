@@ -59,6 +59,18 @@ type Tune struct {
 	// switches to its 4K variant there by itself.
 	VMAFModel     string `yaml:"vmaf_model"`
 	VMAFModel2160 string `yaml:"vmaf_model_2160"`
+	// HDR replaces these for HDR renditions, which are tuned apart
+	// from SDR ones on the HDR source.
+	HDR TuneHDR `yaml:"hdr"`
+}
+
+// TuneHDR is how HDR renditions are tuned. Unset fields follow the
+// SDR settings in Tune: target_vmaf, and both models unless
+// vmaf_model is set.
+type TuneHDR struct {
+	TargetVMAF    float64 `yaml:"target_vmaf"`
+	VMAFModel     string  `yaml:"vmaf_model"`
+	VMAFModel2160 string  `yaml:"vmaf_model_2160"`
 }
 
 // BuiltinVMAFModel is the vmaf_model value for libvmaf's own model.
@@ -152,6 +164,52 @@ type Rendition struct {
 	// "" turns it off again. Tune leaves such renditions alone.
 	QualityFrom   string  `yaml:"quality_from"`
 	QualityOffset float64 `yaml:"quality_offset"`
+	// HDR replaces settings for the rendition's HDR encodes: those of
+	// an HDR source by an encoder that isn't SDR-only. HDR needs fewer
+	// bits than SDR at the same quality setting, so it's tuned apart.
+	HDR *RenditionHDR `yaml:"hdr"`
+}
+
+// RenditionHDR holds a rendition's HDR settings. Unset fields follow
+// the rendition's SDR ones.
+type RenditionHDR struct {
+	Quality    *float64 `yaml:"quality"`
+	Bitrate    string   `yaml:"bitrate"`
+	TargetVMAF float64  `yaml:"target_vmaf"`
+}
+
+// HDRQuality is the quality setting of r's HDR encodes.
+func (r *Rendition) HDRQuality() float64 {
+	if r.HDR != nil && r.HDR.Quality != nil {
+		return *r.HDR.Quality
+	}
+	return r.Quality
+}
+
+// HDRBitrate is the bitrate of r's HDR encodes.
+func (r *Rendition) HDRBitrate() string {
+	if r.HDR != nil && r.HDR.Bitrate != "" {
+		return r.HDR.Bitrate
+	}
+	return r.Bitrate
+}
+
+// Target returns the VMAF that tune aims r's SDR or HDR encodes at
+// under t, the most specific of: r's own HDR target, tune's HDR
+// target, r's target, and tune's. r may be nil.
+func (t Tune) Target(r *Rendition, hdr bool) float64 {
+	if hdr {
+		if r != nil && r.HDR != nil && r.HDR.TargetVMAF > 0 {
+			return r.HDR.TargetVMAF
+		}
+		if t.HDR.TargetVMAF > 0 {
+			return t.HDR.TargetVMAF
+		}
+	}
+	if r != nil && r.TargetVMAF > 0 {
+		return r.TargetVMAF
+	}
+	return t.TargetVMAF
 }
 
 // Tuned reports whether "videoencoder tune" sets r's quality: unless
@@ -247,6 +305,11 @@ func (c *Config) Validate() error {
 	if t := c.Tune; t.TargetVMAF <= 0 || t.TargetVMAF > 100 || t.Anchors < 2 {
 		return fmt.Errorf("tune: target_vmaf must be in (0, 100] and anchors at least 2")
 	}
+	if h := c.Tune.HDR; h.TargetVMAF < 0 || h.TargetVMAF > 100 {
+		return fmt.Errorf("tune.hdr: target_vmaf must be in (0, 100]")
+	} else if h.VMAFModel2160 != "" && h.VMAFModel == "" {
+		return fmt.Errorf("tune.hdr: vmaf_model_2160 needs vmaf_model")
+	}
 	for _, f := range []struct{ name, v string }{{"tune.start", c.Tune.Start}, {"tune.duration", c.Tune.Duration}} {
 		if _, err := ParseOffset(f.v); err != nil {
 			return fmt.Errorf("%s: %w", f.name, err)
@@ -280,6 +343,14 @@ func (c *Config) Validate() error {
 		}
 		if _, err := ParseBitrate(r.Bitrate); err != nil {
 			return fmt.Errorf("rendition %q: %w", name, err)
+		}
+		if h := r.HDR; h != nil {
+			if _, err := ParseBitrate(h.Bitrate); err != nil {
+				return fmt.Errorf("rendition %q: hdr: %w", name, err)
+			}
+			if h.TargetVMAF < 0 || h.TargetVMAF > 100 {
+				return fmt.Errorf("rendition %q: hdr: target_vmaf must be in (0, 100]", name)
+			}
 		}
 	}
 	return nil

@@ -207,6 +207,16 @@ func TestLoadErrors(t *testing.T) {
 			wantErr: "can't define videos",
 		},
 		{
+			name:    "bad HDR bitrate",
+			files:   map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\nrenditions: {av1-480: {hdr: {bitrate: fast}}}"},
+			wantErr: "hdr: bad bitrate",
+		},
+		{
+			name:    "HDR 2160p model without a base one",
+			files:   map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\ntune: {hdr: {vmaf_model_2160: m.json}}"},
+			wantErr: "vmaf_model_2160 needs vmaf_model",
+		},
+		{
 			name:    "no sources",
 			files:   map[string]string{"v" + SidecarSuffix: "poster: {offset: 2s}"},
 			wantErr: "no sources",
@@ -429,6 +439,7 @@ renditions:
 `)
 	err := UpdateSidecar(path, map[string]string{"x": "ignored.mov"}, []RenditionUpdate{
 		{Name: "av1-480", Quality: 31.5, Comment: "tuned: VMAF 95.1"},
+		{Name: "av1-480", Quality: 26, Comment: "tuned: HDR VMAF 93.2", HDR: true},
 		{Name: "h264-1080", Quality: 21, Bitrate: "2.4M", Comment: "tuned: VMAF 95.0"},
 		{Name: "av1-1080", Quality: 33, Comment: "interpolated"},
 	})
@@ -464,6 +475,12 @@ renditions:
 	}
 	if _, ok := r.Renditions["av1-4320"]; ok {
 		t.Error("av1-4320 should still be deleted")
+	}
+	if got := r.Renditions["av1-480"].HDRQuality(); got != 26 {
+		t.Errorf("av1-480 HDR quality = %g, want 26:\n%s", got, text)
+	}
+	if got := r.Renditions["h264-1080"].HDRQuality(); got != 21 {
+		t.Errorf("h264-1080 HDR quality = %g, want its SDR 21", got)
 	}
 
 	// A new sidecar for an ad hoc video gets its sources.
@@ -562,5 +579,54 @@ tune: {vmaf_model_2160: models/hdr_2160.json}
 	}
 	if got, want := r.Tune.VMAFModel2160, filepath.Join(dir, "models", "hdr_2160.json"); got != want {
 		t.Errorf("vmaf_model_2160 = %q, want %q", got, want)
+	}
+}
+
+// TestQualityFromHDR checks that a rendition following one with an HDR
+// quality follows it in HDR too, with the same offset.
+func TestQualityFromHDR(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "v"+SidecarSuffix), `
+sources: {main: v.mov}
+renditions:
+  av1-2160: {quality: 35, hdr: {quality: 30}}
+  av1-3240: {quality_from: av1-2160, quality_offset: 2, hdr: {quality: 99}}
+  av1-1440: {quality: 33}
+  av1-1080: {quality_from: av1-1440, quality_offset: 1, hdr: {quality: 99}}
+`)
+	r, err := (&Loader{}).Load(Video{Name: "v", Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]float64{"av1-3240": 32, "av1-1080": 34} {
+		if got := r.Renditions[name].HDRQuality(); got != want {
+			t.Errorf("%s HDR quality = %g, want %g", name, got, want)
+		}
+	}
+}
+
+func TestTuneTarget(t *testing.T) {
+	tu := Tune{TargetVMAF: 95, HDR: TuneHDR{TargetVMAF: 93}}
+	tests := []struct {
+		name string
+		r    *Rendition
+		hdr  bool
+		want float64
+	}{
+		{"SDR default", nil, false, 95},
+		{"HDR default", nil, true, 93},
+		{"SDR rendition", &Rendition{TargetVMAF: 96}, false, 96},
+		{"HDR over the rendition's SDR", &Rendition{TargetVMAF: 96}, true, 93},
+		{"rendition HDR", &Rendition{TargetVMAF: 96, HDR: &RenditionHDR{TargetVMAF: 90}}, true, 90},
+		{"rendition HDR, SDR encode", &Rendition{HDR: &RenditionHDR{TargetVMAF: 90}}, false, 95},
+	}
+	for _, tt := range tests {
+		if got := tu.Target(tt.r, tt.hdr); got != tt.want {
+			t.Errorf("%s: Target() = %g, want %g", tt.name, got, tt.want)
+		}
+	}
+	// Without an HDR target, HDR follows the SDR ones.
+	if got := (Tune{TargetVMAF: 95}).Target(&Rendition{TargetVMAF: 96}, true); got != 96 {
+		t.Errorf("no HDR target: Target() = %g, want 96", got)
 	}
 }

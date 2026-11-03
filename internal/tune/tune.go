@@ -32,6 +32,9 @@ type Result struct {
 	// Model names the VMAF model VMAF and Target are on, or is "" for
 	// the built-in one.
 	Model string
+	// HDR is set when Quality and Bitrate are for the rendition's HDR
+	// encodes (see config.RenditionHDR).
+	HDR bool
 }
 
 // Tuner runs the sample encodes and scorings.
@@ -52,6 +55,10 @@ type Tuner struct {
 // is vd) and interpolates the others. targets are r's renditions as
 // filtered for the source, none taller than MaxHeight. Scratch files
 // go in workdir.
+//
+// From an HDR source, the renditions of encoders that aren't SDR-only
+// are HDR, and are tuned for their HDR settings with tune's HDR target
+// and models; the rest are SDR.
 func (tu *Tuner) Tune(ctx context.Context, r *config.Resolved, src string, vd probe.VideoData, targets plan.Targets, workdir string) ([]Result, error) {
 	for _, t := range targets {
 		if t.Height > MaxHeight {
@@ -91,18 +98,19 @@ func (tu *Tuner) Tune(ctx context.Context, r *config.Resolved, src string, vd pr
 	byEncoder := map[string][]Point{}
 	for enc, idx := range Anchors(targets, r.Tune.Anchors) {
 		for _, i := range idx {
-			t := targets[i]
+			t, hdrOut := forTone(targets[i], hdr)
 			// SDR-only encoders tone-map HDR, as a render would, and are
 			// judged against a tone-mapped reference. The rest are judged
 			// with both sides tone-mapped, since VMAF is an SDR metric,
 			// unless an HDR model judges them as HDR.
 			toneMap := t.Encoder.SDROnly && hdr
-			model := models.forTarget(t, hdr)
-			if m := models.forHeight(t.Height); m.HDR && !model.HDR {
-				slog.Warn("HDR VMAF model can't judge an SDR rendition; using the built-in model", "rendition", t.Name, "model", m.Name())
+			model := models.forTarget(t, hdrOut)
+			if m := models.sdr.forHeight(t.Height); !hdrOut && m.HDR {
+				slog.Warn("HDR VMAF model can't judge an SDR rendition; using the built-in model; set tune.hdr.vmaf_model instead",
+					"rendition", t.Name, "model", m.Name())
 			}
 			prefilter := ""
-			if hdr && !toneMap && !model.HDR {
+			if hdrOut && !model.HDR {
 				prefilter = plan.ToneMapSDR
 			}
 			ref := tu.reference(refs, vd, t, toneMap, workdir)
@@ -116,10 +124,11 @@ func (tu *Tuner) Tune(ctx context.Context, r *config.Resolved, src string, vd pr
 				reference: fmt.Sprintf("%dx%d tonemap=%v %s", ref.width, ref.height, toneMap, ref.transfer),
 				prefilter: prefilter, ffmpeg: tu.FFmpegVersion, scorer: scorer,
 			}
-			res, bitrate, err := tu.search(ctx, r, t, sample, sampleVD.Duration.Seconds(), ref, toneMap, prefilter, workdir, key, past)
+			res, bitrate, err := tu.search(ctx, target(r, t, hdrOut), t, sample, sampleVD.Duration.Seconds(), ref, toneMap, prefilter, workdir, key, past)
 			if err != nil {
 				return nil, fmt.Errorf("tuning %s: %w", t.Name, err)
 			}
+			res.HDR = hdrOut
 			results[i] = res
 			byEncoder[enc] = append(byEncoder[enc], Point{Height: t.Height, Quality: res.Quality, Bitrate: bitrate})
 		}
@@ -129,15 +138,17 @@ func (tu *Tuner) Tune(ctx context.Context, r *config.Resolved, src string, vd pr
 		if results[i].Rendition != "" {
 			continue
 		}
+		_, hdrOut := forTone(t, hdr)
 		q, b := Interpolate(byEncoder[t.EncoderName], t.Height)
 		spec := qualitySpec(t.Encoder.Codec)
 		results[i] = Result{
 			Rendition:    t.Name,
 			Quality:      spec.IndexToQuality(spec.QualityToIndex(q)),
 			Bitrate:      roundBitrate(b),
-			Target:       target(r, t),
-			Model:        models.forTarget(t, hdr).Name(),
+			Target:       target(r, t, hdrOut),
+			Model:        models.forTarget(t, hdrOut).Name(),
 			Interpolated: true,
+			HDR:          hdrOut,
 		}
 	}
 	return results, nil
@@ -159,53 +170,74 @@ type reference struct {
 	model bench.VMAFModel
 }
 
-// models are the VMAF models tune scores with: base, and uhd for
-// renditions 2160p and up.
-type models struct{ base, uhd bench.VMAFModel }
+// forTone returns t as it is encoded from a source that is HDR or
+// not, and whether that encode is HDR.
+func forTone(t *plan.Target, hdr bool) (*plan.Target, bool) {
+	if hdr && !t.Encoder.SDROnly {
+		return t.ForHDR(), true
+	}
+	return t, false
+}
+
+// models are the VMAF models tune scores SDR and HDR renditions with.
+type models struct{ sdr, hdr modelPair }
+
+// modelPair is base, and uhd for renditions 2160p and up.
+type modelPair struct{ base, uhd bench.VMAFModel }
 
 func loadModels(t config.Tune) (models, error) {
+	sdr, err := loadPair(t.VMAFModel, t.VMAFModel2160)
+	if err != nil {
+		return models{}, err
+	}
+	hdr := sdr
+	if t.HDR.VMAFModel != "" {
+		if hdr, err = loadPair(t.HDR.VMAFModel, t.HDR.VMAFModel2160); err != nil {
+			return models{}, err
+		}
+	}
+	return models{sdr, hdr}, nil
+}
+
+func loadPair(base, uhd string) (modelPair, error) {
 	load := func(path string) (bench.VMAFModel, error) {
 		if path == "" || path == config.BuiltinVMAFModel {
 			return bench.VMAFModel{}, nil
 		}
 		return bench.LoadVMAFModel(path)
 	}
-	base, err := load(t.VMAFModel)
-	if err != nil {
-		return models{}, err
+	var p modelPair
+	var err error
+	if p.base, err = load(base); err != nil {
+		return modelPair{}, err
 	}
-	uhd := base
-	if t.VMAFModel2160 != "" {
-		if uhd, err = load(t.VMAFModel2160); err != nil {
-			return models{}, err
+	p.uhd = p.base
+	if uhd != "" {
+		if p.uhd, err = load(uhd); err != nil {
+			return modelPair{}, err
 		}
 	}
-	return models{base, uhd}, nil
+	return p, nil
 }
 
-func (m models) forHeight(h uint64) bench.VMAFModel {
+func (m modelPair) forHeight(h uint64) bench.VMAFModel {
 	if h >= 2160 {
 		return m.uhd
 	}
 	return m.base
 }
 
-// forTarget returns the model t is scored with, from a source that is
-// HDR or not. An HDR model judges HDR as HDR; it can't judge SDR, so
-// SDR renditions fall back to the built-in model.
+// forTarget returns the model t is scored with as an SDR or HDR
+// rendition. An HDR model can't judge SDR, so SDR renditions fall back
+// from one to the built-in model.
 func (m models) forTarget(t *plan.Target, hdr bool) bench.VMAFModel {
-	model := m.forHeight(t.Height)
-	if model.HDR && (!hdr || t.Encoder.SDROnly) {
-		return bench.VMAFModel{}
+	if hdr {
+		return m.hdr.forHeight(t.Height)
 	}
-	return model
-}
-
-// ScoresHDR reports whether t's VMAF models judge HDR as HDR, so tune
-// should be given an HDR source.
-func ScoresHDR(t config.Tune) (bool, error) {
-	m, err := loadModels(t)
-	return m.base.HDR || m.uhd.HDR, err
+	if model := m.sdr.forHeight(t.Height); !model.HDR {
+		return model
+	}
+	return bench.VMAFModel{}
 }
 
 // MaxHeight is the tallest rendition tune can judge: VMAF's largest
@@ -273,21 +305,17 @@ func qualitySpec(codec string) bench.Quality {
 	return q
 }
 
-func target(r *config.Resolved, t *plan.Target) float64 {
-	if rd := r.Renditions[t.Name]; rd != nil && rd.TargetVMAF > 0 {
-		return rd.TargetVMAF
-	}
-	return r.Tune.TargetVMAF
+func target(r *config.Resolved, t *plan.Target, hdr bool) float64 {
+	return r.Tune.Target(r.Renditions[t.Name], hdr)
 }
 
 // search finds the worst quality setting at which t, encoded from the
 // sample without bitrate caps (and tone-mapped first with toneMap),
-// reaches its target VMAF. It returns the result and the bitrate of
+// reaches goal. It returns the result and the bitrate of
 // that encode. Trials recorded in past under key are used instead of
 // encoding again, and new ones are recorded there.
-func (tu *Tuner) search(ctx context.Context, r *config.Resolved, t *plan.Target, sample string, seconds float64, ref reference, toneMap bool, prefilter, workdir string, key trialKey, past *results) (Result, float64, error) {
+func (tu *Tuner) search(ctx context.Context, goal float64, t *plan.Target, sample string, seconds float64, ref reference, toneMap bool, prefilter, workdir string, key trialKey, past *results) (Result, float64, error) {
 	spec := qualitySpec(t.Encoder.Codec)
-	goal := target(r, t)
 	s := bench.NewSearch(spec.Steps(), spec.QualityToIndex(t.Quality))
 	// One step is worth less than a few seconds of sample can measure.
 	s.WithinStep = true
