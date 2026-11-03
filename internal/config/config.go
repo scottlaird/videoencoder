@@ -50,9 +50,14 @@ type layer struct {
 // Tune says how "videoencoder tune" picks rendition qualities.
 type Tune struct {
 	TargetVMAF float64 `yaml:"target_vmaf"`
-	Start      string  `yaml:"start"`
-	Duration   string  `yaml:"duration"`
-	Anchors    int     `yaml:"anchors"`
+	// Ranges are the parts of each source that are encoded. A quality
+	// setting passes only if it reaches the target on every range.
+	Ranges []TuneRange `yaml:"ranges"`
+	// Start and Duration were one range's spelling before Ranges; they
+	// are read only to say so.
+	Start    string `yaml:"start"`
+	Duration string `yaml:"duration"`
+	Anchors  int    `yaml:"anchors"`
 	// VMAFModel is "v0" (or "") for libvmaf's built-in v0.6.1 models,
 	// or the path of a libvmaf JSON model file. VMAFModel2160, if set,
 	// replaces it for renditions 2160p and up; the built-in model
@@ -63,6 +68,16 @@ type Tune struct {
 	// from SDR ones on the HDR source.
 	HDR TuneHDR `yaml:"hdr"`
 }
+
+// TuneRange is Duration of a source from Start, both in ParseOffset's
+// forms.
+type TuneRange struct {
+	Start    string `yaml:"start"`
+	Duration string `yaml:"duration"`
+}
+
+// String describes r for people: "8s from 0s".
+func (r TuneRange) String() string { return r.Duration + " from " + r.Start }
 
 // TuneHDR is how HDR renditions are tuned. Unset fields follow the
 // SDR settings in Tune: target_vmaf, and both models unless
@@ -310,9 +325,20 @@ func (c *Config) Validate() error {
 	} else if h.VMAFModel2160 != "" && h.VMAFModel == "" {
 		return fmt.Errorf("tune.hdr: vmaf_model_2160 needs vmaf_model")
 	}
-	for _, f := range []struct{ name, v string }{{"tune.start", c.Tune.Start}, {"tune.duration", c.Tune.Duration}} {
-		if _, err := ParseOffset(f.v); err != nil {
-			return fmt.Errorf("%s: %w", f.name, err)
+	if c.Tune.Start != "" || c.Tune.Duration != "" {
+		return fmt.Errorf("tune: start and duration are now ranges, a list of {start, duration}")
+	}
+	if len(c.Tune.Ranges) == 0 {
+		return fmt.Errorf("tune.ranges: at least one range is needed")
+	}
+	for i, tr := range c.Tune.Ranges {
+		if _, err := ParseOffset(tr.Start); err != nil {
+			return fmt.Errorf("tune.ranges[%d].start: %w", i, err)
+		}
+		if d, err := ParseOffset(tr.Duration); err != nil {
+			return fmt.Errorf("tune.ranges[%d].duration: %w", i, err)
+		} else if d <= 0 {
+			return fmt.Errorf("tune.ranges[%d].duration: must be positive", i)
 		}
 	}
 	for name, t := range c.Publish.Targets {

@@ -213,7 +213,7 @@ videos:
 | `streamdir` | Where the finished stream goes. Default `stream/{name}`. |
 | `encoders` | ffmpeg encoders by name, described below. |
 | `renditions` | The ladder, described below. |
-| `tune` | How `videoencoder tune` works: `target_vmaf` (default 95), `start` (0s), `duration` (8s), `anchors` (2), `vmaf_model` and `vmaf_model_2160`, and `hdr` with HDR renditions' `target_vmaf`, `vmaf_model` and `vmaf_model_2160` (see below). |
+| `tune` | How `videoencoder tune` works: `target_vmaf` (default 95), `ranges` (`[{start: 0s, duration: 8s}]`), `anchors` (2), `vmaf_model` and `vmaf_model_2160`, and `hdr` with HDR renditions' `target_vmaf`, `vmaf_model` and `vmaf_model_2160` (see below). |
 | `poster` | `offset`, `widths`, `formats` (`avif`, `jpg`, `webp`), `gainmap_formats`, and `hdr` for plain PQ HDR posters. |
 | `thumbnails` | `enabled`, `interval` in seconds, `height`, and `columns` × `rows` per tile. |
 | `publish` | `to` and `targets`; see [Publishing](#publishing). |
@@ -332,8 +332,20 @@ enormously in how hard it is to compress, so the setting that's
 plenty for one clip falls well short for another.
 `videoencoder tune` measures this for each video:
 
-1. It cuts a sample from the first SDR source, `tune.duration`
-   seconds from `tune.start`, and another from the first HDR source.
+1. It cuts samples from the first SDR source, one for each of
+   `tune.ranges` (`duration` from `start`), and the same from the
+   first HDR source. A quality setting passes only if it reaches the
+   target on every range, and the bitrate comes from the range that
+   needed the most. To skip a title sequence without leaving it
+   unchecked, say:
+
+   ```yaml
+   tune:
+     ranges:
+       - {start: 0s, duration: 4s}
+       - {start: 30s, duration: 8s}
+   ```
+
    The SDR renditions are tuned on the SDR sample, and the HDR ones on
    the HDR sample. An HDR-only video's SDR-only encoders are tuned on
    the HDR sample, tone-mapped as a render would.

@@ -566,7 +566,7 @@ func TestTuneEndToEnd(t *testing.T) {
 	makeClip(t, src)
 	// Two av1 renditions, so one anchor each end and nothing between.
 	if err := os.WriteFile(filepath.Join(dir, "videoencoder.yaml"), []byte(`
-tune: {duration: 1s, target_vmaf: 90}
+tune: {ranges: [{start: 0s, duration: 1s}, {start: 1s, duration: 1s}], target_vmaf: 90}
 renditions: {h264-480: null, h264-720: null, h265-480: null, h265-720: null, h265-1080: null,
   h265-1440: null, h265-2160: null, av1-720: null, av1-1080: null, av1-1440: null, av1-2160: null,
   av1-3240: null, av1-4320: null,
@@ -596,6 +596,9 @@ renditions: {h264-480: null, h264-720: null, h265-480: null, h265-720: null, h26
 	// A rendition with tune: false is reported but left alone.
 	if strings.Contains(string(sidecar), "h264-180-capped") {
 		t.Errorf("sidecar tunes h264-180-capped despite tune: false:\n%s", sidecar)
+	}
+	if !strings.Contains(out.String(), "tuned on 1s from 0s and 1s from 1s of ") {
+		t.Errorf("tune output doesn't name both ranges:\n%s", out.String())
 	}
 	if !strings.Contains(out.String(), "h264-180-capped quality 30    kept: tune: false") {
 		t.Errorf("tune output doesn't report the kept rendition:\n%s", out.String())
@@ -752,7 +755,7 @@ func TestTuneHDRAndSDR(t *testing.T) {
 	makeClip(t, filepath.Join(dir, "v-sdr.mov"))
 	if err := os.WriteFile(filepath.Join(dir, "v.video.yaml"), []byte(`
 sources: {hdr: v-hdr.mov, sdr: v-sdr.mov}
-tune: {duration: 1s, target_vmaf: 90, hdr: {target_vmaf: 85}}
+tune: {ranges: [{start: 0s, duration: 1s}], target_vmaf: 90, hdr: {target_vmaf: 85}}
 renditions: {h264-720: null, h264-1080: null, h265-480: null, h265-720: null, h265-1080: null,
   h265-1440: null, h265-2160: null, av1-720: null, av1-1080: null, av1-1440: null, av1-2160: null,
   av1-3240: null, av1-4320: null}
@@ -768,7 +771,7 @@ renditions: {h264-720: null, h264-1080: null, h265-480: null, h265-720: null, h2
 	if err := run(context.Background(), o, d); err != nil {
 		t.Fatalf("tune: %v\n%s", err, out.String())
 	}
-	for _, want := range []string{"tuned on 1s of sdr", "tuned on 1s of hdr", "av1-480 hdr", "(target 85)"} {
+	for _, want := range []string{"tuned on 1s from 0s of sdr", "tuned on 1s from 0s of hdr", "av1-480 hdr", "(target 85)"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("tune output lacks %q:\n%s", want, out.String())
 		}

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"time"
 
 	"github.com/scottlaird/videoencoder/internal/bench"
 	"github.com/scottlaird/videoencoder/internal/config"
@@ -51,8 +52,8 @@ type Tuner struct {
 	FFmpegVersion string
 }
 
-// Tune searches r's anchor renditions on a sample of src (whose video
-// is vd) and interpolates the others. targets are r's renditions as
+// Tune searches r's anchor renditions on samples of src (whose video
+// is vd), one per tune range, and interpolates the others. targets are r's renditions as
 // filtered for the source, none taller than MaxHeight. Scratch files
 // go in workdir.
 //
@@ -68,16 +69,9 @@ func (tu *Tuner) Tune(ctx context.Context, r *config.Resolved, src string, vd pr
 	if err := os.MkdirAll(workdir, 0o755); err != nil {
 		return nil, err
 	}
-	sample := filepath.Join(workdir, "sample.mkv")
-	if err := tu.ffmpeg(ctx, "-ss", r.Tune.Start, "-i", src, "-t", r.Tune.Duration, "-map", "0:v:0", "-c", "copy", sample); err != nil {
-		return nil, fmt.Errorf("cutting sample: %w", err)
-	}
-	sampleVD, err := tu.Prober.Probe(ctx, sample)
+	clips, err := tu.cut(ctx, r.Tune.Ranges, src, vd, workdir)
 	if err != nil {
 		return nil, err
-	}
-	if sampleVD.Duration <= 0 {
-		return nil, fmt.Errorf("sample of %s is empty: is tune.start past its end?", src)
 	}
 	hdr := vd.Tone() == probe.HDR
 	models, err := loadModels(r.Tune)
@@ -93,7 +87,6 @@ func (tu *Tuner) Tune(ctx context.Context, r *config.Resolved, src string, vd pr
 		return nil, err
 	}
 
-	refs := map[refKey]reference{}
 	results := make([]Result, len(targets))
 	byEncoder := map[string][]Point{}
 	scorer := func(i int) string {
@@ -119,18 +112,21 @@ func (tu *Tuner) Tune(ctx context.Context, r *config.Resolved, src string, vd pr
 			if hdrOut && !model.HDR {
 				prefilter = plan.ToneMapSDR
 			}
-			ref := tu.reference(refs, vd, t, toneMap, workdir)
-			ref.model = model
 			scorer := bench.ScorerVersion
 			if id := model.ID(); id != "" {
 				scorer += " " + id
 			}
-			key := trialKey{
-				source: sourceID, start: r.Tune.Start, duration: r.Tune.Duration,
-				reference: fmt.Sprintf("%dx%d tonemap=%v %s", ref.width, ref.height, toneMap, ref.transfer),
-				prefilter: prefilter, ffmpeg: tu.FFmpegVersion, scorer: scorer,
+			var judged []judging
+			for _, c := range clips {
+				ref := tu.reference(c.refs, vd, t, toneMap, c.dir)
+				ref.model = model
+				judged = append(judged, judging{clip: c, ref: ref, key: trialKey{
+					source: sourceID, start: c.Start, duration: c.Duration,
+					reference: fmt.Sprintf("%dx%d tonemap=%v %s", ref.width, ref.height, toneMap, ref.transfer),
+					prefilter: prefilter, ffmpeg: tu.FFmpegVersion, scorer: scorer,
+				}})
 			}
-			res, bitrate, err := tu.search(ctx, log, target(r, t, hdrOut), t, sample, sampleVD.Duration.Seconds(), ref, toneMap, prefilter, workdir, key, past)
+			res, bitrate, err := tu.search(ctx, log, target(r, t, hdrOut), t, judged, toneMap, prefilter, past)
 			if err != nil {
 				return nil, fmt.Errorf("tuning %s: %w", t.Name, err)
 			}
@@ -158,6 +154,62 @@ func (tu *Tuner) Tune(ctx context.Context, r *config.Resolved, src string, vd pr
 		}
 	}
 	return results, nil
+}
+
+// clip is the sample cut from one tune range, and the references made
+// from it, which live in dir.
+type clip struct {
+	config.TuneRange
+	sample  string
+	seconds float64
+	dir     string
+	refs    map[refKey]reference
+}
+
+// cut cuts a sample from src (whose video is vd) for each range.
+func (tu *Tuner) cut(ctx context.Context, ranges []config.TuneRange, src string, vd probe.VideoData, workdir string) ([]*clip, error) {
+	var clips []*clip
+	for i, tr := range ranges {
+		start, err := config.ParseOffset(tr.Start)
+		if err != nil {
+			return nil, fmt.Errorf("tune.ranges[%d]: %w", i, err)
+		}
+		length, err := config.ParseOffset(tr.Duration)
+		if err != nil {
+			return nil, fmt.Errorf("tune.ranges[%d]: %w", i, err)
+		}
+		// Frame timing leaves a range that ends at the source's end a
+		// little short.
+		if vd.Duration > 0 && start+length > vd.Duration+time.Second/2 {
+			return nil, fmt.Errorf("tune.ranges[%d] (%s) runs past the end of %s, which lasts %v", i, tr, src, vd.Duration.Round(time.Millisecond))
+		}
+		c := &clip{TuneRange: tr, dir: filepath.Join(workdir, fmt.Sprintf("range%d", i)), refs: map[refKey]reference{}}
+		if err := os.MkdirAll(c.dir, 0o755); err != nil {
+			return nil, err
+		}
+		c.sample = filepath.Join(c.dir, "sample.mkv")
+		if err := tu.ffmpeg(ctx, "-ss", tr.Start, "-i", src, "-t", tr.Duration, "-map", "0:v:0", "-c", "copy", c.sample); err != nil {
+			return nil, fmt.Errorf("cutting sample %s: %w", tr, err)
+		}
+		cvd, err := tu.Prober.Probe(ctx, c.sample)
+		if err != nil {
+			return nil, err
+		}
+		if cvd.Duration <= 0 {
+			return nil, fmt.Errorf("sample %s of %s is empty: is it past the end?", tr, src)
+		}
+		c.seconds = cvd.Duration.Seconds()
+		clips = append(clips, c)
+	}
+	return clips, nil
+}
+
+// judging is how a rendition is judged on one clip: the reference it's
+// scored against, and the key its trials are recorded under.
+type judging struct {
+	*clip
+	ref reference
+	key trialKey
 }
 
 // refKey picks a reference: its size, and whether it is tone-mapped.
@@ -323,24 +375,38 @@ func target(r *config.Resolved, t *plan.Target, hdr bool) float64 {
 	return r.Tune.Target(r.Renditions[t.Name], hdr)
 }
 
-// search finds the worst quality setting at which t, encoded from the
-// sample without bitrate caps (and tone-mapped first with toneMap),
-// reaches goal. It returns the result and the bitrate of
-// that encode. Trials recorded in past under key are used instead of
-// encoding again, and new ones are recorded there.
-func (tu *Tuner) search(ctx context.Context, log *slog.Logger, goal float64, t *plan.Target, sample string, seconds float64, ref reference, toneMap bool, prefilter, workdir string, key trialKey, past *results) (Result, float64, error) {
+// search finds the worst quality setting at which t, encoded from
+// each clip without bitrate caps (and tone-mapped first with toneMap),
+// reaches goal on all of them. A setting's trial is the combination of
+// its clips' (see combine), and the result's bitrate is its. Trials
+// recorded in past under each clip's key are used instead of encoding
+// again, and new ones are recorded there.
+func (tu *Tuner) search(ctx context.Context, log *slog.Logger, goal float64, t *plan.Target, clips []judging, toneMap bool, prefilter string, past *results) (Result, float64, error) {
 	spec := qualitySpec(t.Encoder.Codec)
 	s := bench.NewSearch(spec.Steps(), spec.QualityToIndex(t.Quality))
 	// One step is worth less than a few seconds of sample can measure.
 	s.WithinStep = true
-	src := plan.Source{Label: "tune", Path: sample, ID: "sample"}
-	trialJob := func(q float64) *ffmpeg.Job {
+	trialJob := func(c judging, q float64) *ffmpeg.Job {
 		tr := *t
 		tr.Quality = q
 		tr.Encoder.CapBitrate = false
-		return tr.Job(src, workdir, toneMap)
+		return tr.Job(plan.Source{Label: "tune", Path: c.sample, ID: "sample"}, c.dir, toneMap)
 	}
-	key.args = withoutQuality(trialJob(0).Args, t.Encoder.QualityFlag)
+	for i := range clips {
+		clips[i].key.args = withoutQuality(trialJob(clips[i], 0).Args, t.Encoder.QualityFlag)
+	}
+	// lookup returns the trial at q if every clip's is recorded.
+	lookup := func(q float64) (trial, []trial, bool) {
+		var each []trial
+		for _, c := range clips {
+			p, ok := past.lookup(c.key, q)
+			if !ok {
+				return trial{}, nil, false
+			}
+			each = append(each, p)
+		}
+		return combine(each), each, true
+	}
 
 	// Start from the closest bracket the past trials give, judged
 	// against this target: the worst passing setting and the best
@@ -348,7 +414,7 @@ func (tu *Tuner) search(ctx context.Context, log *slog.Logger, goal float64, t *
 	seen := map[int]trial{}
 	pass, fail := -1, -1
 	for i := 0; i <= spec.Steps(); i++ {
-		if p, ok := past.lookup(key, spec.IndexToQuality(i)); ok {
+		if p, _, ok := lookup(spec.IndexToQuality(i)); ok {
 			seen[i] = p
 			if p.vmaf >= goal {
 				pass = i
@@ -382,7 +448,7 @@ func (tu *Tuner) search(ctx context.Context, log *slog.Logger, goal float64, t *
 			p := seen[best]
 			res := Result{
 				Rendition: t.Name, Quality: spec.IndexToQuality(best), Bitrate: roundBitrate(p.bitrate),
-				VMAF: p.vmaf, Target: goal, Model: ref.model.Name(), Outcome: outcome, Encodes: encodes, Cached: len(seen) - encodes,
+				VMAF: p.vmaf, Target: goal, Model: clips[0].ref.model.Name(), Outcome: outcome, Encodes: encodes, Cached: len(seen) - encodes,
 			}
 			log.Info("Tuned", "quality", res.Quality, "vmaf", p.vmaf,
 				"bitrate", FormatBitrate(res.Bitrate), "outcome", outcome, "encodes", encodes, "cached", res.Cached)
@@ -391,21 +457,51 @@ func (tu *Tuner) search(ctx context.Context, log *slog.Logger, goal float64, t *
 
 		q := spec.IndexToQuality(i)
 		p, cached := seen[i]
+		var each []trial
 		if !cached {
-			var err error
-			if p, err = tu.trial(ctx, trialJob(q), sample, seconds, ref, prefilter, workdir); err != nil {
-				return Result{}, 0, err
+			for _, c := range clips {
+				ct, ok := past.lookup(c.key, q)
+				if !ok {
+					var err error
+					if ct, err = tu.trial(ctx, trialJob(c, q), c.sample, c.seconds, c.ref, prefilter, c.dir); err != nil {
+						return Result{}, 0, err
+					}
+					if err := past.record(c.key, t.Name, q, ct); err != nil {
+						return Result{}, 0, fmt.Errorf("recording trial: %w", err)
+					}
+				}
+				each = append(each, ct)
 			}
 			encodes++
+			p = combine(each)
 			seen[i] = p
-			if err := past.record(key, t.Name, q, p); err != nil {
-				return Result{}, 0, fmt.Errorf("recording trial: %w", err)
-			}
+		} else if len(clips) > 1 {
+			_, each, _ = lookup(q)
 		}
 		margin := p.vmaf - goal
-		log.Info("Trial", "quality", q, "vmaf", p.vmaf, "pass", margin >= 0, "cached", cached)
+		attrs := []any{"quality", q, "vmaf", p.vmaf, "pass", margin >= 0, "cached", cached}
+		if len(clips) > 1 && each != nil {
+			vmafs := make([]float64, len(each))
+			for j, e := range each {
+				vmafs[j] = e.vmaf
+			}
+			attrs = append(attrs, "ranges", vmafs)
+		}
+		log.Info("Trial", attrs...)
 		s.Observe(i, margin >= 0, margin)
 	}
+}
+
+// combine is a setting's trial over several clips: its worst VMAF,
+// since it passes only if every clip does, and its highest bitrate, so
+// a cap taken from it holds for the hardest clip.
+func combine(each []trial) trial {
+	c := each[0]
+	for _, e := range each[1:] {
+		c.vmaf = min(c.vmaf, e.vmaf)
+		c.bitrate = max(c.bitrate, e.bitrate)
+	}
+	return c
 }
 
 // trial encodes the sample with job and scores it against ref.

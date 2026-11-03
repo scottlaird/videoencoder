@@ -33,6 +33,10 @@ type fakeFFmpeg struct {
 	height    map[string]uint64  // encoded file -> rendition height
 	// toneMapped is set if any trial encode was tone-mapped.
 	toneMapped bool
+	// harder lowers the cutoff of samples cut into the named range
+	// directories ("range1") by that many steps, and doubles their size.
+	harder map[string]float64
+	rng    map[string]string // encoded file -> range directory
 }
 
 func cutoff(h uint64) float64 { return 20 + float64(h)/240 } // 480p: 22, 2160p: 29
@@ -50,7 +54,7 @@ func (f *fakeFFmpeg) Exec(_ context.Context, argv []string) (bench.Measurement, 
 		ref := argv[slices.Index(argv, "-i")+3]
 		f.scoredAt = append(f.scoredAt, ref[strings.LastIndex(ref, "/")+1:])
 		f.prefilter = append(f.prefilter, graph)
-		vmaf := 95 - 0.5*(f.quality[in]-cutoff(f.height[in]))
+		vmaf := 95 - 0.5*(f.quality[in]-cutoff(f.height[in])+f.harder[f.rng[in]])
 		log := fmt.Sprintf(`{"frames":[{"metrics":{"vmaf":%v}}],"pooled_metrics":{"vmaf":{"mean":%v,"harmonic_mean":%v},"vmaf_neg":{"mean":%v},"psnr_y":{"mean":45},"psnr_cb":{"mean":48},"psnr_cr":{"mean":48}}}`, vmaf, vmaf, vmaf, vmaf)
 		os.WriteFile(logs[0], []byte(log), 0o644)
 		os.WriteFile(logs[1], []byte(`{"pooled_metrics":{"ciede2000":{"mean":50}}}`), 0o644)
@@ -73,7 +77,15 @@ func (f *fakeFFmpeg) Exec(_ context.Context, argv []string) (bench.Measurement, 
 			f.toneMapped = true
 		}
 		f.encodes[fmt.Sprint(h)]++
-		return bench.Measurement{}, os.WriteFile(out, bytes.Repeat([]byte("x"), int(h*1000/uint64(q))), 0o644)
+		if f.rng == nil {
+			f.rng = map[string]string{}
+		}
+		f.rng[out] = filepath.Base(filepath.Dir(argv[slices.Index(argv, "-i")+1]))
+		size := int(h * 1000 / uint64(q))
+		if f.harder[f.rng[out]] > 0 {
+			size *= 2
+		}
+		return bench.Measurement{}, os.WriteFile(out, bytes.Repeat([]byte("x"), size), 0o644)
 	}
 	return bench.Measurement{}, os.WriteFile(out, []byte("media"), 0o644)
 }
@@ -98,7 +110,7 @@ func source(t *testing.T) string {
 func tuneConfig() *config.Resolved {
 	r := &config.Resolved{}
 	r.Name = "v"
-	r.Tune = config.Tune{TargetVMAF: 95, Start: "0s", Duration: "8s", Anchors: 2}
+	r.Tune = config.Tune{TargetVMAF: 95, Ranges: []config.TuneRange{{Start: "0s", Duration: "8s"}}, Anchors: 2}
 	r.Renditions = map[string]*config.Rendition{"av1-720": {TargetVMAF: 94}}
 	return r
 }
@@ -467,5 +479,80 @@ func TestMakeReferenceFormat(t *testing.T) {
 		if got := filters[len(filters)-1]; got != tt.want {
 			t.Errorf("toneMap %v: -vf ends with %q, want %q (-vf %s)", tt.toneMap, got, tt.want, vf)
 		}
+	}
+}
+
+func TestTuneRanges(t *testing.T) {
+	av1 := config.Encoder{Codec: "libsvtav1", QualityFlag: "-crf", Args: []string{"-preset", "5"}}
+	targets := func() plan.Targets {
+		return plan.Targets{
+			{Name: "av1-480", EncoderName: "av1", Encoder: av1, Width: 852, Height: 480, Quality: 28},
+			{Name: "av1-2160", EncoderName: "av1", Encoder: av1, Width: 3840, Height: 2160, Quality: 32},
+		}
+	}
+	vd := probe.VideoData{Width: 3840, Height: 2160, Duration: 40 * time.Second}
+	src := source(t)
+	tuneOn := func(tu *Tuner, ranges ...config.TuneRange) map[string]Result {
+		t.Helper()
+		r := tuneConfig()
+		r.Tune.Ranges = ranges
+		results, err := tu.Tune(context.Background(), r, src, vd, targets(), t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]Result{}
+		for _, res := range results {
+			got[res.Rendition] = res
+		}
+		return got
+	}
+	titles, scenery := config.TuneRange{Start: "0s", Duration: "4s"}, config.TuneRange{Start: "30s", Duration: "8s"}
+
+	// The second range is 4 steps harder, so it decides both the
+	// quality and the bitrate: the same as tuning on it alone.
+	newFake := func() *fakeFFmpeg {
+		return &fakeFFmpeg{encodes: map[string]int{}, quality: map[string]float64{}, height: map[string]uint64{},
+			harder: map[string]float64{"range1": 4}}
+	}
+	results := filepath.Join(t.TempDir(), ResultsFile)
+	f := newFake()
+	tu := &Tuner{Exec: f, Prober: fakeProber{}, Threads: 1, Results: results}
+	both := tuneOn(tu, titles, scenery)
+	if r := both["av1-480"]; r.Quality != 18 || r.Outcome != bench.Found {
+		t.Errorf("av1-480 over both ranges = %+v, want crf 18 found", r)
+	}
+	// Tuned alone, the harder range sits in range0's directory.
+	f2 := newFake()
+	f2.harder = map[string]float64{"range0": 4}
+	alone := tuneOn(&Tuner{Exec: f2, Prober: fakeProber{}, Threads: 1}, scenery)
+	for name, r := range both {
+		if a := alone[name]; r.Quality != a.Quality || r.Bitrate != a.Bitrate {
+			t.Errorf("%s over both ranges = crf %v at %v, want the harder range's crf %v at %v", name, r.Quality, r.Bitrate, a.Quality, a.Bitrate)
+		}
+	}
+
+	// Each range's trials are recorded under its own key, so a rerun
+	// encodes nothing.
+	f.encodes = map[string]int{}
+	tuneOn(tu, titles, scenery)
+	if n := f.encodes["480"] + f.encodes["2160"]; n != 0 {
+		t.Errorf("rerun made %d encodes, want 0", n)
+	}
+	log, err := os.ReadFile(results)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{",0s,4s,", ",30s,8s,"} {
+		if !strings.Contains(string(log), want) {
+			t.Errorf("results lack trials for range %q:\n%s", want, log)
+		}
+	}
+
+	// A range past the end of the source is an error.
+	r := tuneConfig()
+	r.Tune.Ranges = []config.TuneRange{{Start: "35s", Duration: "8s"}}
+	_, err = tu.Tune(context.Background(), r, src, vd, targets(), t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "runs past the end") {
+		t.Errorf("Tune with a range past the end = %v, want an error", err)
 	}
 }
