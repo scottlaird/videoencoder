@@ -336,10 +336,15 @@ plenty for one clip falls well short for another.
    The SDR renditions are tuned on the SDR sample, and the HDR ones on
    the HDR sample. An HDR-only video's SDR-only encoders are tuned on
    the HDR sample, tone-mapped as a render would.
-2. For each encoder, it searches the anchor renditions, the shortest
-   and tallest (plus the middle with `anchors: 3`), for the quality
-   setting that just reaches the target VMAF.
+2. For each encoder, it searches the anchor renditions for the quality
+   setting that just reaches the target VMAF. The anchors are the
+   shortest and tallest renditions each VMAF model scores (plus the
+   middle with `anchors: 3`). With the built-in model, whose 4K variant
+   takes over at 2160p, a 480p–2160p ladder has anchors at 480p, 1440p
+   and 2160p.
 3. It interpolates the renditions in between, linearly in log height.
+   Models score on different scales, so it never interpolates across
+   two of them: doing that put 1440p as much as 25 CRF too high.
 4. It writes each rendition's `quality`, and `bitrate` for encoders
    that cap it, into the video's sidecar, under `hdr` for the HDR
    encodes. Each value gets a comment saying how it was found.

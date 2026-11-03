@@ -96,7 +96,11 @@ func (tu *Tuner) Tune(ctx context.Context, r *config.Resolved, src string, vd pr
 	refs := map[refKey]reference{}
 	results := make([]Result, len(targets))
 	byEncoder := map[string][]Point{}
-	for enc, idx := range Anchors(targets, r.Tune.Anchors) {
+	scorer := func(i int) string {
+		t, hdrOut := forTone(targets[i], hdr)
+		return models.forTarget(t, hdrOut).ScorerAt(t.Height)
+	}
+	for enc, idx := range Anchors(targets, r.Tune.Anchors, scorer) {
 		for _, i := range idx {
 			t, hdrOut := forTone(targets[i], hdr)
 			// SDR-only encoders tone-map HDR, as a render would, and are

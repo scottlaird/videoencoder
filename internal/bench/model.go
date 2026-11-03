@@ -121,6 +121,15 @@ func (m VMAFModel) Name() string {
 // ID identifies the model's contents, or is "" for the built-in model.
 func (m VMAFModel) ID() string { return m.id }
 
+// ScorerAt identifies the model that scores a rendition height pixels
+// tall: the built-in model switches to its 4K variant at 2160p.
+func (m VMAFModel) ScorerAt(height uint64) string {
+	if m.Path == "" {
+		return vmafModel(height)
+	}
+	return m.id
+}
+
 // option returns libvmaf's model option for scoring at height: the
 // model as "vmaf", and for the built-in model its no-enhancement-gain
 // variant as "vmaf_neg".

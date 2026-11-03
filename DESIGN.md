@@ -707,8 +707,15 @@ being encoded, varying only the quality setting.
   SDR source, or on the HDR one tone-mapped if there isn't one. Unset
   HDR settings follow the SDR ones, so a config without any renders
   as before.
-- **Anchors.** Per encoder, the shortest and tallest renditions as
-  filtered for the source (`tune.anchors: 3` adds the middle one). Each
+- **Anchors.** Per encoder and VMAF model, the shortest and tallest
+  renditions as filtered for the source (`tune.anchors: 3` adds the
+  middle one), so nothing is interpolated across a change of model.
+  With the built-in model, a 480p–2160p ladder's anchors are 480p,
+  1440p (the 1080 model's tallest) and 2160p (the 4K model's). Anchoring
+  only 480p and 2160p left 44 of 45 interpolated renditions too
+  coarse over 15 clips, by a median of 5 CRF and up to 25 at 1440p,
+  because the 4K model rates the same encode higher. With 1440p
+  anchored, 720p and 1080p came within 3 CRF of a full search. Each
   is encoded from the sample with its real arguments, but no bitrate
   caps, while bench's search (stopping within a step of the target) varies the
   quality. The search starts from the configured quality, uses the

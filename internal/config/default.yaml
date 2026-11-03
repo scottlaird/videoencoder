@@ -70,8 +70,9 @@ encoders:
 # How "videoencoder tune" picks rendition qualities: it encodes
 # duration seconds of each source from start (SDR renditions from the
 # SDR source, HDR ones from the HDR source), searching each
-# encoder's anchor renditions (shortest and tallest; 3 adds the middle)
-# for the quality setting that just reaches target_vmaf, interpolates
+# encoder's anchor renditions (the shortest and tallest each VMAF model
+# scores; anchors: 3 adds the middle) for the quality setting that
+# just reaches target_vmaf, interpolates
 # the rest, and writes quality and bitrate into the video's sidecar
 # (under hdr for HDR renditions).
 # Each rendition is scored against the sample at its own size (with
