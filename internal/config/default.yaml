@@ -9,6 +9,11 @@
 outdir: transcodes/{name}
 streamdir: stream/{name}
 
+# Copy each source file into the stream directory under its own name,
+# so it's published with the renditions: for sharing originals, such as
+# test clips that people should be able to re-encode themselves.
+copy_sources: false
+
 # Seek thumbnails: a frame every interval seconds, height pixels high,
 # tiled columns x rows to a JPEG, and added to dash.mpd (as a DASH-IF
 # thumbnail AdaptationSet) and hls.m3u8 (as an image playlist).

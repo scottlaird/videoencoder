@@ -29,15 +29,18 @@ type Config struct {
 	// Sources maps a label to a source file. Sources are encoded in
 	// label order, and the first supplies the audio and poster, so
 	// "hdr" before "sdr" works as expected.
-	Sources    map[string]string     `yaml:"sources"`
-	Outdir     string                `yaml:"outdir"`
-	Streamdir  string                `yaml:"streamdir"`
-	Thumbnails Thumbnails            `yaml:"thumbnails"`
-	Poster     Poster                `yaml:"poster"`
-	Publish    Publish               `yaml:"publish"`
-	Tune       Tune                  `yaml:"tune"`
-	Encoders   map[string]*Encoder   `yaml:"encoders"`
-	Renditions map[string]*Rendition `yaml:"renditions"`
+	Sources   map[string]string `yaml:"sources"`
+	Outdir    string            `yaml:"outdir"`
+	Streamdir string            `yaml:"streamdir"`
+	// CopySources adds each source file, under its own name, to the
+	// stream, so it's published alongside the renditions.
+	CopySources bool                  `yaml:"copy_sources"`
+	Thumbnails  Thumbnails            `yaml:"thumbnails"`
+	Poster      Poster                `yaml:"poster"`
+	Publish     Publish               `yaml:"publish"`
+	Tune        Tune                  `yaml:"tune"`
+	Encoders    map[string]*Encoder   `yaml:"encoders"`
+	Renditions  map[string]*Rendition `yaml:"renditions"`
 }
 
 // layer is the schema of a config file: a Config that may also define

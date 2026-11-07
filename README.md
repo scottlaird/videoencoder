@@ -211,6 +211,7 @@ videos:
 | `sources` | Source files by label, such as `sdr` and `hdr`. Sources are encoded in label order, and the first supplies the audio and poster. |
 | `outdir` | Where renditions and the video's state file go. Default `transcodes/{name}`. |
 | `streamdir` | Where the finished stream goes. Default `stream/{name}`. |
+| `copy_sources` | Copy each source file into the stream under its own name, so it's published with the renditions. For sharing originals, such as test clips people can re-encode. Unchanged copies aren't redone. Default `false`. |
 | `encoders` | ffmpeg encoders by name, described below. |
 | `renditions` | The ladder, described below. |
 | `tune` | How `videoencoder tune` works: `target_vmaf` (default 95), `ranges` (`[{start: 0s, duration: 8s}]`), `anchors` (2), `vmaf_model` and `vmaf_model_2160`, and `hdr` with HDR renditions' `target_vmaf`, `vmaf_model` and `vmaf_model_2160` (see below). |

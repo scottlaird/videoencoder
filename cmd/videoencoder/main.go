@@ -423,6 +423,13 @@ func render(ctx context.Context, r *config.Resolved, d deps, rebuild, only strin
 		return fmt.Errorf("publishing posters: %w", err)
 	}
 	files = append(files, posterFiles...)
+	if r.CopySources {
+		srcFiles, err := copySources(r.Streamdir, b.sources)
+		if err != nil {
+			return err
+		}
+		files = append(files, srcFiles...)
+	}
 
 	// Only now that the new stream is complete, drop what it replaced.
 	var slots []string
@@ -510,6 +517,11 @@ func printPlan(ctx context.Context, r *config.Resolved, d deps, only string) err
 			reason = "build: " + reason
 		}
 		fmt.Fprintf(w, "#   %s -> %s: %s\n", gainMapDesc(g), filepath.Base(g.Output), reason)
+	}
+	if r.CopySources {
+		for _, src := range b.sources {
+			fmt.Fprintf(w, "#   %s source -> %s: copied to the stream\n", src.Label, filepath.Base(src.Path))
+		}
 	}
 	fmt.Fprintln(w)
 	return nil
