@@ -459,6 +459,9 @@ when we get there.
 samples: samples/           # every video file here is a sample clip
 workdir: work               # results.csv, best.csv, keep/, tmp/
 target_vmaf: 95
+vmaf_model: v0              # optional JSON models, as for tune
+vmaf_model_2160: vmaf_v0.6.1.json
+hdr: {target_vmaf: 92, vmaf_model: hdr_vmaf_v1.1.8_3d0h.json}
 min_ciede2000: 0            # optional color limits, see Measurement
 min_chroma_psnr: 0
 vmaf_threads: 4             # libvmaf n_threads
@@ -657,7 +660,19 @@ log and reuses whatever it finds. So:
   copies are paired with the reference's copies, the pair keys the
   encodes, and rows record the `reference`.
 - Encodes below the reference resolution are scaled back up
-  (bicubic) before scoring. 2160p samples use the `vmaf_4k` model.
+  (bicubic) before scoring. 2160p samples use the `vmaf_4k` model
+  unless `vmaf_model_2160` is set.
+- `vmaf_model`, `vmaf_model_2160` and `hdr` choose the model and
+  target per sample from its reference's tone and height, as tune
+  does for renditions. The model's ID is appended to the row's
+  `scorer` (`v6 model=…`) and so to the encode key, so rows scored
+  with different models never mix: answers, seeds and settled checks
+  count only rows whose `scorer` matches the sample's. The built-in
+  model's scorer is the bare version, so rows from before this keep
+  counting under the default config. `report` and `prune` probe the
+  samples (without making scaled copies) to find each one's scoring.
+  vmaf_4k scores 1.4–4 points above the 1080p model at 2160p, so
+  2160p and 1080p answers at one target aren't the same quality.
 - Hosts are recorded. Timings from different machines are compared
   only with themselves.
 

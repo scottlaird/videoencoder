@@ -31,6 +31,10 @@ type Bench struct {
 	// DryRun reports what would be encoded without encoding anything.
 	DryRun bool
 	Now    func() time.Time
+
+	scorings Scorings
+	// listing makes loadSamples skip making copies, quietly.
+	listing bool
 }
 
 type sample struct {
@@ -42,8 +46,10 @@ type sample struct {
 	// against (see Config.References); otherwise the sample itself.
 	ref *sample
 	// prefilter is applied to both sides before scoring: a tone map to
-	// SDR for HDR samples, since VMAF and CIEDE2000 are SDR metrics.
+	// SDR for HDR samples, since VMAF and CIEDE2000 are SDR metrics,
+	// unless an HDR VMAF model judges them.
 	prefilter string
+	scoring   Scoring
 }
 
 // task is the search for one flagset on one sample.
@@ -94,6 +100,10 @@ func (b *Bench) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	b.scorings = Scorings{}
+	for _, s := range samples {
+		b.scorings[s.name] = s.scoring
+	}
 	tasks := b.tasks(samples, results)
 
 	for round := 1; ; round++ {
@@ -121,7 +131,7 @@ func (b *Bench) Run(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
-	return WriteBest(b.bestPath(), b.Cfg, results)
+	return WriteBest(b.bestPath(), b.Cfg, results, b.scorings)
 }
 
 func (b *Bench) loadSamples(ctx context.Context) ([]*sample, error) {
@@ -153,6 +163,9 @@ func (b *Bench) loadSamples(ctx context.Context) ([]*sample, error) {
 			if err := b.attachReferences(ctx, s, scaled, refName); err != nil {
 				return nil, fmt.Errorf("%s: %w", name, err)
 			}
+		}
+		for _, c := range scaled {
+			b.setScoring(c)
 		}
 		samples = append(samples, scaled...)
 	}
@@ -197,6 +210,33 @@ func (b *Bench) attachReferences(ctx context.Context, s *sample, scaled []*sampl
 	return nil
 }
 
+// setScoring picks how s's encodes are judged, from the tone and
+// height of what they're scored against.
+func (b *Bench) setScoring(s *sample) {
+	ref := s.reference()
+	hdr := ref.vd.Tone() == probe.HDR
+	s.scoring = b.Cfg.scoring(hdr, ref.vd.Height)
+	if hdr && s.scoring.Model.HDR {
+		ref.prefilter = ""
+	}
+}
+
+// Scorings returns how each sample is judged under the config, for
+// reports on the log. It makes no downscaled copies.
+func (b *Bench) Scorings(ctx context.Context) (Scorings, error) {
+	dry := *b
+	dry.listing = true
+	samples, err := dry.loadSamples(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sc := Scorings{}
+	for _, s := range samples {
+		sc[s.name] = s.scoring
+	}
+	return sc, nil
+}
+
 // reference is what encodes of s are scored against.
 func (s *sample) reference() *sample {
 	if s.ref != nil {
@@ -235,6 +275,10 @@ func (b *Bench) scaledSamples(ctx context.Context, s *sample) ([]*sample, error)
 		c.vd = s.vd
 		c.vd.Width, c.vd.Height = w, h
 		if _, err := os.Stat(c.path); err != nil {
+			if b.listing {
+				out = append(out, c)
+				continue
+			}
 			if b.DryRun {
 				slog.Info("Would make sample", "sample", c.name)
 				out = append(out, c)
@@ -326,8 +370,8 @@ func settled(c *Config, fs *Flagset, fkey string, s *sample, results *Results) b
 	q := fs.Quality
 	pass := map[int]bool{}
 	for _, r := range results.Rows {
-		if r.Sample == s.name && r.FlagsetKey == fkey && r.Scorer == scorer {
-			pass[q.qualityToIndex(r.Quality)] = c.margin(r.Metrics) >= 0
+		if r.Sample == s.name && r.FlagsetKey == fkey && r.Scorer == s.scoring.Scorer {
+			pass[q.qualityToIndex(r.Quality)] = c.margin(r.Metrics, s.scoring.Target) >= 0
 		}
 	}
 	best := -1
@@ -352,7 +396,7 @@ func settled(c *Config, fs *Flagset, fkey string, s *sample, results *Results) b
 // encoder, else the middle of the range.
 func (b *Bench) seed(fs *Flagset, fkey string, s *sample, results *Results) int {
 	q := fs.Quality
-	best := bestByPair(b.Cfg, results)
+	best := bestByPair(b.Cfg, results, b.scorings)
 	var same, sameEncoder []int
 	for pair, row := range best {
 		if pair.sample == s.name || row.QualityFlag != q.Flag {
@@ -394,9 +438,9 @@ func (b *Bench) advance(tasks []*task, results *Results) []*pending {
 				break
 			}
 			q := t.fs.Quality.indexToQuality(i)
-			key := encodeKey(t.sample.id, t.fkey, q)
+			key := encodeKey(t.sample.scoring.Scorer, t.sample.id, t.fkey, q)
 			if row, ok := results.Lookup(key); ok {
-				m := b.Cfg.margin(row.Metrics)
+				m := b.Cfg.margin(row.Metrics, t.sample.scoring.Target)
 				t.search.Observe(i, m >= 0, m)
 				continue
 			}
@@ -494,7 +538,7 @@ func (b *Bench) scoreAll(ctx context.Context, batch []*pending, record func(*pen
 func (b *Bench) score(ctx context.Context, p *pending) (Metrics, error) {
 	ref := p.t.sample.reference()
 	vd := ref.vd
-	return Score(ctx, b.Exec, p.out, ref.path, vd.Width, vd.Height, b.Cfg.VMAFThreads, b.scratchDir(), p.key, ref.prefilter, vd.ColorTransfer, VMAFModel{})
+	return Score(ctx, b.Exec, p.out, ref.path, vd.Width, vd.Height, b.Cfg.VMAFThreads, b.scratchDir(), p.key, ref.prefilter, vd.ColorTransfer, p.t.sample.scoring.Model)
 }
 
 func (b *Bench) record(results *Results, p *pending) error {
@@ -529,7 +573,7 @@ func (b *Bench) record(results *Results, p *pending) error {
 		SysS:          p.m.Sys.Seconds(),
 		MaxRSSKB:      p.m.MaxRSSKB,
 		Metrics:       m,
-		Scorer:        scorer,
+		Scorer:        t.sample.scoring.Scorer,
 		FFmpegVersion: b.FFmpegVersion,
 		Host:          b.Host,
 		Time:          b.now(),
@@ -537,7 +581,7 @@ func (b *Bench) record(results *Results, p *pending) error {
 	if err := results.Append(row); err != nil {
 		return err
 	}
-	margin := b.Cfg.margin(m)
+	margin := b.Cfg.margin(m, t.sample.scoring.Target)
 	slog.Info("Scored", "sample", t.sample.name, "flagset", t.name, "quality", p.quality,
 		"kbps", int(row.Kbps), "vmaf", m.VMAF, "ciede2000", m.CIEDE2000, "color_shift", m.ColorShiftP99, "pass", margin >= 0)
 	t.search.Observe(p.i, margin >= 0, margin)

@@ -56,9 +56,97 @@ type Config struct {
 	MaxColorFlicker float64 `yaml:"max_color_flicker"`
 	// VMAFThreads is passed to libvmaf's n_threads; VMAFJobs is how many
 	// scorings run at once.
-	VMAFThreads int                 `yaml:"vmaf_threads"`
-	VMAFJobs    int                 `yaml:"vmaf_jobs"`
-	Flagsets    map[string]*Flagset `yaml:"flagsets"`
+	VMAFThreads int `yaml:"vmaf_threads"`
+	VMAFJobs    int `yaml:"vmaf_jobs"`
+	// VMAFModel is a libvmaf JSON model to score SDR samples with,
+	// VMAFModel2160 one for samples 2160p and up (default VMAFModel).
+	// Unset, or BuiltinVMAFModel, is libvmaf's built-in v0.6.1 model,
+	// which switches to its 4K variant at 2160p.
+	VMAFModel     string `yaml:"vmaf_model"`
+	VMAFModel2160 string `yaml:"vmaf_model_2160"`
+	// HDR overrides the target and models for HDR samples.
+	HDR      HDRScoring          `yaml:"hdr"`
+	Flagsets map[string]*Flagset `yaml:"flagsets"`
+
+	sdrModels, hdrModels modelPair
+}
+
+// HDRScoring is how HDR samples are judged. Unset fields fall back to
+// the SDR ones. An HDR model (such as Netflix's hdr_vmaf_v1) scores
+// both sides as HDR; any other model scores them tone-mapped to SDR.
+type HDRScoring struct {
+	TargetVMAF    float64 `yaml:"target_vmaf"`
+	VMAFModel     string  `yaml:"vmaf_model"`
+	VMAFModel2160 string  `yaml:"vmaf_model_2160"`
+}
+
+// BuiltinVMAFModel is the vmaf_model value for libvmaf's own model.
+const BuiltinVMAFModel = "v0"
+
+// modelPair is base, and uhd for samples 2160p and up.
+type modelPair struct{ base, uhd VMAFModel }
+
+func (m modelPair) forHeight(h uint64) VMAFModel {
+	if h >= 2160 {
+		return m.uhd
+	}
+	return m.base
+}
+
+func loadModelPair(base, uhd string) (modelPair, error) {
+	load := func(path string) (VMAFModel, error) {
+		if path == "" || path == BuiltinVMAFModel {
+			return VMAFModel{}, nil
+		}
+		return LoadVMAFModel(path)
+	}
+	var p modelPair
+	var err error
+	if p.base, err = load(base); err != nil {
+		return modelPair{}, err
+	}
+	p.uhd = p.base
+	if uhd != "" {
+		if p.uhd, err = load(uhd); err != nil {
+			return modelPair{}, err
+		}
+	}
+	return p, nil
+}
+
+// Scoring is how one sample's encodes are judged.
+type Scoring struct {
+	// Scorer is logged with each encode (Row.Scorer): the scoring
+	// method's version, and the VMAF model's ID if it isn't built in.
+	Scorer string
+	Target float64
+	Model  VMAFModel
+}
+
+// scoring returns how a sample of the given tone and height is judged.
+func (c *Config) scoring(hdr bool, height uint64) Scoring {
+	s := Scoring{Scorer: scorer, Target: c.TargetVMAF, Model: c.sdrModels.forHeight(height)}
+	if hdr {
+		s.Model = c.hdrModels.forHeight(height)
+		if c.HDR.TargetVMAF != 0 {
+			s.Target = c.HDR.TargetVMAF
+		}
+	}
+	if id := s.Model.ID(); id != "" {
+		s.Scorer += " " + id
+	}
+	return s
+}
+
+// Scorings maps sample names to how they're judged. Samples it doesn't
+// list are judged as SDR with the built-in model.
+type Scorings map[string]Scoring
+
+func (sc Scorings) of(c *Config, sample string) Scoring {
+	if s, ok := sc[sample]; ok {
+		return s
+	}
+	return Scoring{Scorer: scorer, Target: c.TargetVMAF}
 }
 
 // Flagset is one candidate set of encoder options, minus the quality
@@ -180,6 +268,35 @@ func (c *Config) finish(base string) error {
 	if len(c.Flagsets) == 0 {
 		return fmt.Errorf("flagsets: at least one required")
 	}
+	if c.HDR.TargetVMAF < 0 || c.HDR.TargetVMAF > 100 {
+		return fmt.Errorf("hdr.target_vmaf: must be between 0 and 100")
+	}
+	if c.VMAFModel2160 != "" && c.VMAFModel == "" {
+		return fmt.Errorf("vmaf_model_2160: needs vmaf_model (%s for the built-in model)", BuiltinVMAFModel)
+	}
+	if c.HDR.VMAFModel2160 != "" && c.HDR.VMAFModel == "" {
+		return fmt.Errorf("hdr.vmaf_model_2160: needs hdr.vmaf_model (%s for the built-in model)", BuiltinVMAFModel)
+	}
+	for _, p := range []*string{&c.VMAFModel, &c.VMAFModel2160, &c.HDR.VMAFModel, &c.HDR.VMAFModel2160} {
+		if *p != "" && *p != BuiltinVMAFModel {
+			*p = resolve(base, *p)
+		}
+	}
+	var err error
+	if c.sdrModels, err = loadModelPair(c.VMAFModel, c.VMAFModel2160); err != nil {
+		return err
+	}
+	for _, m := range []VMAFModel{c.sdrModels.base, c.sdrModels.uhd} {
+		if m.HDR {
+			return fmt.Errorf("vmaf_model: HDR model %s can't judge SDR samples; set hdr.vmaf_model instead", m.Name())
+		}
+	}
+	c.hdrModels = c.sdrModels
+	if c.HDR.VMAFModel != "" {
+		if c.hdrModels, err = loadModelPair(c.HDR.VMAFModel, c.HDR.VMAFModel2160); err != nil {
+			return err
+		}
+	}
 
 	for _, name := range c.FlagsetNames() {
 		f := c.Flagsets[name]
@@ -237,10 +354,11 @@ func (q Quality) steps() int {
 	return int(math.Round((q.Max - q.Min) / q.Step))
 }
 
-// margin is how far m clears the pass criteria: >= 0 passes, and the
-// value is the smallest of the per-criterion margins.
-func (c *Config) margin(m Metrics) float64 {
-	margin := m.VMAF - c.TargetVMAF
+// margin is how far m clears the pass criteria, with target as the
+// VMAF target: >= 0 passes, and the value is the smallest of the
+// per-criterion margins.
+func (c *Config) margin(m Metrics, target float64) float64 {
+	margin := m.VMAF - target
 	if c.MinCIEDE2000 > 0 {
 		margin = min(margin, m.CIEDE2000-c.MinCIEDE2000)
 	}

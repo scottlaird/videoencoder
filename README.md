@@ -492,6 +492,12 @@ samples: samples        # directory of sample clips, about 30 s each
 workdir: work
 scales: [2160, 1080]    # test at these heights; taller samples are downscaled once
 target_vmaf: 95
+vmaf_model: v0          # built-in model below 2160p
+vmaf_model_2160: vmaf_v0.6.1.json  # the 1080p model at 2160p too
+hdr:                    # HDR samples
+  target_vmaf: 92
+  vmaf_model: hdr_vmaf_v1.1.8_3d0h.json
+  vmaf_model_2160: hdr_vmaf_v1.1.8_1d5h_2160.json
 vmaf_threads: 4         # libvmaf n_threads
 vmaf_jobs: 3            # scorings run at once
 references:             # score a sample against another file in samples/
@@ -516,7 +522,15 @@ flagsets:
 - **Scales.** A sample taller than a scale is downscaled once with
   Lanczos, and the copy is cached in `workdir`. A sample no taller
   than a scale is used as it is. Encodes are scored at the sample's
-  size, with the 4K model at 2160p.
+  size, with the 4K model at 2160p unless `vmaf_model_2160` says
+  otherwise.
+- **VMAF models.** `vmaf_model` and `vmaf_model_2160` pick libvmaf JSON
+  models, as for `tune`. `hdr` sets `target_vmaf`, `vmaf_model` and
+  `vmaf_model_2160` for HDR samples, falling back to the SDR settings.
+  An HDR model scores HDR samples as HDR; any other model scores them
+  tone-mapped. Each row's `scorer` names the model, and only rows
+  scored the way the config says count. Changing a model searches
+  again, and changing it back reuses the earlier encodes.
 - **References.** A sample is normally scored against itself. To
   measure what a lossy master costs, use `references` to score an
   export against the original it was made from.
@@ -572,9 +586,9 @@ These are all in `workdir`:
   timestamp can compare frames that don't match.
 - **Upscaling.** Encodes smaller than their reference are scaled back
   up (bicubic) before scoring.
-- **HDR.** HDR samples are encoded as HDR, but both sides are
-  tone-mapped to SDR for VMAF. The color shift measures are computed
-  in HDR itself.
+- **HDR.** HDR samples are encoded as HDR. Both sides are tone-mapped
+  to SDR for VMAF unless `hdr.vmaf_model` is an HDR model. The color
+  shift measures are computed in HDR itself.
 - **Recorded scores.** Each row records the mean VMAF, its harmonic
   mean and 1st-percentile frame score, and VMAF NEG. The 1st percentile
   catches a bad second that the mean hides. NEG discounts the score
