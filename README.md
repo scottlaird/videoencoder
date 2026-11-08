@@ -173,6 +173,17 @@ videoencoder help    [command]
 - **`videoencoder help`** lists the commands, and `videoencoder help
   tune` (or `videoencoder tune --help`) shows one command's flags.
 
+While it works, everything but `plan` shows its progress. In a
+terminal, the screen splits into the videos (finished ones with their
+times, the current one's elapsed time, and those to come), the tasks of
+the current video (each rendition's encode or tune search, with its
+latest trial, and the steps after), and the end of the log. Ctrl-C
+stops the run. When it ends, it prints each video's time and outcome,
+and saves the full log under your cache directory
+(`~/Library/Caches/videoencoder/logs` on macOS, `~/.cache/...` on
+Linux), keeping the last 50. Without a terminal, or with `--tui=off`,
+it logs each video's place in the run (`n=3/15`) and how long it took.
+
 Each command takes only the flags that apply to it, and rejects the
 rest, so `tune --prune` is an error instead of being ignored. Flags:
 
@@ -188,6 +199,7 @@ rest, so `tune --prune` is an error instead of being ignored. Flags:
 | `--publish=false` | Don't publish after rendering |
 | `--prune` | When publishing, delete objects that are no longer part of the stream |
 | `--jobs N` | Override `tune.jobs`: how many anchor searches `tune` runs at once |
+| `--tui MODE` | Show progress in a terminal UI: `auto` (the default) when stderr is a terminal and `$TERM` isn't `dumb`, `on`, or `off` for plain logs |
 
 ## Configuration
 
