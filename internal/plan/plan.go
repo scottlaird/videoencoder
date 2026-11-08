@@ -182,6 +182,7 @@ func (t *Target) Job(src Source, outdir string, toneMap bool) *ffmpeg.Job {
 	}
 	args := []string{"-vf", vf, "-c:v", t.Encoder.Codec}
 	args = append(args, t.Encoder.Args...)
+	args = append(args, t.Encoder.ExtraArgs...)
 	if toneMap {
 		args = append(args, "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709")
 	}

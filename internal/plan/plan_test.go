@@ -140,6 +140,14 @@ func TestJob(t *testing.T) {
 			},
 			wantArgs: "-vf scale=1920:1080:flags=lanczos -c:v libsvtav1 -preset 5 -crf 30.5 -svtav1-params tune=0 -an",
 		},
+		{
+			name: "extra args follow the encoder's",
+			target: Target{
+				Name: "h265-1080", EncoderName: "h265", Width: 1920, Height: 1080, Quality: 60,
+				Encoder: config.Encoder{Codec: "hevc_videotoolbox", QualityFlag: "-q:v", Args: []string{"-tag:v", "hvc1"}, ExtraArgs: []string{"-g", "120"}},
+			},
+			wantArgs: "-vf scale=1920:1080:flags=lanczos -c:v hevc_videotoolbox -tag:v hvc1 -g 120 -q:v 60 -an",
+		},
 	}
 	for _, tt := range tests {
 		j := tt.target.Job(src, "out", false)

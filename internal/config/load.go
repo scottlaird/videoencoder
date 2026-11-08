@@ -74,14 +74,21 @@ func (l *Loader) Load(v Video) (*Resolved, error) {
 	}
 
 	merged := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	deleted := map[string]bool{}
 	for _, s := range layers {
-		mergeInto(merged, s.node, s.label, "")
+		mergeInto(merged, s.node, s.label, "", deleted)
+	}
+	if err := expandEncoders(merged, deleted); err != nil {
+		return nil, fmt.Errorf("video %s in %s: %w", v.Name, v.Dir, err)
 	}
 
 	r := &Resolved{Video: v, Merged: merged}
 	if err := merged.Load(&r.Config, yaml.WithKnownFields()); err != nil {
 		return nil, fmt.Errorf("video %s: %w", v.Name, err)
 	}
+	// The presets are folded into the encoders that use them, so
+	// showing them again would only be noise.
+	r.Merged = withoutKey(merged, "presets")
 	r.resolvePaths()
 	if err := r.Validate(); err != nil {
 		return nil, fmt.Errorf("video %s in %s: %w", v.Name, v.Dir, err)

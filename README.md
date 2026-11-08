@@ -205,8 +205,8 @@ Settings are merged from these layers, lowest priority first:
 6. Flags on the command line.
 
 Maps merge key by key, and everything else replaces what's below it.
-`sources`, `encoders`, `renditions`, `videos` and `publish.targets` are
-maps keyed by name, so a layer can change a single rendition without
+`sources`, `presets`, `encoders`, `renditions`, `videos` and
+`publish.targets` are maps keyed by name, so a layer can change a single rendition without
 repeating the rest, or remove one with `null`. Anywhere else, `null`
 does nothing. A section left empty, such as `tune:` with its contents
 commented out, keeps the settings it would have inherited.
@@ -270,32 +270,73 @@ videos:
 | `outdir` | Where renditions and the video's state file go. Default `transcodes/{name}`. |
 | `streamdir` | Where the finished stream goes. Default `stream/{name}`. |
 | `copy_sources` | Copy each source file into the stream under its own name, so it's published with the renditions. For sharing originals, such as test clips people can re-encode. Unchanged copies aren't redone. Default `false`. |
-| `encoders` | ffmpeg encoders by name, described below. |
+| `presets` | Named encoder settings that encoders can start from, described below. |
+| `encoders` | The ladder's encoder slots by name, described below. |
 | `renditions` | The ladder, described below. |
 | `tune` | How `videoencoder tune` works: `target_vmaf` (default 95), `ranges` (`[{start: 0s, duration: 8s}]`), `anchors` (2), `vmaf_model` and `vmaf_model_2160`, and `hdr` with HDR renditions' `target_vmaf`, `vmaf_model` and `vmaf_model_2160` (see below). |
 | `poster` | `offset`, `widths`, `formats` (`avif`, `jpg`, `webp`), `gainmap_formats`, and `hdr` for plain PQ HDR posters. |
 | `thumbnails` | `enabled`, `interval` in seconds, `height`, and `columns` × `rows` per tile. |
 | `publish` | `to` and `targets`; see [Publishing](#publishing). |
 
-An encoder is an ffmpeg codec with its fixed options:
+An encoder is one slot of the ladder, which renditions name. The
+defaults are `h264`, `h265` and `av1`, and each starts from a preset:
 
 ```yaml
 encoders:
-  av1:
-    codec: libsvtav1
-    quality_flag: -crf
-    args: [-preset, "5", -pix_fmt, yuv420p10le]
-  h264:
+  h264: {preset: x264-faster}
+  h265: {preset: x265-faster}
+  av1:  {preset: svtav1-p5}
+```
+
+A preset is an ffmpeg encoder with its fixed options:
+
+```yaml
+presets:
+  x264-faster:
     codec: libx264
-    quality_flag: -crf
+    quality: 18         # for renditions that don't set their own
     args: [-preset, faster, -pix_fmt, yuv420p, -profile:v, high]
     cap_bitrate: true   # pass each rendition's bitrate as -b:v, with -maxrate and -bufsize at 1.5x
     sdr_only: true      # never make HDR H.264
 ```
 
+The built-in presets are `x264-faster`, `x265-faster`, `svtav1-p5`, and
+Apple's hardware encoders, `hevc-videotoolbox` and
+`h264-videotoolbox`. An encoder's own fields replace its preset's, so
+switching H.265 to VideoToolbox and making no H.264 at all is just:
+
+```yaml
+encoders:
+  h264: null
+  h265: {preset: hevc-videotoolbox}
+```
+
+Deleting an encoder with `null` deletes its renditions too. To add an
+option without repeating the preset's `args`, use `extra_args`, which
+follow them:
+
+```yaml
+encoders:
+  h265: {extra_args: [-x265-params, aq-mode=3]}
+```
+
+An encoder or preset can set every field itself, with no preset:
+`codec`, `quality_flag`, `quality`, `args`, `extra_args`,
+`cap_bitrate` and `sdr_only`. For codecs videoencoder knows (x264,
+x265, SVT-AV1, libaom, rav1e, NVENC and VideoToolbox), `quality_flag`
+and `quality` default to the codec's usual flag and a typical value.
+
 Pixel formats should be explicit, since encoders otherwise keep the
 source's, and 4:2:2 or 10-bit H.264 plays almost nowhere. Without
 `cap_bitrate`, a rendition's bitrate is just a label in the manifest.
+
+Quality numbers only mean something to one codec: CRF 20 for x265 is
+not `-q:v 20` for VideoToolbox, where higher numbers are better. So
+when `videoencoder tune` writes a rendition's quality, it also writes
+`tuned_for`, the codec it was tuned for. If the encoder later uses a
+different codec, videoencoder refuses the old value and asks for a
+new tune. Switching between presets of the same codec, such as two x265
+speed presets, keeps the tuned values.
 
 A rendition is one rung of the ladder:
 
@@ -306,6 +347,7 @@ renditions:
 ```
 
 - `quality` is the value passed with the encoder's `quality_flag`.
+  Without one, the rendition takes its encoder's `quality`.
 - `bitrate` takes an optional `k` or `M` suffix.
 - `args` adds options for this rendition only.
 - `target_vmaf` overrides `tune.target_vmaf` for this rendition.
@@ -419,7 +461,8 @@ plenty for one clip falls well short for another.
    two of them: doing that put 1440p as much as 25 CRF too high.
 4. It writes each rendition's `quality`, and `bitrate` for encoders
    that cap it, into the video's sidecar, under `hdr` for the HDR
-   encodes. Each value gets a comment saying how it was found.
+   encodes, along with `tuned_for`, the codec. Each value gets a
+   comment saying how it was found.
 
 Review the sidecar, then render as usual.
 
@@ -427,8 +470,10 @@ Review the sidecar, then render as usual.
 # written by videoencoder tune
 renditions:
   av1-2160:
+    tuned_for: libsvtav1
     quality: 31 # tuned 2026-10-31: VMAF 90.5 (target 90)
   av1-1440:
+    tuned_for: libsvtav1
     quality: 29 # interpolated by tune 2026-10-31 for VMAF 90
     hdr:
       quality: 24 # interpolated by tune 2026-10-31 for VMAF 90
