@@ -22,9 +22,12 @@ type Bench struct {
 	Cfg    *Config
 	Exec   Executor
 	Prober probe.Prober
-	// Host and FFmpegVersion are recorded with each result.
-	Host          string
-	FFmpegVersion string
+	// Host, FFmpegVersion and CPU are recorded with each result, and
+	// so is EncoderVersions' entry for its encoder (see EncoderVersion).
+	Host            string
+	FFmpegVersion   string
+	CPU             string
+	EncoderVersions map[string]string
 	// SampleFilter and FlagsetFilter, if set, are path.Match patterns
 	// limiting which samples and flagsets run.
 	SampleFilter, FlagsetFilter string
@@ -557,26 +560,28 @@ func (b *Bench) record(results *Results, p *pending) error {
 	t.encoded[p.i] = p.out
 	m := p.metrics
 	row := Row{
-		Sample:        t.sample.name,
-		Reference:     t.sample.reference().name,
-		Encoder:       t.fs.Encoder(),
-		Flagset:       t.name,
-		Args:          joinArgs(t.fs.Args),
-		QualityFlag:   t.fs.Quality.Flag,
-		Quality:       p.quality,
-		Key:           p.key,
-		FlagsetKey:    t.fkey,
-		Bytes:         p.bytes,
-		Kbps:          kbps(p.bytes, t.sample.vd.Duration),
-		WallS:         p.m.Wall.Seconds(),
-		UserS:         p.m.User.Seconds(),
-		SysS:          p.m.Sys.Seconds(),
-		MaxRSSKB:      p.m.MaxRSSKB,
-		Metrics:       m,
-		Scorer:        t.sample.scoring.Scorer,
-		FFmpegVersion: b.FFmpegVersion,
-		Host:          b.Host,
-		Time:          b.now(),
+		Sample:         t.sample.name,
+		Reference:      t.sample.reference().name,
+		Encoder:        t.fs.Encoder(),
+		Flagset:        t.name,
+		Args:           joinArgs(t.fs.Args),
+		QualityFlag:    t.fs.Quality.Flag,
+		Quality:        p.quality,
+		Key:            p.key,
+		FlagsetKey:     t.fkey,
+		Bytes:          p.bytes,
+		Kbps:           kbps(p.bytes, t.sample.vd.Duration),
+		WallS:          p.m.Wall.Seconds(),
+		UserS:          p.m.User.Seconds(),
+		SysS:           p.m.Sys.Seconds(),
+		MaxRSSKB:       p.m.MaxRSSKB,
+		Metrics:        m,
+		Scorer:         t.sample.scoring.Scorer,
+		FFmpegVersion:  b.FFmpegVersion,
+		Host:           b.Host,
+		CPU:            b.CPU,
+		EncoderVersion: b.EncoderVersions[t.fs.Encoder()],
+		Time:           b.now(),
 	}
 	if err := results.Append(row); err != nil {
 		return err
