@@ -6,6 +6,7 @@
 //	videoencoder plan [flags] [same arguments]
 //	videoencoder publish [flags] [same arguments]
 //	videoencoder tune [flags] [same arguments]
+//	videoencoder help [command]
 //
 // With directories (default "."), it renders every video defined under
 // them by a <name>.video.yaml sidecar or a videos: entry in a
@@ -61,11 +62,16 @@ type options struct {
 
 func parseArgs(args []string, stderr io.Writer) (options, error) {
 	o := options{mode: "render", overrides: map[string]any{}}
+	help := false
+	if len(args) > 0 && args[0] == "help" {
+		help, args = true, args[1:]
+	}
 	if len(args) > 0 && slices.Contains([]string{"plan", "publish", "tune"}, args[0]) {
 		o.mode, args = args[0], args[1:]
 	}
 	fs := flag.NewFlagSet("videoencoder", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() { printUsage(stderr, fs, o.mode, o.mode == "render") }
 	fs.StringVar(&o.globalPath, "config", config.DefaultGlobalPath(), "global config file")
 	fs.BoolVar(&o.publish, "publish", true, "publish to the publish.to targets after rendering")
 	fs.BoolVar(&o.prune, "prune", false, "when publishing, delete objects that are no longer part of the stream")
@@ -76,7 +82,23 @@ func parseArgs(args []string, stderr io.Writer) (options, error) {
 	streamdir := fs.String("streamdir", "", "override streamdir: directory for the finished stream")
 	thumbnails := fs.Bool("thumbnails", true, "override thumbnails.enabled: add seek thumbnails to the stream")
 	jobs := fs.Int("jobs", 0, "override tune.jobs: anchor searches tune runs at once (0 for one per 8 CPU threads)")
+	if help {
+		switch {
+		case len(args) == 0:
+		case args[0] == "render":
+			o.mode = "render"
+			printUsage(stderr, fs, o.mode, false)
+			return o, flag.ErrHelp
+		default:
+			return o, fmt.Errorf("help: no command %q; the commands are plan, publish and tune", args[0])
+		}
+		printUsage(stderr, fs, o.mode, o.mode == "render")
+		return o, flag.ErrHelp
+	}
 	if err := fs.Parse(args); err != nil {
+		return o, err
+	}
+	if err := checkFlags(fs, o.mode); err != nil {
 		return o, err
 	}
 	fs.Visit(func(f *flag.Flag) {
@@ -99,9 +121,6 @@ func parseArgs(args []string, stderr io.Writer) (options, error) {
 			o.overrides["publish"] = map[string]any{"to": names}
 		}
 	})
-	if o.only != "" && o.mode != "render" && o.mode != "plan" {
-		return o, fmt.Errorf("--only works with render and plan, not %s", o.mode)
-	}
 	o.paths = fs.Args()
 	if len(o.paths) == 0 {
 		o.paths = []string{"."}
