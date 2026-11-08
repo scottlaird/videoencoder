@@ -66,6 +66,7 @@ func TestParseArgs(t *testing.T) {
 			paths:     []string{"proj"},
 			overrides: map[string]any{"streamdir": "/s"},
 		},
+		{args: []string{"tune", "--jobs", "6"}, mode: "tune", paths: []string{"."}, overrides: map[string]any{"tune": map[string]any{"jobs": 6}}},
 		{args: []string{"--nope"}, wantErr: true},
 		{args: []string{"plan", "--only", "av1-*"}, mode: "plan", paths: []string{"."}, overrides: map[string]any{}},
 		{args: []string{"tune", "--only", "av1-*"}, wantErr: true},

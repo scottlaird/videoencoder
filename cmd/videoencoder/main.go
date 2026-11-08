@@ -75,6 +75,7 @@ func parseArgs(args []string, stderr io.Writer) (options, error) {
 	outdir := fs.String("outdir", "", "override outdir: directory for intermediate renditions")
 	streamdir := fs.String("streamdir", "", "override streamdir: directory for the finished stream")
 	thumbnails := fs.Bool("thumbnails", true, "override thumbnails.enabled: add seek thumbnails to the stream")
+	jobs := fs.Int("jobs", 0, "override tune.jobs: anchor searches tune runs at once (0 for one per 8 CPU threads)")
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}
@@ -86,6 +87,8 @@ func parseArgs(args []string, stderr io.Writer) (options, error) {
 			o.overrides["streamdir"] = absOrSame(*streamdir)
 		case "thumbnails":
 			o.overrides["thumbnails"] = map[string]any{"enabled": *thumbnails}
+		case "jobs":
+			o.overrides["tune"] = map[string]any{"jobs": *jobs}
 		case "to":
 			names := []string{}
 			for _, n := range strings.Split(*to, ",") {

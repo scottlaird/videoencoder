@@ -183,6 +183,7 @@ Flags:
 | `--to a,b` | Publish to these targets instead of `publish.to` |
 | `--publish=false` | Don't publish after rendering |
 | `--prune` | When publishing, delete objects that are no longer part of the stream |
+| `--jobs N` | Override `tune.jobs`: how many anchor searches `tune` runs at once |
 
 ## Configuration
 
@@ -274,7 +275,7 @@ videos:
 | `presets` | Named encoder settings that encoders can start from, described below. |
 | `encoders` | The ladder's encoder slots by name, described below. |
 | `renditions` | The ladder, described below. |
-| `tune` | How `videoencoder tune` works: `target_vmaf` (default 95), `ranges` (`[{start: 0s, duration: 8s}]`), `anchors` (2), `vmaf_model` and `vmaf_model_2160`, and `hdr` with HDR renditions' `target_vmaf`, `vmaf_model` and `vmaf_model_2160` (see below). |
+| `tune` | How `videoencoder tune` works: `target_vmaf` (default 95), `ranges` (`[{start: 0s, duration: 8s}]`), `anchors` (2), `jobs` (anchor searches run at once; default 0, one per eight CPU threads), `vmaf_model` and `vmaf_model_2160`, and `hdr` with HDR renditions' `target_vmaf`, `vmaf_model` and `vmaf_model_2160` (see below). |
 | `poster` | `offset`, `widths`, `formats` (`avif`, `jpg`, `webp`), `gainmap_formats`, and `hdr` for plain PQ HDR posters. |
 | `thumbnails` | `enabled`, `interval` in seconds, `height`, and `columns` × `rows` per tile. |
 | `publish` | `to` and `targets`; see [Publishing](#publishing). |
@@ -470,6 +471,14 @@ plenty for one clip falls well short for another.
    middle with `anchors: 3`). With the built-in model, whose 4K variant
    takes over at 2160p, a 480p–2160p ladder has anchors at 480p, 1440p
    and 2160p.
+
+   The searches are independent, and each runs one trial encode and
+   scoring at a time, which leaves most of a big machine idle. So
+   `tune.jobs` of them run at once: by default one per eight CPU
+   threads, so 3 on a 28-thread Mac and 8 on a 64-thread
+   Threadripper. Set it in your global config to suit each machine,
+   or with `--jobs`. Encoders judged at the same size share one
+   reference, which is made once.
 3. It interpolates the renditions in between, linearly in log height.
    Models score on different scales, so it never interpolates across
    two of them: doing that put 1440p as much as 25 CRF too high.

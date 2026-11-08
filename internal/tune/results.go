@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -52,8 +53,10 @@ var resultsHeader = []string{"time", "key", "rendition", "quality", "vmaf", "bit
 
 // results are the trials recorded in a results file, by key and then
 // by quality as written by strconv.FormatFloat(q, 'f', -1, 64).
+// They're safe for concurrent searches to use.
 type results struct {
 	path   string // "" keeps trials in memory only
+	mu     sync.Mutex
 	trials map[string]map[string]trial
 }
 
@@ -123,6 +126,8 @@ func (r *results) add(key, quality string, t trial) {
 // run keeps what it measured.
 func (r *results) record(k trialKey, rendition string, quality float64, t trial) error {
 	key, q := k.hash(), strconv.FormatFloat(quality, 'f', -1, 64)
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.add(key, q, t)
 	if r.path == "" {
 		return nil
@@ -155,6 +160,8 @@ func (r *results) record(k trialKey, rendition string, quality float64, t trial)
 
 // lookup returns the trial for k at quality, if one is recorded.
 func (r *results) lookup(k trialKey, quality float64) (trial, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	t, ok := r.trials[k.hash()][strconv.FormatFloat(quality, 'f', -1, 64)]
 	return t, ok
 }
