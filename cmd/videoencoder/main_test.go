@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"maps"
@@ -884,5 +886,70 @@ renditions: {h264-720: null, h264-1080: null, h265-480: null, h265-720: null, h2
 	o.mode, o.only = "render", "vp9-*"
 	if err := run(context.Background(), o, d); err == nil || !strings.Contains(err.Error(), "matches no outputs") {
 		t.Errorf("--only vp9-*: err = %v, want no matches", err)
+	}
+}
+
+func TestHelp(t *testing.T) {
+	tests := []struct {
+		args    []string
+		want    []string // in the help text
+		notWant []string
+	}{
+		{
+			args:    []string{"--help"},
+			want:    []string{"Commands:", "plan ", "tune ", "publish ", "--rebuild GLOB", "--prune", `videoencoder help <command>`},
+			notWant: []string{"-config string"},
+		},
+		{args: []string{"help"}, want: []string{"Commands:"}},
+		{
+			args:    []string{"tune", "--help"},
+			want:    []string{"Usage: videoencoder tune", "tune.target_vmaf", "--config FILE", "--jobs N"},
+			notWant: []string{"--prune", "--rebuild", "Commands:"},
+		},
+		{args: []string{"help", "plan"}, want: []string{"Usage: videoencoder plan", "--only GLOB"}, notWant: []string{"--publish"}},
+		{args: []string{"help", "publish"}, want: []string{"Usage: videoencoder publish", "--to TARGET,...", "--prune"}},
+		{args: []string{"help", "render"}, want: []string{"Usage: videoencoder [flags]", "--publish"}, notWant: []string{"Commands:"}},
+	}
+	for _, tt := range tests {
+		var stderr strings.Builder
+		_, err := parseArgs(tt.args, &stderr)
+		if !errors.Is(err, flag.ErrHelp) {
+			t.Errorf("parseArgs(%q) = %v, want flag.ErrHelp", tt.args, err)
+		}
+		for _, w := range tt.want {
+			if !strings.Contains(stderr.String(), w) {
+				t.Errorf("help for %q lacks %q:\n%s", tt.args, w, stderr.String())
+			}
+		}
+		for _, w := range tt.notWant {
+			if strings.Contains(stderr.String(), w) {
+				t.Errorf("help for %q has %q:\n%s", tt.args, w, stderr.String())
+			}
+		}
+	}
+}
+
+func TestFlagsForCommand(t *testing.T) {
+	tests := []struct {
+		args    []string
+		wantErr string
+	}{
+		{[]string{"tune", "--prune"}, "--prune doesn't apply to tune"},
+		{[]string{"publish", "--only", "x"}, "--only doesn't apply to publish"},
+		{[]string{"tune", "--publish=false"}, "--publish doesn't apply to tune"},
+		{[]string{"plan", "--to", "a"}, "--to doesn't apply to plan"},
+		{[]string{"help", "nope"}, `no command "nope"`},
+		{[]string{"publish", "--prune", "--to", "a"}, ""},
+		{[]string{"plan", "--rebuild", "*"}, ""},
+		{[]string{"plan", "--jobs", "4"}, "--jobs doesn't apply to plan"},
+	}
+	for _, tt := range tests {
+		_, err := parseArgs(tt.args, io.Discard)
+		switch {
+		case tt.wantErr == "" && err != nil:
+			t.Errorf("parseArgs(%q) = %v, want no error", tt.args, err)
+		case tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)):
+			t.Errorf("parseArgs(%q) = %v, want an error containing %q", tt.args, err, tt.wantErr)
+		}
 	}
 }

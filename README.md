@@ -154,6 +154,7 @@ videoencoder [flags] [dir | name.video.yaml | media files ...]
 videoencoder plan    [flags] [same]
 videoencoder tune    [flags] [same]
 videoencoder publish [flags] [same]
+videoencoder help    [command]
 ```
 
 - **`videoencoder`** renders. Given a directory, which defaults to the
@@ -169,8 +170,11 @@ videoencoder publish [flags] [same]
   writes them into its sidecar. See [Tuning quality](#tuning-quality).
 - **`videoencoder publish`** copies finished streams to their publish
   targets without rendering.
+- **`videoencoder help`** lists the commands, and `videoencoder help
+  tune` (or `videoencoder tune --help`) shows one command's flags.
 
-Flags:
+Each command takes only the flags that apply to it, and rejects the
+rest, so `tune --prune` is an error instead of being ignored. Flags:
 
 | Flag | Meaning |
 |:--|:--|
