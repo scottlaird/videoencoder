@@ -48,6 +48,7 @@ import (
 	"github.com/scottlaird/videoencoder/internal/probe"
 	"github.com/scottlaird/videoencoder/internal/progress"
 	"github.com/scottlaird/videoencoder/internal/state"
+	"github.com/scottlaird/videoencoder/internal/tui"
 )
 
 type options struct {
@@ -57,6 +58,7 @@ type options struct {
 	rebuild    string // glob over slots, such as "*/av1-*"
 	only       string // glob over slots: build just these, without packaging
 	globalPath string
+	tui        string // "auto", "on" or "off"
 	overrides  map[string]any
 	paths      []string
 }
@@ -82,6 +84,7 @@ func parseArgs(args []string, stderr io.Writer) (options, error) {
 	outdir := fs.String("outdir", "", "override outdir: directory for intermediate renditions")
 	streamdir := fs.String("streamdir", "", "override streamdir: directory for the finished stream")
 	thumbnails := fs.Bool("thumbnails", true, "override thumbnails.enabled: add seek thumbnails to the stream")
+	fs.StringVar(&o.tui, "tui", "auto", `show progress in a terminal UI: "auto" when stderr is a terminal, "on" or "off"`)
 	jobs := fs.Int("jobs", 0, "override tune.jobs: anchor searches tune runs at once (0 for one per 8 CPU threads)")
 	if help {
 		switch {
@@ -101,6 +104,9 @@ func parseArgs(args []string, stderr io.Writer) (options, error) {
 	}
 	if err := checkFlags(fs, o.mode); err != nil {
 		return o, err
+	}
+	if !slices.Contains([]string{"auto", "on", "off"}, o.tui) {
+		return o, fmt.Errorf(`--tui: want "auto", "on" or "off", not %q`, o.tui)
 	}
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
@@ -642,19 +648,39 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	// plan prints its own report; everything else says where it is in
-	// the run.
-	if o.mode != "plan" {
-		ctx = progress.WithReporter(ctx, &progress.LogReporter{})
-	}
 
-	d := deps{
-		runner: ffmpeg.ExecRunner{Stdout: os.Stdout, Stderr: os.Stderr},
-		exec:   bench.ExecExecutor{Stderr: os.Stderr},
-		prober: probe.FFProbe{},
-		stdout: os.Stdout,
+	newDeps := func(stdout, stderr io.Writer) deps {
+		return deps{
+			runner: ffmpeg.ExecRunner{Stdout: stderr, Stderr: stderr},
+			exec:   bench.ExecExecutor{Stderr: stderr},
+			prober: probe.FFProbe{},
+			stdout: stdout,
+		}
 	}
-	if err := run(ctx, o, d); err != nil {
+	// plan prints its own report. Everything else shows its progress in
+	// a terminal UI when it can, and otherwise logs where it is in the
+	// run.
+	useTUI := o.mode != "plan" && (o.tui == "on" || (o.tui == "auto" && tui.Available(os.Stderr)))
+	switch {
+	case useTUI:
+		logDir := ""
+		if cache, err := os.UserCacheDir(); err == nil {
+			logDir = filepath.Join(cache, "videoencoder", "logs")
+		}
+		title := "videoencoder " + o.mode
+		err = tui.Run(ctx, title, os.Stderr, os.Stdout, logDir, func(ctx context.Context, out tui.Outputs) error {
+			prev := slog.Default()
+			slog.SetDefault(slog.New(tui.LogHandler(out.Log)))
+			defer slog.SetDefault(prev)
+			return run(ctx, o, newDeps(out.Stdout, out.Log))
+		})
+	case o.mode != "plan":
+		ctx = progress.WithReporter(ctx, &progress.LogReporter{})
+		fallthrough
+	default:
+		err = run(ctx, o, newDeps(os.Stdout, os.Stderr))
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "videoencoder:", err)
 		os.Exit(1)
 	}

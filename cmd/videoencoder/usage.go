@@ -29,7 +29,7 @@ var commands = []command{
 		about: `Encodes every rendition whose source or settings changed, packages them
 into DASH and HLS manifests with posters and seek thumbnails, and publishes
 the stream to the config's publish.to targets.`,
-		flags: []string{"config", "rebuild", "only", "outdir", "streamdir", "thumbnails", "publish", "to", "prune"},
+		flags: []string{"config", "rebuild", "only", "outdir", "streamdir", "thumbnails", "publish", "to", "prune", "tui"},
 	},
 	{
 		name:    "plan",
@@ -45,14 +45,14 @@ rebuilt and why. Encodes nothing.`,
 		about: `Encodes short samples of each video to find the quality setting each
 rendition needs to reach tune.target_vmaf, and writes the results into
 the video's sidecar. Review them, then render.`,
-		flags: []string{"config", "jobs", "outdir"},
+		flags: []string{"config", "jobs", "outdir", "tui"},
 	},
 	{
 		name:    "publish",
 		summary: "copy streams already rendered to their publish targets",
 		about: `Copies each video's finished stream to its publish.to targets, without
 rendering. Only files that changed are uploaded.`,
-		flags: []string{"config", "to", "prune", "streamdir"},
+		flags: []string{"config", "to", "prune", "streamdir", "tui"},
 	},
 }
 
@@ -103,7 +103,7 @@ Commands:
 // flagArgs name what each flag that takes a value expects.
 var flagArgs = map[string]string{
 	"config": "FILE", "rebuild": "GLOB", "only": "GLOB", "outdir": "DIR",
-	"streamdir": "DIR", "to": "TARGET,...", "jobs": "N",
+	"streamdir": "DIR", "to": "TARGET,...", "jobs": "N", "tui": "MODE",
 }
 
 // printFlags lists the named flags of fs, in order, as --name VALUE.
