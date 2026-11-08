@@ -46,6 +46,7 @@ import (
 	"github.com/scottlaird/videoencoder/internal/pack"
 	"github.com/scottlaird/videoencoder/internal/plan"
 	"github.com/scottlaird/videoencoder/internal/probe"
+	"github.com/scottlaird/videoencoder/internal/progress"
 	"github.com/scottlaird/videoencoder/internal/state"
 )
 
@@ -197,30 +198,54 @@ func run(ctx context.Context, o options, d deps) error {
 		return err
 	}
 	for _, it := range its {
-		r, err := it.loader.Load(it.video)
-		if err != nil {
-			return err
-		}
-		switch o.mode {
-		case "plan":
-			err = printPlan(ctx, r, d, o.only)
-		case "publish":
-			err = publishVideo(ctx, r, o.prune)
-		case "tune":
-			err = tuneVideo(ctx, r, it.adHoc, d)
-		default:
-			err = render(ctx, r, d, o.rebuild, o.only)
-			// With --only the stream wasn't updated, so there's nothing
-			// new to publish.
-			if err == nil && o.publish && o.only == "" {
-				err = publishVideo(ctx, r, o.prune)
-			}
-		}
+		progress.QueueVideo(ctx, it.video.Name)
+	}
+	for _, it := range its {
+		progress.StartVideo(ctx, it.video.Name)
+		err := runOne(ctx, o, d, it)
+		progress.FinishVideo(ctx, it.video.Name, err)
 		if err != nil {
 			return fmt.Errorf("%s: %w", it.video.Name, err)
 		}
 	}
 	return nil
+}
+
+// runOne does o.mode's work for one video.
+func runOne(ctx context.Context, o options, d deps, it item) error {
+	r, err := it.loader.Load(it.video)
+	if err != nil {
+		return err
+	}
+	switch o.mode {
+	case "plan":
+		return printPlan(ctx, r, d, o.only)
+	case "publish":
+		return publishTask(ctx, r, o.prune)
+	case "tune":
+		return tuneVideo(ctx, r, it.adHoc, d)
+	}
+	// With --only the stream isn't updated, so there's nothing new to
+	// publish.
+	publishing := o.publish && o.only == "" && len(r.Publish.To) > 0
+	if err := render(ctx, r, d, o.rebuild, o.only, publishing); err != nil {
+		return err
+	}
+	if publishing {
+		return publishTask(ctx, r, o.prune)
+	}
+	return nil
+}
+
+// publishTask publishes r as a reported task.
+func publishTask(ctx context.Context, r *config.Resolved, prune bool) error {
+	if len(r.Publish.To) == 0 {
+		return nil
+	}
+	progress.StartTask(ctx, r.Name, "publish", strings.Join(r.Publish.To, ", "))
+	detail, err := publishVideo(ctx, r, prune)
+	progress.FinishTask(ctx, r.Name, "publish", detail, err)
+	return err
 }
 
 // built is everything a video's outputs are made from.
@@ -377,7 +402,11 @@ func (b *built) restrict(only string) error {
 // With only, it builds just the outputs that glob matches and stops
 // there: packaging needs every rendition, and pruning would delete the
 // ones left out. The next full render updates the stream.
-func render(ctx context.Context, r *config.Resolved, d deps, rebuild, only string) error {
+// render builds r's stale outputs and packages its stream. Each output
+// and step is reported as a task, queued up front so the whole job is
+// visible from the start; publishing, which the caller does, is queued
+// too when publishing is set.
+func render(ctx context.Context, r *config.Resolved, d deps, rebuild, only string, publishing bool) error {
 	b, err := prepare(ctx, r, d)
 	if err != nil {
 		return err
@@ -389,46 +418,90 @@ func render(ctx context.Context, r *config.Resolved, d deps, rebuild, only strin
 	}
 	slog.Info("Source", "video", r.Name, "file", b.sources[0].Path, "video", fmt.Sprintf("%+v", b.vd))
 
+	// Decide every source's batch first, so the encodes still to come
+	// can be reported before any starts.
 	var videos []string
+	batches := make([]*ffmpeg.Batch, len(b.perSource))
 	for i, js := range b.perSource {
-		batch := ffmpeg.Batch{Manifest: b.manifest}
+		batch := &ffmpeg.Batch{Manifest: b.manifest}
+		batches[i] = batch
 		if i == b.thumbSrc && b.thumbs != nil {
 			js = append(slices.Clone(js), b.thumbs)
 		}
 		for _, j := range js {
+			added := true
 			if forced(rebuild, j) {
 				batch.Add(j)
-			} else if _, err := batch.AddIfNeeded(j); err != nil {
+			} else if added, err = batch.AddIfNeeded(j); err != nil {
 				return err
+			}
+			if added {
+				progress.QueueTask(ctx, r.Name, j.Slot, "")
+			} else {
+				progress.SkipTask(ctx, r.Name, j.Slot, "up to date")
 			}
 			if j != b.thumbs {
 				videos = append(videos, j.Output)
 			}
 		}
-		if err := batch.Run(ctx, d.runner); err != nil {
+	}
+	steps := []string{}
+	if b.audio != nil {
+		steps = append(steps, "audio")
+	}
+	steps = append(steps, "posters")
+	if len(b.gainmaps) > 0 {
+		steps = append(steps, "gain maps")
+	}
+	if only == "" {
+		steps = append(steps, "package")
+		if publishing {
+			steps = append(steps, "publish")
+		}
+	}
+	for _, s := range steps {
+		progress.QueueTask(ctx, r.Name, s, "")
+	}
+
+	for i, batch := range batches {
+		for _, j := range batch.Jobs {
+			progress.StartTask(ctx, r.Name, j.Slot, fmt.Sprintf("with %d others from %s", len(batch.Jobs)-1, b.sources[i].Label))
+		}
+		err := batch.Run(ctx, d.runner)
+		for _, j := range batch.Jobs {
+			progress.FinishTask(ctx, r.Name, j.Slot, "", err)
+		}
+		if err != nil {
 			return fmt.Errorf("encoding %q: %w", b.sources[i].Path, err)
 		}
 	}
 	audio := ""
 	if b.audio != nil {
-		if err := ffmpeg.RunIfNeeded(ctx, d.runner, b.manifest, b.audio, forced(rebuild, b.audio)); err != nil {
+		err := step(ctx, r.Name, "audio", func() error {
+			return ffmpeg.RunIfNeeded(ctx, d.runner, b.manifest, b.audio, forced(rebuild, b.audio))
+		})
+		if err != nil {
 			return fmt.Errorf("extracting audio: %w", err)
 		}
 		audio = b.audio.Output
 	}
-	if err := runPosters(ctx, d, b, rebuild); err != nil {
+	if err := step(ctx, r.Name, "posters", func() error { return runPosters(ctx, d, b, rebuild) }); err != nil {
 		return fmt.Errorf("making posters: %w", err)
 	}
-	if err := buildGainMaps(ctx, d, b, rebuild); err != nil {
-		return fmt.Errorf("making gain-mapped posters: %w", err)
+	if len(b.gainmaps) > 0 {
+		if err := step(ctx, r.Name, "gain maps", func() error { return buildGainMaps(ctx, d, b, rebuild) }); err != nil {
+			return fmt.Errorf("making gain-mapped posters: %w", err)
+		}
 	}
 	if only != "" {
 		slog.Info("Built only matching outputs; the stream is unchanged", "video", r.Name, "only", only)
 		return nil
 	}
 
+	progress.StartTask(ctx, r.Name, "package", "")
 	p := &pack.Packager{Runner: d.runner, Prober: d.prober, Segment: r.Segment()}
 	mpd, files, err := p.Package(ctx, r.Streamdir, videos, audio)
+	progress.FinishTask(ctx, r.Name, "package", "", err)
 	if err != nil {
 		return fmt.Errorf("packaging: %w", err)
 	}
@@ -470,6 +543,14 @@ func render(ctx context.Context, r *config.Resolved, d deps, rebuild, only strin
 	}
 	slog.Info("Done", "video", r.Name, "manifest", mpd)
 	return nil
+}
+
+// step runs f as task, part of video, reporting its start and end.
+func step(ctx context.Context, video, task string, f func() error) error {
+	progress.StartTask(ctx, video, task, "")
+	err := f()
+	progress.FinishTask(ctx, video, task, "", err)
+	return err
 }
 
 // runPosters builds the stale posters, one ffmpeg per source.
@@ -561,6 +642,11 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// plan prints its own report; everything else says where it is in
+	// the run.
+	if o.mode != "plan" {
+		ctx = progress.WithReporter(ctx, &progress.LogReporter{})
+	}
 
 	d := deps{
 		runner: ffmpeg.ExecRunner{Stdout: os.Stdout, Stderr: os.Stderr},

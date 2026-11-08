@@ -13,6 +13,7 @@ import (
 	"github.com/scottlaird/videoencoder/internal/config"
 	"github.com/scottlaird/videoencoder/internal/plan"
 	"github.com/scottlaird/videoencoder/internal/probe"
+	"github.com/scottlaird/videoencoder/internal/progress"
 	"github.com/scottlaird/videoencoder/internal/tune"
 )
 
@@ -76,6 +77,7 @@ func tuneVideo(ctx context.Context, r *config.Resolved, adHoc bool, d deps) erro
 			if !reported[t.Name] {
 				reported[t.Name] = true
 				fmt.Fprintf(d.stdout, "#   %-10s %s\n", t.Name, skip)
+				progress.SkipTask(ctx, r.Name, tune.TaskName(t, isHDR), strings.TrimSpace(strings.Join(strings.Fields(skip), " ")))
 			}
 		}
 		if len(p.targets) > 0 {

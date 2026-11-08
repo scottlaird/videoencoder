@@ -15,12 +15,14 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/scottlaird/videoencoder/internal/bench"
 	"github.com/scottlaird/videoencoder/internal/config"
 	"github.com/scottlaird/videoencoder/internal/ffmpeg"
 	"github.com/scottlaird/videoencoder/internal/probe"
+	"github.com/scottlaird/videoencoder/internal/progress"
 )
 
 func TestForced(t *testing.T) {
@@ -137,6 +139,34 @@ func testDeps(stdout io.Writer) (deps, *countingRunner) {
 	return deps{runner: r, exec: bench.ExecExecutor{Stderr: io.Discard}, prober: probe.FFProbe{}, stdout: stdout}, r
 }
 
+// recorder keeps the progress events a run reports.
+type recorder struct {
+	mu     sync.Mutex
+	events []progress.Event
+}
+
+func (r *recorder) Report(e progress.Event) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, e)
+}
+
+// state is what the events say about video at the end.
+func (r *recorder) state(video string) progress.Video {
+	var t progress.Tracker
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.events {
+		t.Apply(e)
+	}
+	for _, v := range t.Snapshot() {
+		if v.Name == video {
+			return v
+		}
+	}
+	return progress.Video{}
+}
+
 // TestAdHocEndToEnd encodes a clip given directly on the command line,
 // then runs again to check that nothing is re-encoded, then deletes one
 // output and checks that only it is rebuilt.
@@ -151,8 +181,34 @@ func TestAdHocEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	d, runner := testDeps(io.Discard)
-	if err := run(context.Background(), o, d); err != nil {
+	rec := &recorder{}
+	if err := run(progress.WithReporter(context.Background(), rec), o, d); err != nil {
 		t.Fatalf("first run: %v", err)
+	}
+	// The run reports the video and every step, all finished, with the
+	// encodes queued before any started.
+	v := rec.state("src")
+	if v.Status != progress.Done || v.Started.IsZero() || v.Ended.IsZero() {
+		t.Errorf("video state = %+v, want done with start and end times", v)
+	}
+	tasks := map[string]progress.Status{}
+	for _, task := range v.Tasks {
+		tasks[task.Name] = task.Status
+	}
+	for _, name := range []string{"0/av1-480", "0/h264-480", "0/h265-480", "thumbs", "audio", "posters", "package"} {
+		if tasks[name] != progress.Done {
+			t.Errorf("task %s = %v, want done (all tasks: %v)", name, tasks[name], tasks)
+		}
+	}
+	firstStart := slices.IndexFunc(rec.events, func(e progress.Event) bool { return e.Kind == progress.TaskStarted })
+	lastQueue := -1
+	for i, e := range rec.events {
+		if e.Kind == progress.TaskQueued {
+			lastQueue = i
+		}
+	}
+	if firstStart < lastQueue {
+		t.Errorf("a task started (event %d) before the last was queued (event %d)", firstStart, lastQueue)
 	}
 	// One batched video encode, audio, one batch of posters.
 	if got := runner.calls["ffmpeg"]; got != 3 {
@@ -178,8 +234,14 @@ func TestAdHocEndToEnd(t *testing.T) {
 
 	before := hashMedia(t, streamdir)
 	runner.calls = map[string]int{}
-	if err := run(context.Background(), o, d); err != nil {
+	rec = &recorder{}
+	if err := run(progress.WithReporter(context.Background(), rec), o, d); err != nil {
 		t.Fatalf("second run: %v", err)
+	}
+	for _, task := range rec.state("src").Tasks {
+		if strings.HasPrefix(task.Name, "0/") && (task.Status != progress.Skipped || task.Detail != "up to date") {
+			t.Errorf("second run: task %s = %+v, want skipped as up to date", task.Name, task)
+		}
 	}
 	if got := runner.calls["ffmpeg"]; got != 0 {
 		t.Errorf("second run: %d ffmpeg calls, want 0", got)
@@ -584,8 +646,26 @@ renditions: {h264-480: null, h264-720: null, h265-480: null, h265-720: null, h26
 	}
 	var out bytes.Buffer
 	d, _ := testDeps(&out)
-	if err := run(context.Background(), o, d); err != nil {
+	rec := &recorder{}
+	if err := run(progress.WithReporter(context.Background(), rec), o, d); err != nil {
 		t.Fatalf("tune: %v\n%s", err, out.String())
+	}
+	// Searches report each trial and finish with their result; kept and
+	// following renditions are skipped with the reason.
+	tuned := map[string]progress.Task{}
+	for _, task := range rec.state("clip").Tasks {
+		tuned[task.Name] = task
+	}
+	if task := tuned["sdr/av1-480"]; task.Status != progress.Done || !strings.Contains(task.Detail, "crf ") || !strings.Contains(task.Detail, "trials") {
+		t.Errorf("sdr/av1-480 = %+v, want done with its crf and trial count", task)
+	}
+	if task := tuned["sdr/h264-180-capped"]; task.Status != progress.Skipped || !strings.Contains(task.Detail, "tune: false") {
+		t.Errorf("sdr/h264-180-capped = %+v, want skipped for tune: false", task)
+	}
+	if !slices.ContainsFunc(rec.events, func(e progress.Event) bool {
+		return e.Kind == progress.TaskUpdated && e.Task == "sdr/av1-480" && strings.Contains(e.Detail, "trial 1:")
+	}) {
+		t.Error("no trial updates reported for sdr/av1-480")
 	}
 	sidecar, err := os.ReadFile(filepath.Join(dir, "clip"+config.SidecarSuffix))
 	if err != nil {
@@ -771,8 +851,22 @@ renditions: {h264-720: null, h264-1080: null, h265-480: null, h265-720: null, h2
 	}
 	var out bytes.Buffer
 	d, _ := testDeps(&out)
-	if err := run(context.Background(), o, d); err != nil {
+	rec := &recorder{}
+	if err := run(progress.WithReporter(context.Background(), rec), o, d); err != nil {
 		t.Fatalf("tune: %v\n%s", err, out.String())
+	}
+	// Each tone's searches are separate tasks, named for the tone.
+	tuned := map[string]progress.Status{}
+	for _, task := range rec.state("v").Tasks {
+		tuned[task.Name] = task.Status
+	}
+	for _, name := range []string{"sdr/av1-480", "hdr/av1-480", "sdr/h264-480"} {
+		if tuned[name] != progress.Done {
+			t.Errorf("task %s = %v, want done (tasks: %v)", name, tuned[name], tuned)
+		}
+	}
+	if _, ok := tuned["hdr/h264-480"]; ok {
+		t.Errorf("tasks include hdr/h264-480, but H.264 is SDR-only: %v", tuned)
 	}
 	for _, want := range []string{"tuned on 1s from 0s of sdr", "tuned on 1s from 0s of hdr", "av1-480 hdr", "(target 85)"} {
 		if !strings.Contains(out.String(), want) {
