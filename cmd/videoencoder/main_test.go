@@ -200,6 +200,12 @@ func TestAdHocEndToEnd(t *testing.T) {
 			t.Errorf("task %s = %v, want done (all tasks: %v)", name, tasks[name], tasks)
 		}
 	}
+	// Each encode says why it was built.
+	for _, task := range v.Tasks {
+		if task.Name == "0/av1-480" && task.Detail != "new" {
+			t.Errorf("task 0/av1-480 detail = %q, want its reason, new", task.Detail)
+		}
+	}
 	firstStart := slices.IndexFunc(rec.events, func(e progress.Event) bool { return e.Kind == progress.TaskStarted })
 	lastQueue := -1
 	for i, e := range rec.events {
