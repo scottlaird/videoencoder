@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/scottlaird/videoencoder/internal/probe"
 )
@@ -67,6 +68,20 @@ func TestPackage(t *testing.T) {
 	wantFiles := []string{"dash.mpd", "hls.m3u8", "audio.mp4", "audio.m3u8", "hdr.mp4", "hdr.m3u8", "sdr.mp4", "sdr.m3u8"}
 	if !slices.Equal(files, wantFiles) {
 		t.Errorf("files = %q, want %q", files, wantFiles)
+	}
+	if !slices.Contains(r.argv, "--segment_duration=5") {
+		t.Errorf("argv %q lacks the default --segment_duration=5", r.argv)
+	}
+}
+
+func TestPackageSegment(t *testing.T) {
+	r := &recorder{}
+	p := &Packager{Runner: r, Prober: fakeProber{"t/sdr.mp4": {ColorTransfer: "bt709"}}, Segment: 2500 * time.Millisecond}
+	if _, _, err := p.Package(context.Background(), t.TempDir(), []string{"t/sdr.mp4"}, ""); err != nil {
+		t.Fatalf("Package() = %v", err)
+	}
+	if !slices.Contains(r.argv, "--segment_duration=2.5") {
+		t.Errorf("argv %q lacks --segment_duration=2.5", r.argv)
 	}
 }
 

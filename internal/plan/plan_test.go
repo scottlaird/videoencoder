@@ -148,6 +148,24 @@ func TestJob(t *testing.T) {
 			},
 			wantArgs: "-vf scale=1920:1080:flags=lanczos -c:v hevc_videotoolbox -tag:v hvc1 -g 120 -q:v 60 -an",
 		},
+		{
+			name: "keyframes every segment, with the encoder's GOP options before extra args",
+			target: Target{
+				Name: "h265-1080", EncoderName: "h265", Width: 1920, Height: 1080, Quality: 22, Segment: 4 * time.Second, GOP: 96,
+				Encoder: config.Encoder{Codec: "libx265", QualityFlag: "-crf", Args: []string{"-preset", "faster"},
+					GOPArgs: []string{"-g", "{gop}", "-flags", "+cgop"}, ExtraArgs: []string{"-g", "48"}},
+			},
+			wantArgs: "-vf scale=1920:1080:flags=lanczos -c:v libx265 -preset faster -g 96 -flags +cgop " +
+				"-force_key_frames expr:gte(t,n_forced*4) -g 48 -crf 22 -an",
+		},
+		{
+			name: "unknown frame rate: forced keyframes, but no GOP options",
+			target: Target{
+				Name: "av1-720", EncoderName: "av1", Width: 1280, Height: 720, Quality: 31, Segment: 2500 * time.Millisecond,
+				Encoder: config.Encoder{Codec: "libsvtav1", QualityFlag: "-crf", GOPArgs: []string{"-g", "{gop}"}},
+			},
+			wantArgs: "-vf scale=1280:720:flags=lanczos -c:v libsvtav1 -force_key_frames expr:gte(t,n_forced*2.5) -crf 31 -an",
+		},
 	}
 	for _, tt := range tests {
 		j := tt.target.Job(src, "out", false)
@@ -349,5 +367,25 @@ func TestToneMappedJob(t *testing.T) {
 	}
 	if plain.Key == mapped.Key {
 		t.Error("tone-mapped and plain jobs share a key")
+	}
+}
+
+func TestFilterGOP(t *testing.T) {
+	ladder := Targets{{Height: 720, EncoderName: "h265", Segment: 5 * time.Second}}
+	tests := []struct {
+		fps  float64
+		want uint64
+	}{
+		{24000.0 / 1001, 120}, // 119.88, rounded up
+		{30, 150},
+		{60000.0 / 1001, 300}, // 299.7
+		{25, 125},
+		{0, 0}, // unknown
+	}
+	for _, tt := range tests {
+		got := ladder.Filter(probe.VideoData{Width: 1280, Height: 720, FPS: tt.fps})
+		if len(got) != 1 || got[0].GOP != tt.want {
+			t.Errorf("%g fps: GOP = %d, want %d", tt.fps, got[0].GOP, tt.want)
+		}
 	}
 }

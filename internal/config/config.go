@@ -34,13 +34,17 @@ type Config struct {
 	Streamdir string            `yaml:"streamdir"`
 	// CopySources adds each source file, under its own name, to the
 	// stream, so it's published alongside the renditions.
-	CopySources bool                  `yaml:"copy_sources"`
-	Thumbnails  Thumbnails            `yaml:"thumbnails"`
-	Poster      Poster                `yaml:"poster"`
-	Publish     Publish               `yaml:"publish"`
-	Tune        Tune                  `yaml:"tune"`
-	Encoders    map[string]*Encoder   `yaml:"encoders"`
-	Renditions  map[string]*Rendition `yaml:"renditions"`
+	CopySources bool `yaml:"copy_sources"`
+	// SegmentDuration is the length of the stream's segments, in
+	// ParseOffset's forms. Every rendition gets a keyframe at each
+	// segment boundary, so segments line up across renditions.
+	SegmentDuration string                `yaml:"segment_duration"`
+	Thumbnails      Thumbnails            `yaml:"thumbnails"`
+	Poster          Poster                `yaml:"poster"`
+	Publish         Publish               `yaml:"publish"`
+	Tune            Tune                  `yaml:"tune"`
+	Encoders        map[string]*Encoder   `yaml:"encoders"`
+	Renditions      map[string]*Rendition `yaml:"renditions"`
 	// Presets are encoder settings that encoders can name. They're
 	// folded into the encoders that use them when a config is loaded.
 	Presets map[string]*Encoder `yaml:"presets"`
@@ -163,8 +167,11 @@ type Encoder struct {
 	// their own, defaulting to the codec's typical value.
 	Quality *float64 `yaml:"quality"`
 	Args    []string `yaml:"args"`
-	// ExtraArgs follow Args, so a layer can add an option without
-	// repeating the preset's whole list.
+	// GOPArgs set the encoder's longest keyframe interval, with
+	// "{gop}" replaced by the frames in one segment. They follow Args.
+	GOPArgs []string `yaml:"gop_args"`
+	// ExtraArgs follow Args and GOPArgs, so a layer can add an option
+	// without repeating the preset's whole list.
 	ExtraArgs []string `yaml:"extra_args"`
 	// CapBitrate passes each rendition's bitrate as -b:v, with
 	// -maxrate and -bufsize at 1.5x. Without it the bitrate is only a
@@ -280,6 +287,12 @@ func (c *Config) SourceLabels() []string {
 	return labels
 }
 
+// Segment is the segment duration. The config must be valid.
+func (c *Config) Segment() time.Duration {
+	d, _ := ParseOffset(c.SegmentDuration)
+	return d
+}
+
 // RenditionNames returns rendition names ordered by encoder, then
 // height, then name.
 func (c *Config) RenditionNames() []string {
@@ -315,6 +328,11 @@ func (c *Config) Validate() error {
 	}
 	if c.Outdir == "" || c.Streamdir == "" {
 		return fmt.Errorf("outdir and streamdir are required")
+	}
+	if d, err := ParseOffset(c.SegmentDuration); err != nil {
+		return fmt.Errorf("segment_duration: %w", err)
+	} else if d <= 0 {
+		return fmt.Errorf("segment_duration: must be positive")
 	}
 	for name, e := range c.Encoders {
 		switch {
