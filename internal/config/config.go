@@ -15,6 +15,7 @@ package config
 import (
 	_ "embed"
 	"fmt"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -68,6 +69,9 @@ type Tune struct {
 	Start    string `yaml:"start"`
 	Duration string `yaml:"duration"`
 	Anchors  int    `yaml:"anchors"`
+	// Jobs is how many anchor searches run at once; 0 picks one per
+	// eight CPU threads.
+	Jobs int `yaml:"jobs"`
 	// VMAFModel is "v0" (or "") for libvmaf's built-in v0.6.1 models,
 	// or the path of a libvmaf JSON model file. VMAFModel2160, if set,
 	// replaces it for renditions 2160p and up; the built-in model
@@ -287,6 +291,15 @@ func (c *Config) SourceLabels() []string {
 	return labels
 }
 
+// TuneJobs is how many anchor searches tune runs at once: tune.jobs,
+// or for 0, one per eight CPU threads, and at least one.
+func (c *Config) TuneJobs() int {
+	if c.Tune.Jobs > 0 {
+		return c.Tune.Jobs
+	}
+	return max(1, runtime.NumCPU()/8)
+}
+
 // Segment is the segment duration. The config must be valid.
 func (c *Config) Segment() time.Duration {
 	d, _ := ParseOffset(c.SegmentDuration)
@@ -363,6 +376,9 @@ func (c *Config) Validate() error {
 	}
 	if t := c.Tune; t.TargetVMAF <= 0 || t.TargetVMAF > 100 || t.Anchors < 2 {
 		return fmt.Errorf("tune: target_vmaf must be in (0, 100] and anchors at least 2")
+	}
+	if c.Tune.Jobs < 0 {
+		return fmt.Errorf("tune.jobs: must be 0 (automatic) or more")
 	}
 	if h := c.Tune.HDR; h.TargetVMAF < 0 || h.TargetVMAF > 100 {
 		return fmt.Errorf("tune.hdr: target_vmaf must be in (0, 100]")

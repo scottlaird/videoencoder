@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -288,6 +289,11 @@ func TestLoadErrors(t *testing.T) {
 			wantErr: "quality_from loops",
 		},
 		{
+			name:    "negative tune.jobs",
+			files:   map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\ntune: {jobs: -1}"},
+			wantErr: "tune.jobs: must be 0",
+		},
+		{
 			name:    "bad segment_duration",
 			files:   map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\nsegment_duration: 0s"},
 			wantErr: "segment_duration: must be positive",
@@ -363,6 +369,13 @@ func TestDefaults(t *testing.T) {
 	}
 	if r.Outdir != filepath.Join(dir, "transcodes", "v") {
 		t.Errorf("default outdir = %q", r.Outdir)
+	}
+	if got, want := r.TuneJobs(), max(1, runtime.NumCPU()/8); got != want {
+		t.Errorf("default TuneJobs() = %d, want %d (one per 8 threads)", got, want)
+	}
+	r.Tune.Jobs = 5
+	if got := r.TuneJobs(); got != 5 {
+		t.Errorf("TuneJobs() with tune.jobs 5 = %d", got)
 	}
 	if got, want := r.Segment(), 5*time.Second; got != want {
 		t.Errorf("default segment = %v, want %v", got, want)

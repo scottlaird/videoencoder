@@ -3,8 +3,10 @@ package tune
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -37,6 +39,8 @@ type fakeFFmpeg struct {
 	// directories ("range1") by that many steps, and doubles their size.
 	harder map[string]float64
 	rng    map[string]string // encoded file -> range directory
+	// refsMade counts the lossless references written, by file name.
+	refsMade map[string]int
 }
 
 func cutoff(h uint64) float64 { return 20 + float64(h)/240 } // 480p: 22, 2160p: 29
@@ -86,6 +90,12 @@ func (f *fakeFFmpeg) Exec(_ context.Context, argv []string) (bench.Measurement, 
 			size *= 2
 		}
 		return bench.Measurement{}, os.WriteFile(out, bytes.Repeat([]byte("x"), size), 0o644)
+	}
+	if slices.Contains(argv, "ffv1") {
+		if f.refsMade == nil {
+			f.refsMade = map[string]int{}
+		}
+		f.refsMade[filepath.Base(out)]++
 	}
 	return bench.Measurement{}, os.WriteFile(out, []byte("media"), 0o644)
 }
@@ -554,5 +564,95 @@ func TestTuneRanges(t *testing.T) {
 	_, err = tu.Tune(context.Background(), r, src, vd, targets(), t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "runs past the end") {
 		t.Errorf("Tune with a range past the end = %v, want an error", err)
+	}
+}
+
+// Searches run at once give the same answers as one at a time, and
+// a reference two encoders share is made once.
+func TestTuneJobs(t *testing.T) {
+	av1 := config.Encoder{Codec: "libsvtav1", QualityFlag: "-crf", Args: []string{"-preset", "5"}}
+	h265 := config.Encoder{Codec: "libx265", QualityFlag: "-crf", Args: []string{"-preset", "faster"}}
+	var targets plan.Targets
+	for _, e := range []struct {
+		name string
+		enc  config.Encoder
+	}{{"av1", av1}, {"h265", h265}} {
+		for _, h := range []uint64{480, 720, 1080, 2160} {
+			w := h * 16 / 9
+			targets = append(targets, &plan.Target{Name: fmt.Sprintf("%s-%d", e.name, h), EncoderName: e.name, Encoder: e.enc,
+				Width: w + w%2, Height: h, Quality: 30, HDRQuality: 30})
+		}
+	}
+	vd := probe.VideoData{Width: 3840, Height: 2160, ColorTransfer: "bt709"}
+	run := func(jobs int) ([]Result, *fakeFFmpeg) {
+		f := &fakeFFmpeg{encodes: map[string]int{}, quality: map[string]float64{}, height: map[string]uint64{}}
+		tu := &Tuner{Exec: f, Prober: fakeProber{}, Threads: 1, Jobs: jobs}
+		results, err := tu.Tune(context.Background(), tuneConfig(), source(t), vd, targets, t.TempDir())
+		if err != nil {
+			t.Fatalf("Tune(jobs %d) = %v", jobs, err)
+		}
+		return results, f
+	}
+	serial, _ := run(1)
+	parallel, f := run(4)
+	if !slices.Equal(serial, parallel) {
+		t.Errorf("4 jobs gave\n %+v\nwant what 1 job gave\n %+v", parallel, serial)
+	}
+	// av1 and h265 anchor at 480p, 1080p and 2160p, and share each
+	// reference.
+	want := map[string]int{"ref-480.mkv": 1, "ref-1080.mkv": 1, "ref-2160.mkv": 1}
+	got := map[string]int{}
+	for name, n := range f.refsMade {
+		got[strings.Replace(name, ".partial", "", 1)] += n
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("references made %v, want each once: %v", got, want)
+	}
+}
+
+func TestRunLimited(t *testing.T) {
+	var mu sync.Mutex
+	running, most, calls := 0, 0, 0
+	err := runLimited(context.Background(), 3, 20, func(ctx context.Context, i int) error {
+		mu.Lock()
+		running++
+		calls++
+		most = max(most, running)
+		mu.Unlock()
+		time.Sleep(time.Millisecond)
+		mu.Lock()
+		running--
+		mu.Unlock()
+		return nil
+	})
+	if err != nil || calls != 20 || most > 3 || most < 2 {
+		t.Errorf("runLimited(3 jobs, 20 calls) = %v after %d calls, at most %d at once; want nil, 20, 2-3", err, calls, most)
+	}
+
+	// The first error stops the calls that haven't started and cancels
+	// the ones running.
+	boom := errors.New("boom")
+	started := 0
+	err = runLimited(context.Background(), 2, 50, func(ctx context.Context, i int) error {
+		mu.Lock()
+		started++
+		mu.Unlock()
+		if i == 0 {
+			return boom
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	if !errors.Is(err, boom) {
+		t.Errorf("runLimited() = %v, want the first error", err)
+	}
+	if started > 3 {
+		t.Errorf("%d calls started after the first failed; want the rest skipped", started)
+	}
+
+	// Zero jobs means one at a time, not none.
+	n := 0
+	if err := runLimited(context.Background(), 0, 4, func(context.Context, int) error { n++; return nil }); err != nil || n != 4 {
+		t.Errorf("runLimited(0 jobs) = %v after %d calls, want nil after 4", err, n)
 	}
 }

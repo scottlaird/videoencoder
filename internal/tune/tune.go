@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/scottlaird/videoencoder/internal/bench"
@@ -43,6 +45,11 @@ type Tuner struct {
 	Exec    bench.Executor
 	Prober  probe.Prober
 	Threads int // libvmaf n_threads
+	// Jobs is how many anchor searches run at once; below 1 is 1.
+	// Each search runs one trial encode and scoring at a time, which
+	// keeps only part of a big machine busy, so running several
+	// searches at once uses the rest.
+	Jobs int
 	// Results is a CSV file of every trial, read at the start and
 	// appended to as trials finish, so a later run with a different
 	// target reuses the encodes that still apply; "" keeps none.
@@ -50,6 +57,18 @@ type Tuner struct {
 	// FFmpegVersion is part of each trial's key: another ffmpeg build
 	// may encode differently.
 	FFmpegVersion string
+
+	// refs are the references being made, by path, so that searches
+	// that share one make it once.
+	refsMu sync.Mutex
+	refs   map[string]*refBuild
+}
+
+// refBuild is a reference being made: done closes when it's finished,
+// and err is then its outcome.
+type refBuild struct {
+	done chan struct{}
+	err  error
 }
 
 // Tune searches r's anchor renditions on samples of src (whose video
@@ -88,13 +107,32 @@ func (tu *Tuner) Tune(ctx context.Context, r *config.Resolved, src string, vd pr
 	}
 
 	results := make([]Result, len(targets))
-	byEncoder := map[string][]Point{}
 	scorer := func(i int) string {
 		t, hdrOut := forTone(targets[i], hdr)
 		return models.forTarget(t, hdrOut).ScorerAt(t.Height)
 	}
-	for enc, idx := range Anchors(targets, r.Tune.Anchors, scorer) {
-		for _, i := range idx {
+	// Set up every anchor's search first, since that shares the clips'
+	// reference lists, then run the searches, several at once.
+	type anchor struct {
+		enc       string
+		i         int
+		t         *plan.Target
+		hdr       bool
+		log       *slog.Logger
+		judged    []judging
+		toneMap   bool
+		prefilter string
+		bitrate   float64
+	}
+	var anchors []*anchor
+	byEnc := Anchors(targets, r.Tune.Anchors, scorer)
+	encs := make([]string, 0, len(byEnc))
+	for enc := range byEnc {
+		encs = append(encs, enc)
+	}
+	slices.Sort(encs)
+	for _, enc := range encs {
+		for _, i := range byEnc[enc] {
 			t, hdrOut := forTone(targets[i], hdr)
 			// A rendition is tuned once per tone, so its logs say which.
 			log := slog.With("rendition", t.Name, "tone", toneName(hdrOut))
@@ -126,14 +164,27 @@ func (tu *Tuner) Tune(ctx context.Context, r *config.Resolved, src string, vd pr
 					prefilter: prefilter, ffmpeg: tu.FFmpegVersion, scorer: scorer,
 				}})
 			}
-			res, bitrate, err := tu.search(ctx, log, target(r, t, hdrOut), t, judged, toneMap, prefilter, past)
-			if err != nil {
-				return nil, fmt.Errorf("tuning %s: %w", t.Name, err)
-			}
-			res.HDR = hdrOut
-			results[i] = res
-			byEncoder[enc] = append(byEncoder[enc], Point{Height: t.Height, Quality: res.Quality, Bitrate: bitrate})
+			anchors = append(anchors, &anchor{enc: enc, i: i, t: t, hdr: hdrOut, log: log, judged: judged, toneMap: toneMap, prefilter: prefilter})
 		}
+	}
+
+	err = runLimited(ctx, tu.Jobs, len(anchors), func(ctx context.Context, n int) error {
+		a := anchors[n]
+		res, bitrate, err := tu.search(ctx, a.log, target(r, a.t, a.hdr), a.t, a.judged, a.toneMap, a.prefilter, past)
+		if err != nil {
+			return fmt.Errorf("tuning %s: %w", a.t.Name, err)
+		}
+		res.HDR = a.hdr
+		results[a.i] = res
+		a.bitrate = bitrate
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	byEncoder := map[string][]Point{}
+	for _, a := range anchors {
+		byEncoder[a.enc] = append(byEncoder[a.enc], Point{Height: a.t.Height, Quality: results[a.i].Quality, Bitrate: a.bitrate})
 	}
 
 	for i, t := range targets {
@@ -339,7 +390,36 @@ func (tu *Tuner) reference(refs map[refKey]reference, vd probe.VideoData, t *pla
 }
 
 // makeReference writes ref from sample, unless it already exists.
+// Searches running at once may share a reference, so it's made once,
+// and the others wait for it.
 func (tu *Tuner) makeReference(ctx context.Context, sample string, ref reference) error {
+	tu.refsMu.Lock()
+	b, ok := tu.refs[ref.path]
+	if !ok {
+		if tu.refs == nil {
+			tu.refs = map[string]*refBuild{}
+		}
+		b = &refBuild{done: make(chan struct{})}
+		tu.refs[ref.path] = b
+	}
+	tu.refsMu.Unlock()
+	if ok {
+		select {
+		case <-b.done:
+			return b.err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	b.err = tu.writeReference(ctx, sample, ref)
+	close(b.done)
+	return b.err
+}
+
+// writeReference writes ref from sample, unless it already exists. It
+// writes to a temporary name first, so an interrupted run never leaves
+// a partial reference for a later one to trust.
+func (tu *Tuner) writeReference(ctx context.Context, sample string, ref reference) error {
 	if _, err := os.Stat(ref.path); err == nil {
 		return nil
 	}
@@ -351,10 +431,54 @@ func (tu *Tuner) makeReference(ctx context.Context, sample string, ref reference
 		// convert to 16-bit RGB, which is lossless enough to score.
 		vf = plan.ToneMapSDR + "," + vf + ",format=gbrp16le"
 	}
-	if err := tu.ffmpeg(ctx, "-i", sample, "-vf", vf, "-c:v", "ffv1", "-level", "3", ref.path); err != nil {
+	partial := strings.TrimSuffix(ref.path, ".mkv") + ".partial.mkv"
+	if err := tu.ffmpeg(ctx, "-i", sample, "-vf", vf, "-c:v", "ffv1", "-level", "3", partial); err != nil {
+		os.Remove(partial)
 		return fmt.Errorf("making %dp reference: %w", ref.height, err)
 	}
-	return nil
+	return os.Rename(partial, ref.path)
+}
+
+// runLimited calls f for 0 through n-1, at most jobs at once (at
+// least one). The first error cancels the calls still running and is
+// returned once they've all stopped.
+func runLimited(ctx context.Context, jobs, n int, f func(ctx context.Context, i int) error) error {
+	jobs = max(jobs, 1)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var (
+		wg    sync.WaitGroup
+		mu    sync.Mutex
+		first error
+	)
+	sem := make(chan struct{}, jobs)
+	for i := range n {
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := f(ctx, i); err != nil {
+				mu.Lock()
+				if first == nil {
+					first = err
+					cancel()
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if first != nil {
+		return first
+	}
+	return ctx.Err()
 }
 
 // qualitySpec is the search range for an encoder: its bench defaults,

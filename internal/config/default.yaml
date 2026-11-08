@@ -172,6 +172,11 @@ tune:
   ranges:
     - {start: 0s, duration: 8s}
   anchors: 2
+  # Anchor searches run at once. Each runs one trial encode and scoring
+  # at a time, which leaves much of a big machine idle; 0 runs one per
+  # eight CPU threads. Set it in your global config to fit the machine,
+  # or with --jobs.
+  jobs: 0
   vmaf_model: v0
 
 # Renditions taller than the source are dropped. If an encoder's

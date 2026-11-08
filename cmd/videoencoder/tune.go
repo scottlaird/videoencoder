@@ -99,7 +99,7 @@ func tuneVideo(ctx context.Context, r *config.Resolved, adHoc bool, d deps) erro
 		return err
 	}
 	tu := &tune.Tuner{
-		Exec: d.exec, Prober: d.prober, Threads: 4,
+		Exec: d.exec, Prober: d.prober, Threads: 4, Jobs: r.TuneJobs(),
 		Results:       filepath.Join(r.Outdir, tune.ResultsFile),
 		FFmpegVersion: version,
 	}
@@ -110,7 +110,7 @@ func tuneVideo(ctx context.Context, r *config.Resolved, adHoc bool, d deps) erro
 		// Each pass has its own scratch directory, since references are
 		// named by height alone.
 		pw := filepath.Join(work, p.label)
-		slog.Info("Tuning", "source", p.label, "renditions", len(p.targets))
+		slog.Info("Tuning", "source", p.label, "renditions", len(p.targets), "jobs", tu.Jobs)
 		results, err := tu.Tune(ctx, r, r.Sources[p.label], p.vd, p.targets, pw)
 		if err != nil {
 			return err
