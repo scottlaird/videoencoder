@@ -438,6 +438,10 @@ func TestTuneHDRSettings(t *testing.T) {
 		if want := "tone=" + toneName(hdrOut); !strings.Contains(line, want) {
 			t.Errorf("log line lacks %s: %s", want, line)
 		}
+		// tuneConfig's video is "v".
+		if !strings.Contains(line, "video=v ") {
+			t.Errorf("log line doesn't name the video: %s", line)
+		}
 	}
 	if seen == 0 {
 		t.Errorf("no Trial or Tuned log lines:\n%s", logs.String())

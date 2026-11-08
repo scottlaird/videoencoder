@@ -134,8 +134,10 @@ func (tu *Tuner) Tune(ctx context.Context, r *config.Resolved, src string, vd pr
 	for _, enc := range encs {
 		for _, i := range byEnc[enc] {
 			t, hdrOut := forTone(targets[i], hdr)
-			// A rendition is tuned once per tone, so its logs say which.
-			log := slog.With("rendition", t.Name, "tone", toneName(hdrOut))
+			// Searches for several videos' renditions can share a log,
+			// and a rendition is tuned once per tone, so its logs say
+			// which video and which tone.
+			log := slog.With("video", r.Name, "rendition", t.Name, "tone", toneName(hdrOut))
 			// SDR-only encoders tone-map HDR, as a render would, and are
 			// judged against a tone-mapped reference. The rest are judged
 			// with both sides tone-mapped, since VMAF is an SDR metric,
