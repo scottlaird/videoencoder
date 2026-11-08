@@ -1,21 +1,80 @@
 # videoencoder
 
-videoencoder turns a video file into a directory you can serve over
-plain HTTP. The directory holds a ladder of H.264, H.265 and AV1
-renditions, DASH and HLS manifests, posters and seek thumbnails, and
-any adaptive player, such as Shaka Player, hls.js or Safari, can
-stream it.
+`videoencoder` helps re-encode video files for streaming over HTTP.  It
+reads one or two source video files, optionally analyzes them for
+optimal compressibility, and then generates a set of streamable `.mp4`
+files at various resolutions with various codecs, along with DASH and
+HLS manifests so common web-video players can stream directly over
+HTTP with no special server support.
 
-Each video is described by a small YAML file next to its sources, so a
-library of videos can be rebuilt at any time without hunting down
-sources or remembering settings. Re-running is cheap. Only outputs
-whose source or settings changed are rebuilt, and only changed files
-are uploaded when publishing.
+When encoding, `videoencoder` produces a mix of H.264, H.265, and AV1
+encodings at common resolutions from 480p up to the original source
+resolution.  By default, H.264 is only encoded up to 1080p, H.265 is
+encoded up to 4K, and AV1 is encoded up to 8K; these can be overridden
+via config file.
 
-The repository also contains **encbench**, a tool for comparing
-encoder settings. It finds the cheapest quality setting that reaches a
-target VMAF for each set of flags on a set of sample clips. See
-[encbench](#encbench) below.
+Features:
+
+- Support for combined DASH and HLS output, so nearly any modern
+  web-based video player can play encoded videos.
+- Support for up to 8K video output.
+- Incremental rebuild support.  `videoencoder` will only
+  rebuild/recompress files that have changed.  For example, if you
+  change the compression settings for H.265 files, then only the H.265
+  outputs will be regenerated, saving encoding time.
+- Mixed HDR/SDR support.  `videoencoder` can take distinct input files
+  with an SDR and an HDR encoding of the same video and produce a
+  DASH/HLS output that players can use to play either based on the
+  viewer's hardware capabilities.
+- Automatic video quality tuning.  `videoencoder tune` will analyze
+  snippets of videos and evaluate how well each codec compresses each
+  video at different resolutions.  It will then tune the encoders'
+  quality slider to meet a specified VMAF quality level.  This lets
+  you produce low-bitrate videos with consistent quality with less
+  manual work.
+- Thumbnail support.  `videoencoder` will automatically generate
+  seekable thumbnail images for the output streams, giving a better UX
+  in players that understand DASH or HLS thumbnails.
+- Poster image support.  `videoencoder` will produce JPG, AVIF, and
+  WebP images showing a specified frame of the video, for use as
+  posters or thumbnails in index pages.  The poster images are
+  produced at multiple resolutions, optionally with HDR gain maps, and
+  JSON metadata is provided for HTML image `srcset` support.
+- S3 upload.  `videoencoder publish` can optionally push streaming
+  output files directly into a specified S3 (or S3-compatible) bucket,
+  in addition to writing to local directories.
+- Support for hierarchical configuration.  You can create a directory
+  tree full of video files with a top-level configuration file plus
+  per-video override configs, and then `videoencoder` can render new
+  videos and re-render existing videos as needed.
+- A benchmark tool, `encbench`, that can be used to benchmark encoder
+  settings, measuring encode time, output quality, and file size
+  across multiple input videos automatically.  This uses the same
+  basic logic as `videoencoder tune`.
+
+## Why?
+
+I've had *terrible* luck getting YouTube, Facebook, Reddit, etc, to
+actually play back my video content the way that I want it to look.
+YouTube is really inconsistent with HDR support and over-compresses a
+lot of videos.  Facebook noise-reduces videos so heavily that pictures
+of the night sky can lose their stars, and then it compresses
+everything down to very low bitrates, leaving everything blurry.
+Slack can stream videos, even in HDR, but it clamps maximum
+brightness so low that it breaks HDR.  They all make their own
+decisions around video compression that don't really fit what I want.
+Sometimes that's fine, and sometimes I'm *really* unhappy with the
+results.
+
+It's not actually very difficult to stream video yourself these days.
+There are many open-source tools that will handle the difficult client
+side of things, but actually turning a high-quality source video into
+something that web players can handle is sort of a black art.
+`videoencoder` aims to simplify that as much as possible.
+
+See [this blog post from
+2025](https://scottstuff.net/posts/2025/03/18/video-encoding-101/) for
+a walkthrough.
 
 ## Requirements
 
@@ -62,13 +121,13 @@ directory, renders it. Usually you'll want to tune the quality
 settings for the video first, as described in
 [Tuning quality](#tuning-quality).
 
-## What it produces
+## Output
 
 For each video, videoencoder makes:
 
-- **Renditions.** One per rung of the ladder, for each source. The
-  default ladder is H.264 up to 1080p, H.265 up to 2160p and AV1 up to
-  4320p, but never above the source's resolution.
+- **Renditions.** One per rung of the resolution ladder, for each
+  source. The default ladder is H.264 up to 1080p, H.265 up to 4K
+  and AV1 up to 8K, but never above the source's resolution.
 - **Audio.** Encoded once from the first source.
 - **Manifests.** `dash.mpd` and `hls.m3u8`, which list every rendition.
   With both an SDR and an HDR source, one stream carries both, and the
@@ -86,8 +145,7 @@ For each video, videoencoder makes:
 Media files are named after what they are and a hash of their source
 and settings, such as `av1-2160.hdr.7c3e1a09bd.mp4`. Changing one
 rendition's settings produces one new file and leaves every other
-file, and its name, alone. That's also what lets a CDN cache them
-forever.
+file, and its name, alone. This makes CDN caching easier.
 
 ## Commands
 
