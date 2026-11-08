@@ -17,6 +17,7 @@ import (
 	"github.com/scottlaird/videoencoder/internal/fileid"
 	"github.com/scottlaird/videoencoder/internal/plan"
 	"github.com/scottlaird/videoencoder/internal/probe"
+	"github.com/scottlaird/videoencoder/internal/progress"
 )
 
 // Result is the tuned setting for one rendition.
@@ -170,12 +171,26 @@ func (tu *Tuner) Tune(ctx context.Context, r *config.Resolved, src string, vd pr
 		}
 	}
 
+	for _, t := range targets {
+		detail := "interpolated after the searches"
+		if slices.ContainsFunc(anchors, func(a *anchor) bool { return a.t.Name == t.Name }) {
+			detail = "search"
+		}
+		progress.QueueTask(ctx, r.Name, TaskName(t, hdr), detail)
+	}
+
 	err = runLimited(ctx, tu.Jobs, len(anchors), func(ctx context.Context, n int) error {
 		a := anchors[n]
-		res, bitrate, err := tu.search(ctx, a.log, target(r, a.t, a.hdr), a.t, a.judged, a.toneMap, a.prefilter, past)
+		task := TaskName(targets[a.i], hdr)
+		progress.StartTask(ctx, r.Name, task, "")
+		update := func(detail string) { progress.UpdateTask(ctx, r.Name, task, detail) }
+		res, bitrate, err := tu.search(ctx, a.log, target(r, a.t, a.hdr), a.t, a.judged, a.toneMap, a.prefilter, past, update)
 		if err != nil {
+			progress.FinishTask(ctx, r.Name, task, "", err)
 			return fmt.Errorf("tuning %s: %w", a.t.Name, err)
 		}
+		progress.FinishTask(ctx, r.Name, task, fmt.Sprintf("%s · VMAF %.1f · %s · %d trials (%d cached)",
+			qualityText(a.t, res.Quality), res.VMAF, FormatBitrate(res.Bitrate), res.Encodes+res.Cached, res.Cached), nil)
 		res.HDR = a.hdr
 		results[a.i] = res
 		a.bitrate = bitrate
@@ -205,6 +220,8 @@ func (tu *Tuner) Tune(ctx context.Context, r *config.Resolved, src string, vd pr
 			Interpolated: true,
 			HDR:          hdrOut,
 		}
+		progress.FinishTask(ctx, r.Name, TaskName(t, hdr), fmt.Sprintf("%s · %s · interpolated",
+			qualityText(t, results[i].Quality), FormatBitrate(results[i].Bitrate)), nil)
 	}
 	return results, nil
 }
@@ -296,6 +313,13 @@ func forTone(t *plan.Target, hdr bool) (*plan.Target, bool) {
 		return t.ForHDR(), true
 	}
 	return t, false
+}
+
+// TaskName is how progress reports name t's tune from a source that is
+// HDR or not: its output tone and rendition, like "hdr/av1-1080".
+func TaskName(t *plan.Target, hdrSource bool) string {
+	_, hdrOut := forTone(t, hdrSource)
+	return toneName(hdrOut) + "/" + t.Name
 }
 
 // models are the VMAF models tune scores SDR and HDR renditions with.
@@ -507,7 +531,12 @@ func target(r *config.Resolved, t *plan.Target, hdr bool) float64 {
 // its clips' (see combine), and the result's bitrate is its. Trials
 // recorded in past under each clip's key are used instead of encoding
 // again, and new ones are recorded there.
-func (tu *Tuner) search(ctx context.Context, log *slog.Logger, goal float64, t *plan.Target, clips []judging, toneMap bool, prefilter string, past *results) (Result, float64, error) {
+// qualityText shows quality as t's encoder takes it, like "crf 24.5".
+func qualityText(t *plan.Target, quality float64) string {
+	return fmt.Sprintf("%s %g", strings.TrimPrefix(t.Encoder.QualityFlag, "-"), quality)
+}
+
+func (tu *Tuner) search(ctx context.Context, log *slog.Logger, goal float64, t *plan.Target, clips []judging, toneMap bool, prefilter string, past *results, update func(detail string)) (Result, float64, error) {
 	spec := qualitySpec(t.Encoder.Codec)
 	s := bench.NewSearch(spec.Steps(), spec.QualityToIndex(t.Quality))
 	// One step is worth less than a few seconds of sample can measure.
@@ -614,6 +643,9 @@ func (tu *Tuner) search(ctx context.Context, log *slog.Logger, goal float64, t *
 			attrs = append(attrs, "ranges", vmafs)
 		}
 		log.Info("Trial", attrs...)
+		if update != nil {
+			update(fmt.Sprintf("trial %d: %s → VMAF %.1f (target %g)", len(seen), qualityText(t, q), p.vmaf, goal))
+		}
 		s.Observe(i, margin >= 0, margin)
 	}
 }

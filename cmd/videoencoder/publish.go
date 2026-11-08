@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/scottlaird/videoencoder/internal/config"
 	"github.com/scottlaird/videoencoder/internal/publish"
@@ -11,35 +12,37 @@ import (
 )
 
 // publishVideo copies r's stream, as recorded by its last render, to
-// each publish.to target.
-func publishVideo(ctx context.Context, r *config.Resolved, prune bool) error {
+// each publish.to target, and summarizes what it copied.
+func publishVideo(ctx context.Context, r *config.Resolved, prune bool) (string, error) {
 	if len(r.Publish.To) == 0 {
-		return nil
+		return "", nil
 	}
 	m, err := state.Load(r.Outdir, r.Name)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if len(m.Stream) == 0 {
-		return fmt.Errorf("nothing to publish: %s hasn't been rendered", r.Name)
+		return "", fmt.Errorf("nothing to publish: %s hasn't been rendered", r.Name)
 	}
+	var summary []string
 	for _, name := range r.Publish.To {
 		t := r.Publish.Targets[name]
 		if prune && !t.PerVideo {
-			return fmt.Errorf("publish target %q: --prune needs {name} in its dir or prefix, so it can't delete other videos", name)
+			return "", fmt.Errorf("publish target %q: --prune needs {name} in its dir or prefix, so it can't delete other videos", name)
 		}
 		target, err := openTarget(t)
 		if err != nil {
-			return fmt.Errorf("publish target %q: %w", name, err)
+			return "", fmt.Errorf("publish target %q: %w", name, err)
 		}
 		rep, err := publish.Sync(ctx, r.Streamdir, m.Stream, target, prune)
 		if err != nil {
-			return err
+			return "", err
 		}
 		slog.Info("Published", "video", r.Name, "target", target.String(),
 			"uploaded", len(rep.Uploaded), "unchanged", len(rep.Skipped), "deleted", len(rep.Deleted))
+		summary = append(summary, fmt.Sprintf("%s: %d uploaded, %d unchanged", name, len(rep.Uploaded), len(rep.Skipped)))
 	}
-	return nil
+	return strings.Join(summary, "; "), nil
 }
 
 func openTarget(t *config.PublishTarget) (publish.Target, error) {
