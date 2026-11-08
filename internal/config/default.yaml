@@ -9,6 +9,13 @@
 outdir: transcodes/{name}
 streamdir: stream/{name}
 
+# The length of the stream's segments. Players switch renditions only
+# at segment boundaries, so every rendition gets a keyframe at each
+# multiple of this, and an encoder's gop_args cap its own keyframe
+# interval at one segment. Shorter segments let players adapt sooner
+# but cost a little bitrate, since keyframes are expensive.
+segment_duration: 5s
+
 # Copy each source file into the stream directory under its own name,
 # so it's published with the renditions: for sharing originals, such as
 # test clips that people should be able to re-encode themselves.
@@ -59,7 +66,11 @@ poster:
 #   quality        for renditions that set none; known codecs have a
 #                  typical default
 #   args           the encoder's fixed options
-#   extra_args     more options, after args
+#   gop_args       options capping the keyframe interval at one segment,
+#                  with "{gop}" replaced by the frames in a segment at
+#                  the source's frame rate; every encode also forces a
+#                  keyframe at each segment boundary
+#   extra_args     more options, after args and gop_args
 #   cap_bitrate    pass each rendition's bitrate as -b:v, with -maxrate
 #                  and -bufsize at 1.5x; otherwise it's only a label
 #   sdr_only       make only SDR renditions: from an SDR source, or
@@ -78,6 +89,7 @@ presets:
     quality: 18
     # 8-bit 4:2:0 High profile: what browsers and hardware decode.
     args: [-preset, faster, -pix_fmt, yuv420p, -profile:v, high]
+    gop_args: [-g, "{gop}"]
     cap_bitrate: true
     # 8-bit PQ is all banding and few devices play it.
     sdr_only: true
@@ -86,6 +98,11 @@ presets:
     quality: 20
     # Main 10, 4:2:0. hvc1, not ffmpeg's default hev1, for Apple players.
     args: [-preset, faster, -pix_fmt, yuv420p10le, -profile:v, main10, -tag:v, hvc1]
+    # x265's GOPs are open by default, which makes its forced keyframes
+    # CRA frames, not IDR; cgop closes them so each segment starts
+    # clean. (-flags, unlike -x265-params, doesn't collide with an
+    # extra_args -x265-params.)
+    gop_args: [-g, "{gop}", -flags, +cgop]
     cap_bitrate: true
   svtav1-p5:
     codec: libsvtav1
@@ -93,16 +110,19 @@ presets:
     # 10-bit compresses better than 8-bit even from 8-bit sources, and
     # every AV1 decoder supports it.
     args: [-preset, "5", -pix_fmt, yuv420p10le]
+    gop_args: [-g, "{gop}"]
   # Apple's hardware encoders, on macOS. -q:v (constant quality) needs
   # Apple silicon. Without -g, ffmpeg gives them a keyframe every 12
-  # frames, so -g sets one about every 8s at 30fps. They don't honor
-  # -maxrate the way the software encoders do, so bitrates are labels.
+  # frames. They don't honor -maxrate the way the software encoders
+  # do, so bitrates are labels.
   hevc-videotoolbox:
     codec: hevc_videotoolbox
-    args: [-pix_fmt, p010le, -profile:v, main10, -tag:v, hvc1, -g, "240"]
+    args: [-pix_fmt, p010le, -profile:v, main10, -tag:v, hvc1]
+    gop_args: [-g, "{gop}"]
   h264-videotoolbox:
     codec: h264_videotoolbox
-    args: [-pix_fmt, nv12, -profile:v, high, -g, "240"]
+    args: [-pix_fmt, nv12, -profile:v, high]
+    gop_args: [-g, "{gop}"]
     sdr_only: true
 
 # The ladder's encoder slots, which renditions name. Delete one with

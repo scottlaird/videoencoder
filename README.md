@@ -270,6 +270,7 @@ videos:
 | `outdir` | Where renditions and the video's state file go. Default `transcodes/{name}`. |
 | `streamdir` | Where the finished stream goes. Default `stream/{name}`. |
 | `copy_sources` | Copy each source file into the stream under its own name, so it's published with the renditions. For sharing originals, such as test clips people can re-encode. Unchanged copies aren't redone. Default `false`. |
+| `segment_duration` | The length of the stream's segments, default `5s`. Every rendition gets a keyframe at each segment boundary, so players can switch between renditions and codecs cleanly. |
 | `presets` | Named encoder settings that encoders can start from, described below. |
 | `encoders` | The ladder's encoder slots by name, described below. |
 | `renditions` | The ladder, described below. |
@@ -313,7 +314,7 @@ encoders:
 
 Deleting an encoder with `null` deletes its renditions too. To add an
 option without repeating the preset's `args`, use `extra_args`, which
-follow them:
+follow them and `gop_args`:
 
 ```yaml
 encoders:
@@ -321,7 +322,7 @@ encoders:
 ```
 
 An encoder or preset can set every field itself, with no preset:
-`codec`, `quality_flag`, `quality`, `args`, `extra_args`,
+`codec`, `quality_flag`, `quality`, `args`, `gop_args`, `extra_args`,
 `cap_bitrate` and `sdr_only`. For codecs videoencoder knows (x264,
 x265, SVT-AV1, libaom, rav1e, NVENC and VideoToolbox), `quality_flag`
 and `quality` default to the codec's usual flag and a typical value.
@@ -329,6 +330,19 @@ and `quality` default to the codec's usual flag and a typical value.
 Pixel formats should be explicit, since encoders otherwise keep the
 source's, and 4:2:2 or 10-bit H.264 plays almost nowhere. Without
 `cap_bitrate`, a rendition's bitrate is just a label in the manifest.
+
+Players can only switch renditions at a segment boundary, and
+packager can only start a segment at a keyframe. So every encode is
+given `-force_key_frames` at each multiple of `segment_duration`, and
+`gop_args` caps the encoder's own keyframe interval at one segment, with
+`{gop}` replaced by the number of frames in a segment at the source's
+frame rate (rounded up). Every built-in preset uses `-g {gop}`. x265's
+also adds `-flags +cgop`: its GOPs are open by default, which makes its
+forced keyframes CRA frames, not IDR, so a segment's first frames
+could depend on the one before it. An encoder without `gop_args` still
+gets the forced keyframes. Before this setting existed, each encoder
+used its own default interval, and on a 24 fps clip H.264, H.265 and
+AV1 produced segments of 15, 10 and 7 seconds that never lined up.
 
 Quality numbers only mean something to one codec: CRF 20 for x265 is
 not `-q:v 20` for VideoToolbox, where higher numbers are better. So

@@ -288,6 +288,11 @@ func TestLoadErrors(t *testing.T) {
 			wantErr: "quality_from loops",
 		},
 		{
+			name:    "bad segment_duration",
+			files:   map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\nsegment_duration: 0s"},
+			wantErr: "segment_duration: must be positive",
+		},
+		{
 			name:    "encoder naming an unknown preset",
 			files:   map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\nencoders: {h265: {preset: x265-glacial}}"},
 			wantErr: `encoder "h265": no preset "x265-glacial"`,
@@ -358,6 +363,14 @@ func TestDefaults(t *testing.T) {
 	}
 	if r.Outdir != filepath.Join(dir, "transcodes", "v") {
 		t.Errorf("default outdir = %q", r.Outdir)
+	}
+	if got, want := r.Segment(), 5*time.Second; got != want {
+		t.Errorf("default segment = %v, want %v", got, want)
+	}
+	for name, e := range r.Encoders {
+		if !slices.Contains(e.GOPArgs, "{gop}") {
+			t.Errorf("encoder %s gop_args = %q; every default should cap its keyframe interval", name, e.GOPArgs)
+		}
 	}
 }
 

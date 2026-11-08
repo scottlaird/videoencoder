@@ -405,7 +405,7 @@ func render(ctx context.Context, r *config.Resolved, d deps, rebuild, only strin
 		return nil
 	}
 
-	p := &pack.Packager{Runner: d.runner, Prober: d.prober}
+	p := &pack.Packager{Runner: d.runner, Prober: d.prober, Segment: r.Segment()}
 	mpd, files, err := p.Package(ctx, r.Streamdir, videos, audio)
 	if err != nil {
 		return fmt.Errorf("packaging: %w", err)

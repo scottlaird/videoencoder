@@ -6,11 +6,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/scottlaird/videoencoder/internal/config"
 	"github.com/scottlaird/videoencoder/internal/ffmpeg"
@@ -32,6 +34,12 @@ type Target struct {
 	// encodes; see ForHDR.
 	HDRQuality float64
 	HDRBitrate uint64
+	// Segment is the stream's segment duration: every encode gets a
+	// keyframe at each multiple of it. GOP is the frames in one
+	// segment at the source's frame rate, set by Filter, and 0 if
+	// that's unknown.
+	Segment time.Duration
+	GOP     uint64
 }
 
 // ForHDR returns t as it encodes an HDR source to HDR, with its HDR
@@ -68,6 +76,7 @@ func FromConfig(c *config.Config) (Targets, error) {
 			Args:        r.Args,
 			HDRQuality:  r.HDRQuality(),
 			HDRBitrate:  hdrBitrate,
+			Segment:     c.Segment(),
 		})
 	}
 	return t, nil
@@ -92,10 +101,38 @@ func (targets Targets) Filter(vd probe.VideoData) Targets {
 		default:
 			continue
 		}
+		nt.GOP = gopFrames(vd.FPS, t.Segment)
 		filtered = append(filtered, &nt)
 		maxHeight[t.EncoderName] = max(maxHeight[t.EncoderName], nt.Height)
 	}
 	return filtered
+}
+
+// gopFrames is the number of frames in one segment at fps, rounded up
+// so that an encoder's own longest interval never cuts a segment
+// short; or 0 if either is unknown.
+func gopFrames(fps float64, segment time.Duration) uint64 {
+	if fps <= 0 || segment <= 0 {
+		return 0
+	}
+	return uint64(math.Ceil(fps*segment.Seconds() - 1e-6))
+}
+
+// keyframeArgs force a keyframe at every multiple of t.Segment and
+// pass t.Encoder.GOPArgs with {gop} filled in, if t.GOP is known.
+func (t *Target) keyframeArgs() []string {
+	if t.Segment <= 0 {
+		return nil
+	}
+	var args []string
+	if t.GOP > 0 {
+		gop := strconv.FormatUint(t.GOP, 10)
+		for _, a := range t.Encoder.GOPArgs {
+			args = append(args, strings.ReplaceAll(a, "{gop}", gop))
+		}
+	}
+	secs := strconv.FormatFloat(t.Segment.Seconds(), 'f', -1, 64)
+	return append(args, "-force_key_frames", "expr:gte(t,n_forced*"+secs+")")
 }
 
 // scaledWidth keeps the source aspect ratio at height, rounded to an
@@ -182,6 +219,7 @@ func (t *Target) Job(src Source, outdir string, toneMap bool) *ffmpeg.Job {
 	}
 	args := []string{"-vf", vf, "-c:v", t.Encoder.Codec}
 	args = append(args, t.Encoder.Args...)
+	args = append(args, t.keyframeArgs()...)
 	args = append(args, t.Encoder.ExtraArgs...)
 	if toneMap {
 		args = append(args, "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709")

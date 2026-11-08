@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/scottlaird/videoencoder/internal/ffmpeg"
 	"github.com/scottlaird/videoencoder/internal/mp4"
@@ -18,6 +20,18 @@ import (
 type Packager struct {
 	Runner ffmpeg.Runner
 	Prober probe.Prober
+	// Segment is the segment duration; 0 means DefaultSegment.
+	Segment time.Duration
+}
+
+// DefaultSegment is the segment duration when none is given.
+const DefaultSegment = 5 * time.Second
+
+func (p *Packager) segment() time.Duration {
+	if p.Segment > 0 {
+		return p.Segment
+	}
+	return DefaultSegment
 }
 
 // Package writes dash.mpd, hls.m3u8 and the segmented media into
@@ -85,7 +99,7 @@ func (p *Packager) argv(ctx context.Context, streamdir string, videos []string, 
 	}
 
 	argv = append(argv,
-		"--segment_duration=5",
+		"--segment_duration="+strconv.FormatFloat(p.segment().Seconds(), 'f', -1, 64),
 		"--allow_codec_switching",
 		"--min_buffer_time=10",
 		"--mpd_output="+filepath.Join(streamdir, "dash.mpd"),
