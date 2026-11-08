@@ -442,7 +442,7 @@ func render(ctx context.Context, r *config.Resolved, d deps, rebuild, only strin
 				return err
 			}
 			if added {
-				progress.QueueTask(ctx, r.Name, j.Slot, "")
+				progress.QueueTask(ctx, r.Name, j.Slot, j.Reason)
 			} else {
 				progress.SkipTask(ctx, r.Name, j.Slot, "up to date")
 			}
@@ -471,11 +471,11 @@ func render(ctx context.Context, r *config.Resolved, d deps, rebuild, only strin
 
 	for i, batch := range batches {
 		for _, j := range batch.Jobs {
-			progress.StartTask(ctx, r.Name, j.Slot, fmt.Sprintf("with %d others from %s", len(batch.Jobs)-1, b.sources[i].Label))
+			progress.StartTask(ctx, r.Name, j.Slot, fmt.Sprintf("%s · with %d others from %s", j.Reason, len(batch.Jobs)-1, b.sources[i].Label))
 		}
 		err := batch.Run(ctx, d.runner)
 		for _, j := range batch.Jobs {
-			progress.FinishTask(ctx, r.Name, j.Slot, "", err)
+			progress.FinishTask(ctx, r.Name, j.Slot, j.Reason, err)
 		}
 		if err != nil {
 			return fmt.Errorf("encoding %q: %w", b.sources[i].Path, err)

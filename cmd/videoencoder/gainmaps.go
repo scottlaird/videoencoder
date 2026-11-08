@@ -51,13 +51,13 @@ func buildGainMaps(ctx context.Context, d deps, b *built, rebuild string) error 
 		force := forced(rebuild, &ffmpeg.Job{Slot: g.Slot})
 		reason := b.manifest.Explain(g.Slot, g.Key, g.SourceID(), exists)
 		if reason == state.UpToDate && !force {
-			slog.Info("Up to date", "slot", g.Slot, "output", filepath.Base(g.Output))
+			slog.Debug("Up to date", "slot", g.Slot, "output", filepath.Base(g.Output))
 			continue
 		}
 		if force {
 			reason = "forced"
 		}
-		slog.Info("Building", "slot", g.Slot, "output", filepath.Base(g.Output), "reason", reason)
+		slog.Debug("Building", "slot", g.Slot, "output", filepath.Base(g.Output), "reason", reason)
 		if err := buildGainMap(ctx, d.runner, g); err != nil {
 			return fmt.Errorf("%s: %w", g.Slot, err)
 		}

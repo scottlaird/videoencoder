@@ -38,8 +38,16 @@ func (r ExecRunner) Run(ctx context.Context, argv []string) error {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Env = QuietEnv()
 	cmd.Stdout = r.Stdout
-	cmd.Stderr = r.Stderr
-	if err := cmd.Run(); err != nil {
+	var stderr *dropNoise
+	if r.Stderr != nil {
+		stderr = newDropNoise(r.Stderr)
+		cmd.Stderr = stderr
+	}
+	err := cmd.Run()
+	if stderr != nil {
+		stderr.Flush()
+	}
+	if err != nil {
 		return fmt.Errorf("running %s: %w", argv[0], err)
 	}
 	return nil
@@ -59,6 +67,10 @@ type Job struct {
 	// identifies how it is built and is part of Output's name. Source
 	// identifies the input's content.
 	Slot, Key, Source string
+
+	// Reason is why a batch builds the job, such as "settings changed",
+	// or state.UpToDate if it doesn't; set when it's added to one.
+	Reason string
 }
 
 // Cmdline is the job's command, naming the final output rather than
@@ -106,26 +118,29 @@ type Batch struct {
 }
 
 // AddIfNeeded adds j unless its output already exists, and reports
-// whether it did.
+// whether it did. j.Reason says why it's built, or that it's up to
+// date. Each decision is logged at debug level; progress reports
+// carry it for people.
 func (b *Batch) AddIfNeeded(j *Job) (bool, error) {
 	_, err := os.Stat(j.Result())
 	exists := err == nil
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return false, err
 	}
-	reason := b.Manifest.Explain(j.Slot, j.Key, j.Source, exists)
-	if reason == state.UpToDate {
-		slog.Info("Up to date", "slot", j.Slot, "output", filepath.Base(j.Result()))
+	j.Reason = b.Manifest.Explain(j.Slot, j.Key, j.Source, exists)
+	if j.Reason == state.UpToDate {
+		slog.Debug("Up to date", "slot", j.Slot, "output", filepath.Base(j.Result()))
 		return false, nil
 	}
-	slog.Info("Building", "slot", j.Slot, "output", filepath.Base(j.Result()), "reason", reason)
+	slog.Debug("Building", "slot", j.Slot, "output", filepath.Base(j.Result()), "reason", j.Reason)
 	b.Jobs = append(b.Jobs, j)
 	return true, nil
 }
 
 // Add adds j whether or not its output exists, replacing it.
 func (b *Batch) Add(j *Job) {
-	slog.Info("Building", "slot", j.Slot, "output", filepath.Base(j.Result()), "reason", "forced")
+	j.Reason = "forced"
+	slog.Debug("Building", "slot", j.Slot, "output", filepath.Base(j.Result()), "reason", j.Reason)
 	os.RemoveAll(j.Result())
 	b.Jobs = append(b.Jobs, j)
 }
