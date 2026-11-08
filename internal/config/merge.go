@@ -38,6 +38,7 @@ func withoutKey(m *yaml.Node, key string) *yaml.Node {
 var namedMaps = map[string]bool{
 	"sources":         true,
 	"encoders":        true,
+	"presets":         true,
 	"renditions":      true,
 	"videos":          true,
 	"publish.targets": true,
@@ -49,8 +50,9 @@ var namedMaps = map[string]bool{
 // rendition; anywhere else it changes nothing, so a bare "tune:" left
 // in a file keeps the inherited settings rather than erasing them.
 // Every value taken from src is annotated with label as a line
-// comment.
-func mergeInto(dst, src *yaml.Node, label, path string) {
+// comment. Deletions are recorded in deleted, if it's not nil, as
+// "path.key", such as "encoders.h264".
+func mergeInto(dst, src *yaml.Node, label, path string, deleted map[string]bool) {
 	for i := 0; i+1 < len(src.Content); i += 2 {
 		key, val := src.Content[i], src.Content[i+1]
 		at := -1
@@ -63,15 +65,20 @@ func mergeInto(dst, src *yaml.Node, label, path string) {
 
 		switch {
 		case isNull(val):
-			if at >= 0 && namedMaps[path] {
-				dst.Content = append(dst.Content[:at], dst.Content[at+2:]...)
+			if namedMaps[path] {
+				if at >= 0 {
+					dst.Content = append(dst.Content[:at], dst.Content[at+2:]...)
+				}
+				if deleted != nil {
+					deleted[path+"."+key.Value] = true
+				}
 			}
 		case at >= 0 && val.Kind == yaml.MappingNode && dst.Content[at+1].Kind == yaml.MappingNode:
 			sub := key.Value
 			if path != "" {
 				sub = path + "." + key.Value
 			}
-			mergeInto(dst.Content[at+1], val, label, sub)
+			mergeInto(dst.Content[at+1], val, label, sub, deleted)
 		default:
 			k := &yaml.Node{Kind: yaml.ScalarNode, Tag: key.Tag, Value: key.Value}
 			v := annotate(clean(val), label)

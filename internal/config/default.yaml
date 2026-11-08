@@ -47,30 +47,70 @@ poster:
   gainmap_formats: [jpg, avif]
   hdr: false
 
-encoders:
-  # Pixel formats are explicit: encoders otherwise keep the source's,
-  # and 4:2:2 or 10-bit H.264 (and 4:2:2 HEVC) play almost nowhere.
-  h264:
+# Presets are named encoder settings. An encoder (below) names one with
+# preset, and its own fields replace the preset's: so a sidecar can
+# switch a slot to another encoder with just "h265: {preset:
+# hevc-videotoolbox}", or add an option with extra_args, which follow
+# args, without repeating the rest. A preset is:
+#
+#   codec          the ffmpeg encoder
+#   quality_flag   the option quality goes in; for known codecs it
+#                  defaults to the usual one (-crf, -q:v, -cq:v...)
+#   quality        for renditions that set none; known codecs have a
+#                  typical default
+#   args           the encoder's fixed options
+#   extra_args     more options, after args
+#   cap_bitrate    pass each rendition's bitrate as -b:v, with -maxrate
+#                  and -bufsize at 1.5x; otherwise it's only a label
+#   sdr_only       make only SDR renditions: from an SDR source, or
+#                  tone-mapped from HDR if there's none
+#
+# Quality numbers belong to a codec: CRF 20 for libx265 isn't -q:v 20
+# for VideoToolbox, where higher is better. So a rendition's tuned
+# quality records its codec (tuned_for), and switching the encoder to
+# another codec asks for a new tune rather than reusing it.
+#
+# Pixel formats are explicit: encoders otherwise keep the source's,
+# and 4:2:2 or 10-bit H.264 (and 4:2:2 HEVC) play almost nowhere.
+presets:
+  x264-faster:
     codec: libx264
-    quality_flag: -crf
+    quality: 18
     # 8-bit 4:2:0 High profile: what browsers and hardware decode.
     args: [-preset, faster, -pix_fmt, yuv420p, -profile:v, high]
     cap_bitrate: true
-    # 8-bit PQ is all banding and few devices play it, so H.264 is made
-    # only from an SDR source, or tone-mapped from HDR if there is none.
+    # 8-bit PQ is all banding and few devices play it.
     sdr_only: true
-  h265:
+  x265-faster:
     codec: libx265
-    quality_flag: -crf
+    quality: 20
     # Main 10, 4:2:0. hvc1, not ffmpeg's default hev1, for Apple players.
     args: [-preset, faster, -pix_fmt, yuv420p10le, -profile:v, main10, -tag:v, hvc1]
     cap_bitrate: true
-  av1:
+  svtav1-p5:
     codec: libsvtav1
-    quality_flag: -crf
+    quality: 31
     # 10-bit compresses better than 8-bit even from 8-bit sources, and
     # every AV1 decoder supports it.
     args: [-preset, "5", -pix_fmt, yuv420p10le]
+  # Apple's hardware encoders, on macOS. -q:v (constant quality) needs
+  # Apple silicon. Without -g, ffmpeg gives them a keyframe every 12
+  # frames, so -g sets one about every 8s at 30fps. They don't honor
+  # -maxrate the way the software encoders do, so bitrates are labels.
+  hevc-videotoolbox:
+    codec: hevc_videotoolbox
+    args: [-pix_fmt, p010le, -profile:v, main10, -tag:v, hvc1, -g, "240"]
+  h264-videotoolbox:
+    codec: h264_videotoolbox
+    args: [-pix_fmt, nv12, -profile:v, high, -g, "240"]
+    sdr_only: true
+
+# The ladder's encoder slots, which renditions name. Delete one with
+# null, and its renditions go with it: "h264: null" makes no H.264.
+encoders:
+  h264: {preset: x264-faster}
+  h265: {preset: x265-faster}
+  av1: {preset: svtav1-p5}
 
 # How "videoencoder tune" picks rendition qualities: it encodes each
 # of ranges (duration seconds from start) of each source (SDR
@@ -121,22 +161,24 @@ tune:
 # layer is merged, so it follows tune:
 #
 #   av1-3240: {quality_from: av1-2160, quality_offset: 2}
+#
+# A rendition without a quality takes its encoder's.
 renditions:
-  h264-480:  {encoder: h264, height: 480,  quality: 18, bitrate: 1M}
-  h264-720:  {encoder: h264, height: 720,  quality: 18, bitrate: 2M}
-  h264-1080: {encoder: h264, height: 1080, quality: 18, bitrate: 4M}
-  h265-480:  {encoder: h265, height: 480,  quality: 20, bitrate: 800k}
-  h265-720:  {encoder: h265, height: 720,  quality: 20, bitrate: 1M}
-  h265-1080: {encoder: h265, height: 1080, quality: 20, bitrate: 2M}
-  h265-1440: {encoder: h265, height: 1440, quality: 20, bitrate: 3M}
-  h265-2160: {encoder: h265, height: 2160, quality: 20, bitrate: 4M}
-  av1-480:   {encoder: av1,  height: 480,  quality: 28, bitrate: 700k}
-  av1-720:   {encoder: av1,  height: 720,  quality: 30, bitrate: 1M}
-  av1-1080:  {encoder: av1,  height: 1080, quality: 31, bitrate: 2M}
-  av1-1440:  {encoder: av1,  height: 1440, quality: 32, bitrate: 3M}
-  av1-2160:  {encoder: av1,  height: 2160, quality: 32, bitrate: 4M}
-  av1-3240:  {encoder: av1,  height: 3240, quality: 32, bitrate: 5M}
-  av1-4320:  {encoder: av1,  height: 4320, quality: 32, bitrate: 8M}
+  h264-480:  {encoder: h264, height: 480,  bitrate: 1M}
+  h264-720:  {encoder: h264, height: 720,  bitrate: 2M}
+  h264-1080: {encoder: h264, height: 1080, bitrate: 4M}
+  h265-480:  {encoder: h265, height: 480,  bitrate: 800k}
+  h265-720:  {encoder: h265, height: 720,  bitrate: 1M}
+  h265-1080: {encoder: h265, height: 1080, bitrate: 2M}
+  h265-1440: {encoder: h265, height: 1440, bitrate: 3M}
+  h265-2160: {encoder: h265, height: 2160, bitrate: 4M}
+  av1-480:   {encoder: av1,  height: 480,  bitrate: 700k}
+  av1-720:   {encoder: av1,  height: 720,  bitrate: 1M}
+  av1-1080:  {encoder: av1,  height: 1080, bitrate: 2M}
+  av1-1440:  {encoder: av1,  height: 1440, bitrate: 3M}
+  av1-2160:  {encoder: av1,  height: 2160, bitrate: 4M}
+  av1-3240:  {encoder: av1,  height: 3240, bitrate: 5M}
+  av1-4320:  {encoder: av1,  height: 4320, bitrate: 8M}
 
 # Where finished streams are copied after rendering: a local directory
 # or an S3-compatible bucket. "to" names the targets used by default.

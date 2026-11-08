@@ -51,8 +51,8 @@ renditions:
   three: {encoder: x, height: 1080, quality: 22}
 `
 	dst := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-	mergeInto(dst, node(t, base), "base", "")
-	mergeInto(dst, node(t, over), "over", "")
+	mergeInto(dst, node(t, base), "base", "", nil)
+	mergeInto(dst, node(t, over), "over", "", nil)
 
 	var got layer
 	if err := dst.Load(&got, yaml.WithKnownFields()); err != nil {
@@ -288,6 +288,41 @@ func TestLoadErrors(t *testing.T) {
 			wantErr: "quality_from loops",
 		},
 		{
+			name:    "encoder naming an unknown preset",
+			files:   map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\nencoders: {h265: {preset: x265-glacial}}"},
+			wantErr: `encoder "h265": no preset "x265-glacial"`,
+		},
+		{
+			name: "preset naming a preset",
+			files: map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\n" +
+				"presets: {mine: {preset: x265-faster}}\nencoders: {h265: {preset: mine}}"},
+			wantErr: "presets can't name a preset",
+		},
+		{
+			name:    "typo in a preset",
+			files:   map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\npresets: {mine: {codec: libx265, argz: []}}"},
+			wantErr: "argz",
+		},
+		{
+			name: "unknown codec without a quality_flag",
+			files: map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\n" +
+				"encoders: {vp9: {codec: libvpx-vp9, quality: 30}}\nrenditions: {vp9-720: {encoder: vp9, height: 720}}"},
+			wantErr: `quality_flag is required for codec "libvpx-vp9"`,
+		},
+		{
+			name: "rendition of an unknown codec with no quality",
+			files: map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\n" +
+				"encoders: {vp9: {codec: libvpx-vp9, quality_flag: -crf}}\nrenditions: {vp9-720: {encoder: vp9, height: 720}}"},
+			wantErr: `rendition "vp9-720": no quality, and encoder "vp9" has none`,
+		},
+		{
+			name: "quality tuned for another codec",
+			files: map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\n" +
+				"encoders: {h265: {preset: hevc-videotoolbox}}\n" +
+				"renditions: {h265-1080: {quality: 22.5, tuned_for: libx265}}"},
+			wantErr: `tuned for libx265, but encoder "h265" is now hevc_videotoolbox`,
+		},
+		{
 			name:    "bad bitrate",
 			files:   map[string]string{"v" + SidecarSuffix: "sources: {a: a.mov}\nrenditions: {av1-720: {bitrate: fast}}"},
 			wantErr: "bad bitrate",
@@ -461,7 +496,7 @@ renditions:
 		{Name: "av1-480", Quality: 31.5, Comment: "tuned: VMAF 95.1"},
 		{Name: "av1-480", Quality: 26, Comment: "tuned: HDR VMAF 93.2", HDR: true},
 		{Name: "h264-1080", Quality: 21, Bitrate: "2.4M", Comment: "tuned: VMAF 95.0"},
-		{Name: "av1-1080", Quality: 33, Comment: "interpolated"},
+		{Name: "av1-1080", Quality: 33, Comment: "interpolated", TunedFor: "libsvtav1"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -495,6 +530,9 @@ renditions:
 	}
 	if _, ok := r.Renditions["av1-4320"]; ok {
 		t.Error("av1-4320 should still be deleted")
+	}
+	if got, want := r.Renditions["av1-1080"].TunedFor, "libsvtav1"; got != want {
+		t.Errorf("av1-1080 tuned_for = %q, want %q:\n%s", got, want, text)
 	}
 	if got := r.Renditions["av1-480"].HDRQuality(); got != 26 {
 		t.Errorf("av1-480 HDR quality = %g, want 26:\n%s", got, text)
@@ -549,7 +587,8 @@ renditions:
 	if err != nil {
 		t.Fatalf("Load() = %v", err)
 	}
-	for name, want := range map[string]float64{"av1-3240": 37, "av1-4320": 38.5, "av1-1440": 32} {
+	// av1-1440 turned quality_from off, so it has the encoder's.
+	for name, want := range map[string]float64{"av1-3240": 37, "av1-4320": 38.5, "av1-1440": 31} {
 		if got := r.Renditions[name].Quality; got != want {
 			t.Errorf("%s quality = %g, want %g", name, got, want)
 		}
@@ -648,5 +687,99 @@ func TestTuneTarget(t *testing.T) {
 	// Without an HDR target, HDR follows the SDR ones.
 	if got := (Tune{TargetVMAF: 95}).Target(&Rendition{TargetVMAF: 96}, true); got != 96 {
 		t.Errorf("no HDR target: Target() = %g, want 96", got)
+	}
+}
+
+func TestPresets(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, ProjectFile), `
+encoders:
+  h265: {extra_args: [-x265-params, aq-mode=3]}
+`)
+	write(t, filepath.Join(dir, "v"+SidecarSuffix), `
+sources: {main: v.mov}
+presets:
+  svt-slow: {codec: libsvtav1, quality: 28, args: [-preset, "3"]}
+encoders:
+  h265: {preset: hevc-videotoolbox}
+  av1: {preset: svt-slow}
+renditions:
+  h265-720: {quality: 55}
+`)
+	r, err := (&Loader{}).Load(Video{Name: "v", Dir: dir})
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+
+	h265 := r.Encoders["h265"]
+	if got, want := h265.Codec, "hevc_videotoolbox"; got != want {
+		t.Errorf("h265 codec = %q, want %q", got, want)
+	}
+	if got, want := h265.QualityFlag, "-q:v"; got != want {
+		t.Errorf("h265 quality_flag = %q, want the codec default %q", got, want)
+	}
+	if got, want := h265.ExtraArgs, []string{"-x265-params", "aq-mode=3"}; !slices.Equal(got, want) {
+		t.Errorf("h265 extra_args = %q, want the project's %q, kept across the preset change", got, want)
+	}
+	if h265.CapBitrate {
+		t.Error("h265 cap_bitrate = true; the VideoToolbox preset leaves it off")
+	}
+	if got, want := r.Encoders["h264"].Codec, "libx264"; got != want {
+		t.Errorf("h264 codec = %q, want the default preset's %q", got, want)
+	}
+
+	for name, want := range map[string]float64{
+		"h265-720":  55, // its own
+		"h265-1080": 60, // hevc_videotoolbox's default
+		"av1-1080":  28, // the sidecar's preset
+		"h264-1080": 18, // x264-faster's
+	} {
+		if got := r.Renditions[name].Quality; got != want {
+			t.Errorf("%s quality = %g, want %g", name, got, want)
+		}
+	}
+
+	out, err := yaml.Dump(r.Merged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"preset: hevc-videotoolbox", "codec: hevc_videotoolbox # default, preset hevc-videotoolbox", "quality_flag: -q:v # default for hevc_videotoolbox", "quality: 60 # encoder h265's"} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("merged config doesn't show %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(string(out), "x264-faster:") {
+		t.Errorf("merged config shows the presets section:\n%s", out)
+	}
+}
+
+func TestDeletedEncoderDropsRenditions(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, ProjectFile), `
+encoders:
+  h264: null
+  av1: null
+`)
+	write(t, filepath.Join(dir, "v"+SidecarSuffix), `
+sources: {main: v.mov}
+encoders:
+  av1: {preset: svtav1-p5}
+renditions:
+  av1-480: null
+`)
+	r, err := (&Loader{}).Load(Video{Name: "v", Dir: dir})
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	var got []string
+	for _, name := range r.RenditionNames() {
+		got = append(got, name)
+	}
+	// h264's go with it; av1's stay, since the sidecar defines it
+	// again, except the one it deleted itself.
+	want := []string{"av1-720", "av1-1080", "av1-1440", "av1-2160", "av1-3240", "av1-4320",
+		"h265-480", "h265-720", "h265-1080", "h265-1440", "h265-2160"}
+	if !slices.Equal(got, want) {
+		t.Errorf("renditions = %v, want %v", got, want)
 	}
 }

@@ -20,6 +20,9 @@ type RenditionUpdate struct {
 	Comment string
 	// HDR writes the values under the rendition's hdr settings.
 	HDR bool
+	// TunedFor, if not "", is written as the rendition's tuned_for:
+	// the codec Quality is for.
+	TunedFor string
 }
 
 // UpdateSidecar writes updates into the sidecar at path, keeping its
@@ -60,6 +63,9 @@ func UpdateSidecar(path string, sources map[string]string, updates []RenditionUp
 	renditions := child(root, "renditions")
 	for _, u := range updates {
 		r := child(renditions, u.Name)
+		if u.TunedFor != "" {
+			setScalar(r, "tuned_for", u.TunedFor, "!!str")
+		}
 		if u.HDR {
 			r = child(r, "hdr")
 		}

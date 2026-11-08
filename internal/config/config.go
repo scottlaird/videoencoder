@@ -41,6 +41,9 @@ type Config struct {
 	Tune        Tune                  `yaml:"tune"`
 	Encoders    map[string]*Encoder   `yaml:"encoders"`
 	Renditions  map[string]*Rendition `yaml:"renditions"`
+	// Presets are encoder settings that encoders can name. They're
+	// folded into the encoders that use them when a config is loaded.
+	Presets map[string]*Encoder `yaml:"presets"`
 }
 
 // layer is the schema of a config file: a Config that may also define
@@ -145,11 +148,24 @@ var (
 	GainMapFormats = []string{"avif", "jpg"}
 )
 
-// Encoder is an ffmpeg video encoder and its fixed options.
+// Encoder is an ffmpeg video encoder and its fixed options. Under
+// encoders, it's one slot of the ladder, which renditions name; under
+// presets, a reusable set of these fields that a slot can start from.
 type Encoder struct {
-	Codec       string   `yaml:"codec"`
-	QualityFlag string   `yaml:"quality_flag"`
-	Args        []string `yaml:"args"`
+	// Preset names an entry of presets whose fields this encoder
+	// starts from; its own fields replace the preset's.
+	Preset string `yaml:"preset"`
+	Codec  string `yaml:"codec"`
+	// QualityFlag defaults to the codec's usual one (see
+	// DefaultQualityScale).
+	QualityFlag string `yaml:"quality_flag"`
+	// Quality is the quality setting of renditions that don't set
+	// their own, defaulting to the codec's typical value.
+	Quality *float64 `yaml:"quality"`
+	Args    []string `yaml:"args"`
+	// ExtraArgs follow Args, so a layer can add an option without
+	// repeating the preset's whole list.
+	ExtraArgs []string `yaml:"extra_args"`
 	// CapBitrate passes each rendition's bitrate as -b:v, with
 	// -maxrate and -bufsize at 1.5x. Without it the bitrate is only a
 	// label.
@@ -176,6 +192,10 @@ type Rendition struct {
 	// as configured. For fixed rungs, like a bitrate-capped one for
 	// slow networks.
 	Tune *bool `yaml:"tune"`
+	// TunedFor is the codec "videoencoder tune" chose Quality for.
+	// Quality settings mean different things to different codecs, so
+	// a rendition tuned for one is refused by an encoder using another.
+	TunedFor string `yaml:"tuned_for"`
 	// QualityFrom names a rendition of the same encoder whose quality,
 	// plus QualityOffset, replaces Quality. It's resolved after every
 	// layer is merged, so it follows that rendition's tuned value, and
@@ -297,8 +317,11 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("outdir and streamdir are required")
 	}
 	for name, e := range c.Encoders {
-		if e == nil || e.Codec == "" || e.QualityFlag == "" {
-			return fmt.Errorf("encoder %q: codec and quality_flag are required", name)
+		switch {
+		case e == nil || e.Codec == "":
+			return fmt.Errorf("encoder %q: codec is required", name)
+		case e.QualityFlag == "":
+			return fmt.Errorf("encoder %q: quality_flag is required for codec %q", name, e.Codec)
 		}
 	}
 	if t := c.Thumbnails; t.Enabled && (t.Interval <= 0 || t.Height == 0 || t.Columns == 0 || t.Rows == 0) {
@@ -364,8 +387,13 @@ func (c *Config) Validate() error {
 		if r == nil {
 			return fmt.Errorf("rendition %q is empty", name)
 		}
-		if _, ok := c.Encoders[r.Encoder]; !ok {
+		e, ok := c.Encoders[r.Encoder]
+		if !ok {
 			return fmt.Errorf("rendition %q: unknown encoder %q", name, r.Encoder)
+		}
+		if r.TunedFor != "" && r.TunedFor != e.Codec {
+			return fmt.Errorf("rendition %q: its quality was tuned for %s, but encoder %q is now %s; run videoencoder tune again, or remove its quality and tuned_for",
+				name, r.TunedFor, r.Encoder, e.Codec)
 		}
 		if r.Height == 0 {
 			return fmt.Errorf("rendition %q: height is required", name)

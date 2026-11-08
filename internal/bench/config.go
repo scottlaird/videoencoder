@@ -11,6 +11,8 @@ import (
 	"slices"
 
 	"go.yaml.in/yaml/v4"
+
+	"github.com/scottlaird/videoencoder/internal/config"
 )
 
 // Config is the contents of bench.yaml. Relative paths are relative to
@@ -160,7 +162,7 @@ type Flagset struct {
 }
 
 // Quality describes the flag the search varies. Zero fields are filled
-// from the encoder's defaults (see qualityDefaults).
+// from the encoder's defaults (see DefaultQuality).
 type Quality struct {
 	Flag string  `yaml:"flag"`
 	Min  float64 `yaml:"min"`
@@ -176,25 +178,14 @@ type Quality struct {
 
 func ptr[T any](v T) *T { return &v }
 
-// qualityDefaults maps an ffmpeg encoder name to its quality flag.
-var qualityDefaults = map[string]Quality{
-	"libx264":           {Flag: "-crf", Min: 10, Max: 40, Step: 0.1, Seed: 20, HigherIsBetter: ptr(false)},
-	"libx265":           {Flag: "-crf", Min: 10, Max: 40, Step: 0.1, Seed: 20, HigherIsBetter: ptr(false)},
-	"libsvtav1":         {Flag: "-crf", Min: 10, Max: 63, Step: 1, Seed: 32, HigherIsBetter: ptr(false)},
-	"libaom-av1":        {Flag: "-crf", Min: 10, Max: 63, Step: 1, Seed: 32, HigherIsBetter: ptr(false)},
-	"librav1e":          {Flag: "-qp", Min: 20, Max: 255, Step: 1, Seed: 80, HigherIsBetter: ptr(false)},
-	"h264_nvenc":        {Flag: "-cq:v", Min: 15, Max: 51, Step: 0.1, Seed: 28, HigherIsBetter: ptr(false)},
-	"hevc_nvenc":        {Flag: "-cq:v", Min: 15, Max: 51, Step: 0.1, Seed: 28, HigherIsBetter: ptr(false)},
-	"av1_nvenc":         {Flag: "-cq:v", Min: 15, Max: 51, Step: 0.1, Seed: 30, HigherIsBetter: ptr(false)},
-	"h264_videotoolbox": {Flag: "-q:v", Min: 1, Max: 100, Step: 1, Seed: 60, HigherIsBetter: ptr(true)},
-	"hevc_videotoolbox": {Flag: "-q:v", Min: 1, Max: 100, Step: 1, Seed: 60, HigherIsBetter: ptr(true)},
-}
-
 // DefaultQuality returns the quality flag, range, step, typical value
 // and direction for an ffmpeg encoder such as "libx265".
 func DefaultQuality(codec string) (Quality, bool) {
-	q, ok := qualityDefaults[codec]
-	return q, ok
+	s, ok := config.DefaultQualityScale(codec)
+	if !ok {
+		return Quality{}, false
+	}
+	return Quality{Flag: s.Flag, Min: s.Min, Max: s.Max, Step: s.Step, Seed: s.Default, HigherIsBetter: ptr(s.HigherIsBetter)}, true
 }
 
 // Encoder returns the ffmpeg video encoder named in the flagset's
@@ -303,7 +294,7 @@ func (c *Config) finish(base string) error {
 		if f == nil || len(f.Args) == 0 {
 			return fmt.Errorf("flagset %q: args required", name)
 		}
-		if d, ok := qualityDefaults[f.Encoder()]; ok {
+		if d, ok := DefaultQuality(f.Encoder()); ok {
 			f.Quality.fillFrom(d)
 		}
 		q := f.Quality

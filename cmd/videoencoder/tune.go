@@ -121,7 +121,7 @@ func tuneVideo(ctx context.Context, r *config.Resolved, adHoc bool, d deps) erro
 		}
 		fmt.Fprintf(d.stdout, "# %s: tuned on %s of %s\n", r.Name, strings.Join(ranges, " and "), p.label)
 		for i, res := range results {
-			u := config.RenditionUpdate{Name: res.Rendition, Quality: res.Quality, HDR: res.HDR}
+			u := config.RenditionUpdate{Name: res.Rendition, Quality: res.Quality, HDR: res.HDR, TunedFor: p.targets[i].Encoder.Codec}
 			if p.targets[i].Encoder.CapBitrate {
 				u.Bitrate = tune.FormatBitrate(res.Bitrate)
 			}
