@@ -1,7 +1,10 @@
 package ffmpeg
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -21,5 +24,28 @@ func TestDropNoise(t *testing.T) {
 		"no newline at the end"
 	if out.String() != want {
 		t.Errorf("passed\n %q\nwant\n %q", out.String(), want)
+	}
+}
+
+func TestChattyToolQuietUnlessItFails(t *testing.T) {
+	dir := t.TempDir()
+	tool := filepath.Join(dir, "avifgainmaputil")
+	script := "#!/bin/sh\necho 'AVIF to be written:'\necho ' * Resolution     : 1920x1080' >&2\nexit $1\n"
+	if err := os.WriteFile(tool, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	r := ExecRunner{Stdout: &out, Stderr: &out}
+	if err := r.Run(context.Background(), []string{tool, "0"}); err != nil {
+		t.Fatalf("succeeding run: %v", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("a successful run wrote %q; want nothing", out.String())
+	}
+	if err := r.Run(context.Background(), []string{tool, "1"}); err == nil {
+		t.Fatal("failing run returned no error")
+	}
+	if !strings.Contains(out.String(), "AVIF to be written:") || !strings.Contains(out.String(), "Resolution") {
+		t.Errorf("a failed run wrote %q; want its output, to explain the failure", out.String())
 	}
 }

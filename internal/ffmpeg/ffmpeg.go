@@ -5,6 +5,7 @@
 package ffmpeg
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -37,6 +38,18 @@ func (r ExecRunner) Run(ctx context.Context, argv []string) error {
 	argv = Quiet(argv)
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Env = QuietEnv()
+	if chatty[filepath.Base(argv[0])] {
+		// Keep its report to itself unless something goes wrong.
+		var out bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &out, &out
+		if err := cmd.Run(); err != nil {
+			if r.Stderr != nil {
+				r.Stderr.Write(out.Bytes())
+			}
+			return fmt.Errorf("running %s: %w", argv[0], err)
+		}
+		return nil
+	}
 	cmd.Stdout = r.Stdout
 	var stderr *dropNoise
 	if r.Stderr != nil {
@@ -52,6 +65,11 @@ func (r ExecRunner) Run(ctx context.Context, argv []string) error {
 	}
 	return nil
 }
+
+// chatty are tools that describe everything they do, with no option to
+// stop: avifgainmaputil prints each image's properties. ExecRunner
+// shows their output only when they fail.
+var chatty = map[string]bool{"avifgainmaputil": true}
 
 // Job produces one output from one input.
 type Job struct {

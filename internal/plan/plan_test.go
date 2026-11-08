@@ -271,6 +271,9 @@ func TestSeekThumbnailToneMap(t *testing.T) {
 		if got := strings.Contains(vf, ToneMapSDR); got != tt.want {
 			t.Errorf("%s: tone-mapped = %v, want %v (-vf %s)", tt.transfer, got, tt.want, vf)
 		}
+		if strings.Contains(vf, "yuvj") || !strings.Contains(vf, "out_range=full,format=yuv420p") {
+			t.Errorf("thumbnail tiles aren't full-range yuv420p from the scaler: %s", vf)
+		}
 		if !strings.Contains(vf, Scale(320, 180)) {
 			t.Errorf("%s: -vf %s doesn't scale with %s", tt.transfer, vf, Scale(320, 180))
 		}
@@ -325,6 +328,18 @@ func TestPosters(t *testing.T) {
 	}
 	if sdrFromHDR.Key == Posters(p, src, sdr, probe.SDR, "out")[0].Job.Key {
 		t.Error("tone-mapped and direct SDR posters share a key")
+	}
+
+	// JPEGs are full range, made by the scaler, not by ffmpeg's
+	// deprecated yuvj formats; other formats stay limited range.
+	for _, poster := range Posters(p, src, sdr, probe.SDR, "out") {
+		vf := poster.Job.Args[slices.Index(poster.Job.Args, "-vf")+1]
+		if strings.Contains(vf, "yuvj") {
+			t.Errorf("%s poster uses a deprecated yuvj format: %s", poster.Format, vf)
+		}
+		if full := strings.Contains(vf, "out_range=full"); full != (poster.Format == "jpg") {
+			t.Errorf("%s poster: full range %v, want it only for JPEG: %s", poster.Format, full, vf)
+		}
 	}
 }
 
