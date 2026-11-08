@@ -105,15 +105,27 @@ func runCmd(ctx context.Context, cfg *bench.Config, args []string, stderr io.Wri
 		return err
 	}
 	host, _ := os.Hostname()
+	encoders := map[string]string{}
+	if !*dryRun {
+		for _, f := range cfg.Flagsets {
+			if e := f.Encoder(); e != "" {
+				if _, ok := encoders[e]; !ok {
+					encoders[e] = bench.EncoderVersion(ctx, e)
+				}
+			}
+		}
+	}
 	b := &bench.Bench{
-		Cfg:           cfg,
-		Exec:          bench.ExecExecutor{Stderr: stderr},
-		Prober:        probe.FFProbe{},
-		Host:          host,
-		FFmpegVersion: version,
-		SampleFilter:  *sample,
-		FlagsetFilter: *flagset,
-		DryRun:        *dryRun,
+		Cfg:             cfg,
+		Exec:            bench.ExecExecutor{Stderr: stderr},
+		Prober:          probe.FFProbe{},
+		Host:            host,
+		FFmpegVersion:   version,
+		CPU:             bench.CPUModel(ctx),
+		EncoderVersions: encoders,
+		SampleFilter:    *sample,
+		FlagsetFilter:   *flagset,
+		DryRun:          *dryRun,
 	}
 	return b.Run(ctx)
 }

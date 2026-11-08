@@ -198,6 +198,7 @@ func TestResultsRoundTrip(t *testing.T) {
 		WallS: 1.5, UserS: 9.25, SysS: 0.5, MaxRSSKB: 2048,
 		Metrics:       Metrics{VMAF: 95.01, VMAFHMean: 94.9, VMAFP1: 91, VMAFNeg: 93.6, PSNRY: 44, PSNRCb: 48, PSNRCr: 47, CIEDE2000: math.Inf(1)},
 		FFmpegVersion: "8.1", Host: "h", Time: time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC),
+		CPU: "AMD Ryzen Threadripper PRO 5975WX 32-Cores, 64 threads", EncoderVersion: "x265 4.3+1-e9b8812 (MMX2 SSE2Fast LZCNT SSSE3 SSE4.2 AVX FMA3 BMI2 AVX2)",
 	}
 	for _, k := range []string{"k1", "k2"} {
 		row.Key = k

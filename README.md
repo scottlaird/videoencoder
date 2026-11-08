@@ -688,6 +688,11 @@ These are all in `workdir`:
   - PSNR for each plane
   - CIEDE2000 and the color shift and flicker measures
   - the ffmpeg version and host
+  - the CPU model and thread count, and the encoder library's version
+    and the SIMD it chose where it reports them (for example
+    `x265 4.3+1-e9b8812 (NEON Neon_DotProd Neon_I8MM)`, or
+    `macOS 26.5.1` for VideoToolbox), so timings from different
+    machines and builds can be told apart
 
   Interrupting a run loses only the scorings in progress.
 - **`best.csv`.** The answer for each pair, regenerated on every run.
