@@ -5,9 +5,15 @@
 //	encbench [-config bench.yaml] run [-n] [-sample glob] [-flagset glob]
 //	encbench [-config bench.yaml] report
 //	encbench [-config bench.yaml] prune [-n]
+//	encbench queue [-watch] [-report=false] [-poll 5s] [-tui auto] dir
 //
 // Every encode is logged in results.csv and never repeated, so adding a
 // flagset or a sample only runs the new combinations.
+//
+// queue works through a directory of configs and job files, one
+// sample and flagset at a time, in the order their names sort, picking
+// up added, edited and deleted files as it goes; see package
+// benchqueue.
 package main
 
 import (
@@ -32,6 +38,11 @@ commands:
   run [-n] [-sample glob] [-flagset glob]   search for unfinished pairs (-n: show what would be encoded)
   report                                    print the answers as Markdown tables
   prune [-n]                                delete kept encodes of removed samples and flagsets
+
+  queue [-watch] [-report=false] [-poll D] [-tui MODE] dir
+      run every unfinished sample and flagset of the work files (configs, or
+      jobs naming a config) in dir, one at a time, in the order the files'
+      names sort; edits to dir take effect after the current unit
 `
 
 func main() {
@@ -56,6 +67,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if global.NArg() == 0 {
 		global.Usage()
 		return flag.ErrHelp
+	}
+	if global.Arg(0) == "queue" {
+		return queueCmd(ctx, global.Args()[1:], stdout, stderr)
 	}
 	cfg, err := bench.LoadConfig(*configPath)
 	if err != nil {

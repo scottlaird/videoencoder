@@ -34,6 +34,9 @@ type Bench struct {
 	// DryRun reports what would be encoded without encoding anything.
 	DryRun bool
 	Now    func() time.Time
+	// Observe, if set, hears about the run's encodes as they happen,
+	// on the goroutine that called Run.
+	Observe func(Event)
 
 	scorings Scorings
 	// listing makes loadSamples skip making copies, quietly.
@@ -42,9 +45,11 @@ type Bench struct {
 
 type sample struct {
 	name string // file name, used in results and keeper paths
-	path string
-	id   string
-	vd   probe.VideoData
+	// source is the file in Samples this is (a scaled copy of).
+	source string
+	path   string
+	id     string
+	vd     probe.VideoData
 	// ref, if not nil, is what encodes of this sample are scored
 	// against (see Config.References); otherwise the sample itself.
 	ref *sample
@@ -123,10 +128,10 @@ func (b *Bench) Run(ctx context.Context) error {
 			continue
 		}
 		slog.Info("Round", "n", round, "encodes", len(batch))
-		if err := b.encodeAll(ctx, batch); err != nil {
+		if err := b.encodeAll(ctx, round, batch); err != nil {
 			return err
 		}
-		err := b.scoreAll(ctx, batch, func(p *pending) error { return b.record(results, p) })
+		err := b.scoreAll(ctx, batch, func(p *pending) error { return b.record(results, round, p) })
 		if err != nil {
 			return err
 		}
@@ -148,7 +153,7 @@ func (b *Bench) loadSamples(ctx context.Context) ([]*sample, error) {
 		if e.IsDir() || strings.HasPrefix(name, ".") || !isVideo(name) || !matches(b.SampleFilter, name) {
 			continue
 		}
-		s := &sample{name: name, path: filepath.Join(b.Cfg.Samples, name)}
+		s := &sample{name: name, source: name, path: filepath.Join(b.Cfg.Samples, name)}
 		if s.id, err = fileid.Content(s.path); err != nil {
 			return nil, err
 		}
@@ -271,6 +276,7 @@ func (b *Bench) scaledSamples(ctx context.Context, s *sample) ([]*sample, error)
 		base := strings.TrimSuffix(s.name, filepath.Ext(s.name))
 		c := &sample{
 			name:      fmt.Sprintf("%s@%dp.mov", base, h),
+			source:    s.source,
 			id:        hashKey("scaled/v1", s.id, fmt.Sprint(h)),
 			prefilter: s.prefilter,
 		}
@@ -483,9 +489,10 @@ func containerArgs(fs *Flagset) []string {
 	return nil
 }
 
-func (b *Bench) encodeAll(ctx context.Context, batch []*pending) error {
+func (b *Bench) encodeAll(ctx context.Context, round int, batch []*pending) error {
 	for _, p := range batch {
 		slog.Info("Encoding", "sample", p.t.sample.name, "flagset", p.t.name, "quality", p.quality)
+		b.observe(Event{Kind: Encoding, Round: round, Source: p.t.sample.source, Sample: p.t.sample.name, Flagset: p.t.name, QualityFlag: p.t.fs.Quality.Flag, Quality: p.quality})
 		p.m, p.err = b.Exec.Exec(ctx, b.encodeArgv(p))
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -544,9 +551,12 @@ func (b *Bench) score(ctx context.Context, p *pending) (Metrics, error) {
 	return Score(ctx, b.Exec, p.out, ref.path, vd.Width, vd.Height, b.Cfg.VMAFThreads, b.scratchDir(), p.key, ref.prefilter, vd.ColorTransfer, p.t.sample.scoring.Model)
 }
 
-func (b *Bench) record(results *Results, p *pending) error {
+func (b *Bench) record(results *Results, round int, p *pending) error {
 	t := p.t
+	ev := Event{Round: round, Source: t.sample.source, Sample: t.sample.name, Flagset: t.name, QualityFlag: t.fs.Quality.Flag, Quality: p.quality}
 	if p.err != nil {
+		ev.Kind, ev.Err = Failed, p.err
+		b.observe(ev)
 		// A failed encode (say, an unsupported option) would fail at
 		// every quality, so give up on this task rather than retrying.
 		slog.Error("Encode or scoring failed; skipping flagset for this sample", "sample", t.sample.name, "flagset", t.name, "err", p.err)
@@ -590,6 +600,8 @@ func (b *Bench) record(results *Results, p *pending) error {
 	slog.Info("Scored", "sample", t.sample.name, "flagset", t.name, "quality", p.quality,
 		"kbps", int(row.Kbps), "vmaf", m.VMAF, "ciede2000", m.CIEDE2000, "color_shift", m.ColorShiftP99, "pass", margin >= 0)
 	t.search.Observe(p.i, margin >= 0, margin)
+	ev.Kind, ev.Kbps, ev.VMAF, ev.Pass = Scored, row.Kbps, m.VMAF, margin >= 0
+	b.observe(ev)
 	return nil
 }
 
@@ -617,10 +629,17 @@ func (b *Bench) finish(t *task, results *Results) {
 	}()
 	slog.Info("Finished", "sample", t.sample.name, "flagset", t.name, "outcome", t.outcome)
 	best := t.search.Answer()
+	ev := Event{Kind: Finished, Source: t.sample.source, Sample: t.sample.name, Flagset: t.name, QualityFlag: t.fs.Quality.Flag, Outcome: t.outcome}
 	if best < 0 {
+		b.observe(ev)
 		return
 	}
 	q := t.fs.Quality.indexToQuality(best)
+	ev.Quality = q
+	if row, ok := results.Lookup(encodeKey(t.sample.scoring.Scorer, t.sample.id, t.fkey, q)); ok {
+		ev.Kbps, ev.VMAF, ev.Pass = row.Kbps, row.Metrics.VMAF, true
+	}
+	b.observe(ev)
 	keep := KeeperPath(b.keepDir(), t.sample.name, t.name, q)
 	if _, err := os.Stat(keep); err == nil {
 		return
