@@ -699,6 +699,36 @@ log and reuses whatever it finds. So:
 - `encbench report` prints `best.csv` as a Markdown table (pipe
   syntax, as in the blog post).
 
+### Queue
+
+`encbench queue DIR` (package `benchqueue`) replaced hand-written
+shell scripts that looped `encbench run -sample S -flagset F`. Those
+scripts paused each other with SIGSTOP to set priorities. The queue's
+unit is the same: one flagset on one sample file, including all of
+that sample's scaled versions. Work files are bench configs, or jobs
+that name a config plus ordered lists of flagsets and samples. The
+queue runs them in name order.
+
+The queue polls `DIR` instead of using fsnotify, which keeps it to the
+standard library. Before each unit it rescans the directory, parses
+every file, and asks `Bench.Status` which pairs the log already
+answers. `Bench.Status` is a listing pass like `Scorings`: it probes,
+but makes no copies. The statuses are cached per file. The cache key
+is the file's contents (and its config's), plus the size and mtime of
+`results.csv` and the samples directory, so another encbench writing
+the same log also invalidates them. While a unit runs, the queue only
+parses files, so that it starts no ffprobes and doesn't reread the log
+in the middle of an encode.
+
+A unit that ends without an answer, because of a failed encode, a
+missing sample, or similar, is remembered against the hash of its
+file. It is retried only after that file changes, not on every
+rescan. An abandoned unit isn't remembered.
+
+Searches run in-process through `Bench.Run`, with filters that match
+exactly one sample and one flagset. `Bench.Observe` reports each
+encode, score and answer to the UI.
+
 Later: a small static HTML page for A/B-comparing keepers at the
 same timestamp, and distributing encodes over the same Temporal
 workers.

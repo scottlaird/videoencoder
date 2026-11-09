@@ -688,6 +688,7 @@ flagsets:
 encbench [-config bench.yaml] run [-n] [-sample GLOB] [-flagset GLOB]
 encbench [-config bench.yaml] report
 encbench [-config bench.yaml] prune [-n]
+encbench queue [-watch] [-report=false] [-poll 5s] [-tui auto] DIR
 ```
 
 - **`run`** searches every unfinished sample and flagset pair. `-n`
@@ -696,10 +697,68 @@ encbench [-config bench.yaml] prune [-n]
 - **`report`** prints the answers as Markdown tables, one per sample.
 - **`prune`** deletes kept encodes of samples and flagsets no longer in
   the config.
+- **`queue`** works through a directory of work files, one sample and
+  flagset (a *unit*) at a time, in a terminal UI. See below.
 
 Encodes run one at a time, so timings are comparable. Scoring runs in
 parallel between encodes. Don't run anything else CPU-heavy on the
 machine while encbench is running, or the timings will be meaningless.
+
+### encbench queue
+
+`encbench queue DIR` is a long-running way to line up work. Each
+`.yaml` or `.yml` file in `DIR` is either an ordinary bench config, which
+runs all of its flagsets on all of its samples, or a job that names a
+config and picks some of it:
+
+```yaml
+config: ../x264-tunes-1080p.yaml
+flagsets: [x264-ultrafast-kf10-film, "x264-*-kf10-film"]
+samples: [20180529-band.mp4, "2026*-sdr.mov"]   # optional; default all
+report: ../report-x264-film.md                  # optional
+```
+
+Files run in name order, so names like `00-h264.yaml`, `10-h265.yaml`
+and `50-av1-8k.yaml` set their priority. Within a file, flagsets run in
+the order the file lists them (or the config does). Each flagset runs
+on every sample, in the order listed or else by name, before the next
+flagset starts. Entries can be globs, and an entry that matches nothing
+is an error.
+
+Only one unit runs at a time. Before starting each one, the queue
+rescans `DIR`:
+
+- A new file with a lower name runs next.
+- A deleted file's remaining units are dropped.
+- An edited file is parsed again. Units that `results.csv` already
+  answers are skipped, as `run` skips them.
+- A file that doesn't parse, or names a flagset or sample that doesn't
+  exist, is shown with its error and skipped until it changes.
+- A unit that fails isn't retried until its file changes.
+
+Edits never affect the unit that is already running.
+
+Before each unit, the queue waits while DaVinci Resolve has a `.mov`
+open for writing, or while a `videoencoder` or another `encbench` is
+running, so that timings stay clean.
+
+When a file's last unit finishes, the queue writes its report to
+`report-<name>.md` in `DIR`, or to the path the job's `report:` gives.
+`-report=false` turns this off.
+
+Without `-watch`, the queue exits when nothing is left to run. With it,
+the queue keeps polling for new work.
+
+In the terminal UI:
+
+- **`p`** pauses after the current unit, or resumes.
+- **`q`** quits after the current unit finishes.
+- **Ctrl-C** abandons the current unit and quits. Encodes that were
+  already scored are kept in `results.csv`, so a later run picks up
+  where this one stopped.
+
+Without a terminal (`-tui off`), the queue logs to stderr, and an
+interrupt abandons the current unit.
 
 ### encbench output
 
