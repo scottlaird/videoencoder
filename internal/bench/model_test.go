@@ -70,6 +70,7 @@ func TestScoreArgvModel(t *testing.T) {
 	for _, want := range []string{
 		`model='path=/models/a\:b/hdr.json\:name=vmaf'`,
 		"[d]zscale=tin=smpte2084:", "m=ictcp", "format=yuv420p16le[dq]", "[dq][rq]libvmaf=",
+		"feature='name=psnr|name=cambi\\:full_ref=true\\:eotf=pq'[quality]",
 	} {
 		if !strings.Contains(graph, want) {
 			t.Errorf("filtergraph %q lacks %q", graph, want)
@@ -101,6 +102,10 @@ func TestParseVMAFLogWithoutNeg(t *testing.T) {
 	}
 	if got.VMAF != 93 || !math.IsNaN(got.VMAFNeg) {
 		t.Errorf("VMAF %v, VMAFNeg %v; want 93 and NaN", got.VMAF, got.VMAFNeg)
+	}
+	// Nor CAMBI, which scores from before it was added lack.
+	if !math.IsNaN(got.CAMBI) || !math.IsNaN(got.CAMBIFR) || !math.IsNaN(got.CAMBIFRMax) {
+		t.Errorf("CAMBI %v, CAMBIFR %v, CAMBIFRMax %v; want NaN", got.CAMBI, got.CAMBIFR, got.CAMBIFRMax)
 	}
 }
 

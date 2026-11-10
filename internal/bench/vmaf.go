@@ -42,6 +42,15 @@ type Metrics struct {
 	// steady one of the same size. Lower is better.
 	ColorFlickerP99  float64
 	ColorFlickerP999 float64
+	// CAMBI is Netflix's banding score for the encode alone: 0 is no
+	// banding, about 5 starts to be annoying, and 24 the worst Netflix
+	// saw. CAMBIFR is the full-reference form, the banding the encode
+	// adds over the reference (each frame's encode score less the
+	// reference's, floored at 0), and CAMBIFRMax is that for the worst
+	// frame. All three are NaN in scores taken before they were added.
+	CAMBI      float64
+	CAMBIFR    float64
+	CAMBIFRMax float64
 }
 
 // vmafModel picks the model trained for the reference's viewing
@@ -116,6 +125,16 @@ func scoreArgv(distorted, reference string, width, height uint64, threads int, l
 	// path is imprecise enough to read a lossless 8-bit copy as a color
 	// shift of 2.7.
 	blocks := fmt.Sprintf("%sformat=yuv444p16le,format=rgb48le,scale=%d:%d:flags=area", bpre, bw, bh)
+	// CAMBI rides along on the VMAF pass, so it sees the VMAF input: for
+	// an HDR model that's PQ-coded ICtCp, whose I is close enough to PQ
+	// luma for CAMBI's PQ visibility thresholds. It leaves the other
+	// scores alone, so it needs no new scorer version (which would
+	// discard every logged encode). It scores at the reference's size,
+	// as it assumes the encode was; encbench's encodes always are.
+	cambi := "name=cambi\\:full_ref=true"
+	if model.HDR {
+		cambi += "\\:eotf=pq"
+	}
 	// The VMAF and CIEDE2000 inputs are prepared exactly as scorer v3
 	// did: prefilter on the decoded frames, then scale and convert. A
 	// prefilter that runs after the 4:4:4 conversion instead scores
@@ -129,11 +148,11 @@ func scoreArgv(distorted, reference string, width, height uint64, threads int, l
 			"[rbs]%s[rbo];"+
 			"%slibvmaf=log_fmt=json:log_path=%s:n_threads=%d"+
 			":model='%s'"+
-			":feature='name=psnr'[quality];"+
+			":feature='name=psnr|%s'[quality];"+
 			"[dc]%s[ds];[rc]%s[rs];"+
 			"[ds][rs]libvmaf=log_fmt=json:log_path=%s:n_threads=%d:feature='name=ciede'[color]",
 		pre, width, height, width, height, blocks, pre, blocks,
-		vmafIn, escapeFilterValue(logPath), threads, model.option(height),
+		vmafIn, escapeFilterValue(logPath), threads, model.option(height), cambi,
 		sample, sample, escapeFilterValue(colorLogPath), threads)
 	return []string{
 		"ffmpeg", "-hide_banner", "-loglevel", "error", "-nostats", "-y",
@@ -211,6 +230,7 @@ type vmafLog struct {
 	Pooled map[string]struct {
 		Mean         *float64 `json:"mean"`
 		HarmonicMean *float64 `json:"harmonic_mean"`
+		Max          *float64 `json:"max"`
 	} `json:"pooled_metrics"`
 }
 
@@ -251,6 +271,14 @@ func parseVMAFLog(data []byte) (Metrics, error) {
 		}
 	}
 	m.VMAFHMean = orInf(l.Pooled["vmaf"].HarmonicMean)
+	// Logs from before scoring asked for CAMBI lack it.
+	m.CAMBI, m.CAMBIFR, m.CAMBIFRMax = math.NaN(), math.NaN(), math.NaN()
+	if p := l.Pooled["cambi"]; p.Mean != nil {
+		m.CAMBI = *p.Mean
+	}
+	if p := l.Pooled["cambi_full_reference"]; p.Mean != nil && p.Max != nil {
+		m.CAMBIFR, m.CAMBIFRMax = *p.Mean, *p.Max
+	}
 
 	var frames []float64
 	for _, f := range l.Frames {

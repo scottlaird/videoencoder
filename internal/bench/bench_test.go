@@ -108,14 +108,18 @@ func TestParseVMAFLog(t *testing.T) {
 	    "vmaf_neg": {"mean": 94.1},
 	    "psnr_y": {"mean": 44.5},
 	    "psnr_cb": {"mean": 47.25},
-	    "psnr_cr": {"mean": 46.5}
+	    "psnr_cr": {"mean": 46.5},
+	    "cambi": {"min": 0.25, "max": 0.5, "mean": 0.34},
+	    "cambi_source": {"mean": 0.01},
+	    "cambi_full_reference": {"min": 0.24, "max": 0.49, "mean": 0.33}
 	  }
 	}`
 	got, err := parseVMAFLog([]byte(log))
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Metrics{VMAF: 95.33, VMAFHMean: 95.2, VMAFP1: 90, VMAFNeg: 94.1, PSNRY: 44.5, PSNRCb: 47.25, PSNRCr: 46.5}
+	want := Metrics{VMAF: 95.33, VMAFHMean: 95.2, VMAFP1: 90, VMAFNeg: 94.1, PSNRY: 44.5, PSNRCb: 47.25, PSNRCr: 46.5,
+		CAMBI: 0.34, CAMBIFR: 0.33, CAMBIFRMax: 0.49}
 	if got != want {
 		t.Errorf("parseVMAFLog() =\n %+v\nwant\n %+v", got, want)
 	}
@@ -150,6 +154,7 @@ func TestScoreArgvEscaping(t *testing.T) {
 	for _, want := range []string{
 		`log_path=/tmp/a\:b/log.json`, "log_path=/tmp/c.json", "version=vmaf_4k_v0.6.1\\:name=vmaf|",
 		"scale=3840:2160", "scale=1920:1080:flags=area", "feature='name=ciede'",
+		"feature='name=psnr|name=cambi\\:full_ref=true'[quality]",
 	} {
 		if !strings.Contains(graph, want) {
 			t.Errorf("filtergraph %q lacks %q", graph, want)

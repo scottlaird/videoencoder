@@ -55,6 +55,7 @@ var resultColumns = []string{
 	"vmaf", "vmaf_hmean", "vmaf_p1", "vmaf_neg", "psnr_y", "psnr_cb", "psnr_cr", "ciede2000",
 	"ffmpeg_version", "host", "time", "color_shift_p99", "color_shift_p999", "scorer",
 	"color_flicker_p99", "color_flicker_p999", "reference", "cpu", "encoder_version",
+	"cambi", "cambi_fr", "cambi_fr_max",
 }
 
 // scorer is the current scoring method: v2 added CIEDE2000 on sampled
@@ -81,6 +82,7 @@ func (r *Row) record() []string {
 		r.FFmpegVersion, r.Host, r.Time.UTC().Format(time.RFC3339),
 		ftoa(m.ColorShiftP99), ftoa(m.ColorShiftP999), r.Scorer,
 		ftoa(m.ColorFlickerP99), ftoa(m.ColorFlickerP999), r.Reference, r.CPU, r.EncoderVersion,
+		ftoa(m.CAMBI), ftoa(m.CAMBIFR), ftoa(m.CAMBIFRMax),
 	}
 }
 
@@ -148,6 +150,9 @@ func parseRow(col map[string]int, rec []string) (Row, error) {
 		"color_shift_p999":   &r.Metrics.ColorShiftP999,
 		"color_flicker_p99":  &r.Metrics.ColorFlickerP99,
 		"color_flicker_p999": &r.Metrics.ColorFlickerP999,
+		"cambi":              &r.Metrics.CAMBI,
+		"cambi_fr":           &r.Metrics.CAMBIFR,
+		"cambi_fr_max":       &r.Metrics.CAMBIFRMax,
 	} {
 		*dst = math.NaN()
 		if i, ok := col[name]; ok && i < len(rec) {
