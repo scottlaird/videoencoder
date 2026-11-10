@@ -247,7 +247,7 @@ func SeekThumbnailJob(t config.Thumbnails, vd probe.VideoData, src Source, outdi
 	if vd.Tone() == probe.HDR {
 		filter += ToneMapSDR + ","
 	}
-	filter += fmt.Sprintf("%s,format=yuvj420p,tile=%dx%d", Scale(scaledWidth(vd, t.Height), t.Height), t.Columns, t.Rows)
+	filter += fmt.Sprintf("%s:%s,format=yuv420p,tile=%dx%d", Scale(scaledWidth(vd, t.Height), t.Height), fullRange, t.Columns, t.Rows)
 	j := newJob(src, outdir, "thumbs", "thumbs", "", []string{
 		"-vf", filter,
 		"-fps_mode", "vfr",
@@ -409,17 +409,22 @@ func Posters(p config.Poster, src Source, vd probe.VideoData, tone probe.Tone, o
 	return out
 }
 
+// fullRange is the scale option that converts to the full-range YUV
+// that JPEG needs. The yuvj pixel formats did the same, but ffmpeg has
+// deprecated them, and swscale warns about them on every use.
+const fullRange = "out_range=full"
+
 func posterArgs(tone probe.Tone, fromHDR bool, format string, w, h uint64) []string {
 	var filters []string
 	if tone == probe.SDR && fromHDR {
 		filters = append(filters, ToneMapSDR)
 	}
-	filters = append(filters, Scale(w, h))
+	scale := Scale(w, h)
 	pixFmt := map[bool]string{false: "yuv420p", true: "yuv420p10le"}[tone == probe.HDR]
 	if format == "jpg" {
-		pixFmt = "yuvj420p"
+		scale += ":" + fullRange
 	}
-	filters = append(filters, "format="+pixFmt)
+	filters = append(filters, scale, "format="+pixFmt)
 
 	args := []string{"-vf", strings.Join(filters, ","), "-frames:v", "1", "-update", "1"}
 	switch format {
