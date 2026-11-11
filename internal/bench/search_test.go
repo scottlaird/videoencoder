@@ -228,3 +228,42 @@ func TestSearchBatchAt(t *testing.T) {
 		}
 	}
 }
+
+// bandVMAF is hevc_nvenc -preset p7 -tune uhq on band at 1080p, as an
+// RTX 4090 measured it: (cq, VMAF), with NVENC's plateaus, where nearby
+// cq values give identical encodes.
+var bandVMAF = [][2]float64{{32.6, 96.093}, {33.7, 95.241}, {33.8, 95.012}, {33.9, 95.012}, {34.0, 94.803},
+	{34.2, 94.803}, {34.3, 94.609}, {34.7, 94.278}, {34.8, 94.043}, {35.7, 93.136}}
+
+// bandScore interpolates bandVMAF at index i, cq 1+0.1i, as for -cq:v
+// from 1 in steps of 0.1.
+func bandScore(i int) float64 {
+	cq := 1 + 0.1*float64(i)
+	p := bandVMAF
+	if cq <= p[0][0] {
+		return p[0][1] + (p[0][0]-cq)*0.8
+	}
+	for j := 1; j < len(p); j++ {
+		if cq <= p[j][0]+1e-9 {
+			f := (cq - p[j-1][0]) / (p[j][0] - p[j-1][0])
+			return p[j-1][1] + f*(p[j][1]-p[j-1][1])
+		}
+	}
+	return p[len(p)-1][1] - (cq-p[len(p)-1][0])*1.0
+}
+
+func TestSearchBatchBand(t *testing.T) {
+	// The bracket as encbench had it: cq 32.6 passes and 35.7 fails.
+	// Interpolation guesses 33.7, two steps short of the answer on a
+	// plateau. Points clustered beside the guess took 4 more rounds;
+	// spread out, two settings at a time close it in 2.
+	s := NewSearch(500, 256)
+	for _, i := range []int{347, 316} { // 35.7, 32.6
+		m := bandScore(i) - 95
+		s.Observe(i, m >= 0, m)
+	}
+	out, ans, rounds, _ := runBatch(t, s, 2, bandScore)
+	if out != Found || ans != 329 || rounds > 2 { // 33.9
+		t.Errorf("%v cq %.1f in %d rounds, want found 33.9 in at most 2", out, 1+0.1*float64(ans), rounds)
+	}
+}

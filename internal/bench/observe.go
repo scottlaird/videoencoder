@@ -24,7 +24,7 @@ const (
 	// there is one (Pass is then true).
 	Finished
 	// Timing: the answer at Quality, first encoded with others (see
-	// Config.Batch), is being encoded again by itself for its time.
+	// Flagset.Batch), is being encoded again by itself for its time.
 	Timing
 )
 
@@ -41,7 +41,7 @@ type Event struct {
 	QualityFlag    string
 	Quality        float64
 	// Qualities are every setting an Encoding event's ffmpeg encodes:
-	// Quality alone, or a batch's (see Config.Batch).
+	// Quality alone, or a batch's (see Flagset.Batch).
 	Qualities  []float64
 	Kbps, VMAF float64
 	Pass       bool

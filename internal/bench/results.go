@@ -48,7 +48,7 @@ type Row struct {
 	EncoderVersion string
 	Time           time.Time
 	// Timed says WallS, UserS, SysS and MaxRSSKB are this encode's own.
-	// An encode made with others in one ffmpeg (Config.Batch) isn't:
+	// An encode made with others in one ffmpeg (Flagset.Batch) isn't:
 	// its times are the whole batch's. Such a search's answer is then
 	// encoded again by itself and logged again, timed, under the same
 	// key; the later row is the one that counts. Older rows are timed.

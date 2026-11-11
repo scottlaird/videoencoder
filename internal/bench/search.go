@@ -229,9 +229,9 @@ func (s *Search) parabola() (float64, bool) {
 // NextBatch is Next for measuring up to k indexes at once: the index
 // Next would measure, then others spread around it, none measured
 // before. Until the boundary is bracketed they're a stride apart, on
-// the side not yet known as well as the other; once it is, they divide
-// the bracket evenly, so a bracket of k or fewer untried steps closes
-// in one round. With k <= 1 it is Next.
+// the side not yet known as well as the other; once it is, each further
+// one splits the widest gap left, so a bracket of k or fewer untried
+// steps closes in one round. With k <= 1 it is Next.
 func (s *Search) NextBatch(k int) ([]int, Outcome) {
 	i, out := s.Next()
 	if out != Searching {
@@ -257,20 +257,42 @@ func (s *Search) NextBatch(k int) ([]int, Outcome) {
 	}
 	if s.lo >= 0 && s.hi >= 0 {
 		// Bracketed: if it's small enough, try all of it; otherwise
-		// spread evenly across it, around Next's guess.
+		// spread across it, around Next's guess.
 		if high-low+1 <= k {
 			for j := low; j <= high && len(pts) < k; j++ {
 				add(j)
 			}
 		} else {
-			// Next's guess is usually within a few steps, so cluster
-			// around it, doubling the distance each time: 0, ±1, ±3,
-			// ±7. A near guess closes the bracket; a far one still
-			// narrows it to a few steps.
-			for d := 1; len(pts) < k && (i+d <= high || i-d >= low); d = 2*d + 1 {
-				add(i + d)
-				if len(pts) < k {
-					add(i - d)
+			// Next's guess is often within a few steps, but not always:
+			// on a plateau it can be a dozen off. So hedge it, a step
+			// count away that grows with the square root of the room on
+			// each side: near when the bracket is small, farther when the
+			// guess could be far off. Above first, since margins fall
+			// faster as quality drops, and that leaves interpolation a
+			// little on the passing side. Then split the widest gap left
+			// until there are k; points side by side narrow the bracket
+			// little more than one does.
+			hedge := func(room int) int { return max(1, int(math.Round(math.Sqrt(float64(room))))) }
+			add(i + hedge(s.hi-i))
+			if len(pts) < k {
+				add(i - hedge(i-s.lo))
+			}
+			for len(pts) < k {
+				cuts := append([]int{s.lo, s.hi}, pts...)
+				slices.Sort(cuts)
+				a, b := 0, 0
+				for j := 1; j < len(cuts); j++ {
+					if cuts[j]-cuts[j-1] > b-a {
+						a, b = cuts[j-1], cuts[j]
+					}
+				}
+				if b-a < 2 {
+					break
+				}
+				before := len(pts)
+				add((a + b) / 2)
+				if len(pts) == before {
+					break // measured already; the fill below takes over
 				}
 			}
 		}

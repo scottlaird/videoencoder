@@ -659,7 +659,7 @@ vmaf_jobs: 3            # scorings run at once
 references:             # score a sample against another file in samples/
   yuri-h265.mov: yuri.mov
 seed_results: mac-results.csv  # another machine's log, to start searches at its answers
-batch: 1                # quality settings each search tries per round
+batch: 1                # quality settings each search tries per round (see Batches)
 flagsets:
   x265-medium:
     args: [-pix_fmt, yuv420p10le, -c:v, libx265, -preset, medium]
@@ -704,17 +704,25 @@ flagsets:
 - **Batches.** With `batch: N`, each search tries up to N quality
   settings per round instead of one. They're encoded by a single
   ffmpeg, which decodes the sample once for all of them, and scored in
-  parallel. A search then takes fewer rounds but more encodes: with
-  seeds near the answer, one setting at a time averages about 4.9
-  rounds and 4.9 encodes, 2 at a time 3.4 rounds and 6.7 encodes, and 4
-  at a time 3.1 rounds and 11 encodes. It pays where encodes are cheap
-  and scoring has cores to spare: hardware encoders, whose time is
-  mostly decoding, and fast presets on many-core machines. The batch's
-  encodes share their time, so their rows are logged with `timed`
-  false, and a search that ends on one encodes the answer again by
-  itself and logs it again, timed. That later row is the one reports
-  use. An interrupted run re-times the answer next time, without
-  searching again.
+  parallel. Once the answer is bracketed, the settings spread across
+  the bracket rather than crowding the best guess, so a guess that's
+  off doesn't cost a round. A search then takes fewer rounds but more
+  encodes: with seeds 3 to 60 steps from the answer, one setting at a
+  time averages about 5.2 rounds and 5.2 encodes, 2 at a time 3.6
+  rounds and 7.0 encodes, and 4 at a time 3.2 rounds and 11.5 encodes.
+  It pays only where a second encode costs much less than the first,
+  and that depends on what limits the encoder. On an RTX 4090, at
+  1080p, a second `hevc_nvenc` encode added 7% at `-preset p4` (each
+  of its two NVENC engines takes one), 33% at `h264_nvenc -preset p1`,
+  and 74% at p7 with `-tune uhq`, which keeps both engines busy alone.
+  Software encoders sharing the same cores gain little. So
+  `batch_by_encoder` sets it per encoder (as `-c:v` names it) and a
+  flagset's own `batch` overrides that, with `batch` the default for
+  the rest. The batch's encodes share their time, so their rows are
+  logged with `timed` false, and a search that ends on one encodes the
+  answer again by itself and logs it again, timed. That later row is
+  the one reports use. An interrupted run re-times the answer next
+  time, without searching again.
 - **Color limits.** `min_ciede2000`, `min_chroma_psnr`,
   `max_color_shift` and `max_color_flicker` can fail encodes for color
   errors, which VMAF ignores entirely. All of them are off by default.
