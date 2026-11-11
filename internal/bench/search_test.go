@@ -120,3 +120,40 @@ func TestQualityIndex(t *testing.T) {
 		t.Errorf("qualityToIndex(out of range) = %d, want clamped 300", got)
 	}
 }
+
+func TestSearchAt(t *testing.T) {
+	linear := func(i int) float64 { return 100 - 0.05*float64(i) } // passes up to i=100
+	tests := []struct {
+		name      string
+		seed      int
+		wantEvals int
+	}{
+		{"right", 100, 2},
+		{"one high", 101, 2},
+		{"one low", 99, 3},
+		{"far off", 140, 7},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := NewSearchAt(300, tt.seed)
+			evals := 0
+			for {
+				i, out := s.Next()
+				if out != Searching {
+					if out != Found || s.Answer() != 100 {
+						t.Fatalf("got %v, answer %d; want found, 100", out, s.Answer())
+					}
+					break
+				}
+				if evals++; evals > 50 {
+					t.Fatal("search did not finish")
+				}
+				m := linear(i) - 95
+				s.Observe(i, m >= 0, m)
+			}
+			if evals > tt.wantEvals {
+				t.Errorf("took %d measurements, want at most %d", evals, tt.wantEvals)
+			}
+		})
+	}
+}

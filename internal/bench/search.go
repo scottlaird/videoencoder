@@ -80,6 +80,16 @@ func NewSearch(n, seed int) *Search {
 	}
 }
 
+// NewSearchAt is NewSearch for a seed that is probably the answer
+// already, such as another machine's: it measures the seed's neighbor
+// first and widens only if that doesn't close the bracket, so a right
+// guess takes two measurements.
+func NewSearchAt(n, seed int) *Search {
+	s := NewSearch(n, seed)
+	s.stride = 1
+	return s
+}
+
 // Next returns the index to measure next, or the outcome when done. For
 // Found and AllPass, Answer gives the result.
 func (s *Search) Next() (int, Outcome) {

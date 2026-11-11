@@ -658,6 +658,7 @@ vmaf_threads: 4         # libvmaf n_threads
 vmaf_jobs: 3            # scorings run at once
 references:             # score a sample against another file in samples/
   yuri-h265.mov: yuri.mov
+seed_results: mac-results.csv  # another machine's log, to start searches at its answers
 flagsets:
   x265-medium:
     args: [-pix_fmt, yuv420p10le, -c:v, libx265, -preset, medium]
@@ -690,6 +691,15 @@ flagsets:
 - **References.** A sample is normally scored against itself. To
   measure what a lossy master costs, use `references` to score an
   export against the original it was made from.
+- **Timing on another machine.** Encodes are keyed by what was
+  encoded, not where, so copying a `results.csv` to a new machine
+  makes its searches look done. Instead, give the new machine a
+  `workdir` of its own and the old log as `seed_results`, which is
+  read but never written. A search that the old log answers (same
+  sample name, flagset args and scoring) starts at that answer and
+  tries its neighbors first, so it usually takes two encodes, both
+  timed. If the new machine's encodes differ slightly, as x264's do
+  with a different thread count, the search widens from there.
 - **Color limits.** `min_ciede2000`, `min_chroma_psnr`,
   `max_color_shift` and `max_color_flicker` can fail encodes for color
   errors, which VMAF ignores entirely. All of them are off by default.
