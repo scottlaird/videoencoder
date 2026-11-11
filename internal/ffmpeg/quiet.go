@@ -47,12 +47,27 @@ func isCodecFlag(s string) bool {
 	return s == "-c:v" || s == "-codec:v" || s == "-vcodec"
 }
 
-// QuietEnv is the environment for ffmpeg: this process's, with
-// SVT-AV1 limited to errors (SVT_LOG=1) unless SVT_LOG is already set.
+// quietEnv are the variables QuietEnv adds, each only if it isn't
+// already set:
+//
+//   - SVT_LOG=1 limits SVT-AV1 to errors.
+//   - LIBVA_MESSAGING_LEVEL=1 limits libva to errors. Otherwise, each
+//     time a VA-API or Quick Sync encoder opens on Linux, it prints
+//     "libva info:" lines past ffmpeg's -loglevel.
+var quietEnv = [][2]string{
+	{"SVT_LOG", "1"},
+	{"LIBVA_MESSAGING_LEVEL", "1"},
+}
+
+// QuietEnv is the environment for ffmpeg: this process's, with the
+// libraries that log to stderr on their own limited to errors, unless
+// their variables are already set.
 func QuietEnv() []string {
 	env := os.Environ()
-	if _, ok := os.LookupEnv("SVT_LOG"); !ok {
-		env = append(env, "SVT_LOG=1")
+	for _, kv := range quietEnv {
+		if _, ok := os.LookupEnv(kv[0]); !ok {
+			env = append(env, kv[0]+"="+kv[1])
+		}
 	}
 	return env
 }
