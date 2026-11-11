@@ -60,9 +60,14 @@ func RunQueue(ctx context.Context, title string, screen *os.File, stdout io.Writ
 	p := tea.NewProgram(m, opts...)
 	// Changed may be called from Update (by SetPaused, say), where
 	// p.Send would deadlock, so it only flags a redraw, which a
-	// goroutine sends; flags while one is pending merge.
+	// goroutine sends; flags while one is pending merge. A Changed
+	// already set (a web view, say) still hears every change.
 	redraw := make(chan struct{}, 1)
+	prev := r.Changed
 	r.Changed = func() {
+		if prev != nil {
+			prev()
+		}
 		select {
 		case redraw <- struct{}{}:
 		default:
