@@ -235,14 +235,21 @@ func TestQuiet(t *testing.T) {
 }
 
 func TestQuietEnv(t *testing.T) {
-	t.Setenv("SVT_LOG", "")
-	os.Unsetenv("SVT_LOG")
-	if !slices.Contains(QuietEnv(), "SVT_LOG=1") {
-		t.Error("QuietEnv() lacks SVT_LOG=1")
-	}
-	t.Setenv("SVT_LOG", "3")
-	env := QuietEnv()
-	if slices.Contains(env, "SVT_LOG=1") || !slices.Contains(env, "SVT_LOG=3") {
-		t.Error("QuietEnv() overrode a SVT_LOG already set")
+	for _, tt := range []struct{ name, quiet, user string }{
+		{"SVT_LOG", "1", "3"},
+		{"LIBVA_MESSAGING_LEVEL", "1", "2"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(tt.name, "")
+			os.Unsetenv(tt.name)
+			if want := tt.name + "=" + tt.quiet; !slices.Contains(QuietEnv(), want) {
+				t.Errorf("QuietEnv() lacks %s", want)
+			}
+			t.Setenv(tt.name, tt.user)
+			env := QuietEnv()
+			if slices.Contains(env, tt.name+"="+tt.quiet) || !slices.Contains(env, tt.name+"="+tt.user) {
+				t.Errorf("QuietEnv() overrode a %s already set", tt.name)
+			}
+		})
 	}
 }
