@@ -68,6 +68,14 @@ type Config struct {
 	// scorings run at once.
 	VMAFThreads int `yaml:"vmaf_threads"`
 	VMAFJobs    int `yaml:"vmaf_jobs"`
+	// Batch is how many quality settings each search tries per round
+	// (default 1). Above 1, a search's settings for a round are encoded
+	// by one ffmpeg, which decodes the sample once for all of them, and
+	// scored in parallel, so searches take fewer rounds for more
+	// encodes in all. Those encodes' times aren't their own: their rows
+	// are logged untimed, and a search that ends on one encodes its
+	// answer again by itself, for a time that is.
+	Batch int `yaml:"batch"`
 	// VMAFModel is a libvmaf JSON model to score SDR samples with,
 	// VMAFModel2160 one for samples 2160p and up (default VMAFModel).
 	// Unset, or BuiltinVMAFModel, is libvmaf's built-in v0.6.1 model,
@@ -266,6 +274,12 @@ func (c *Config) finish(base string) error {
 	}
 	if c.VMAFJobs == 0 {
 		c.VMAFJobs = 4
+	}
+	if c.Batch == 0 {
+		c.Batch = 1
+	}
+	if c.Batch < 1 || c.Batch > 16 {
+		return fmt.Errorf("batch: must be between 1 and 16")
 	}
 	if len(c.Flagsets) == 0 {
 		return fmt.Errorf("flagsets: at least one required")

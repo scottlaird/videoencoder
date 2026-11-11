@@ -60,7 +60,8 @@ type Search struct {
 	lastSide           int // +1 lo moved last, -1 hi moved last
 	repeats            int // consecutive moves of the same end
 
-	seen []measured // measurements with finite margins, by index
+	seen     []measured   // measurements with finite margins, by index
+	measured map[int]bool // every index observed, finite margin or not
 }
 
 // measured is one measurement: an index and its margin.
@@ -225,6 +226,92 @@ func (s *Search) parabola() (float64, bool) {
 	return 0, false
 }
 
+// NextBatch is Next for measuring up to k indexes at once: the index
+// Next would measure, then others spread around it, none measured
+// before. Until the boundary is bracketed they're a stride apart, on
+// the side not yet known as well as the other; once it is, they divide
+// the bracket evenly, so a bracket of k or fewer untried steps closes
+// in one round. With k <= 1 it is Next.
+func (s *Search) NextBatch(k int) ([]int, Outcome) {
+	i, out := s.Next()
+	if out != Searching {
+		return nil, out
+	}
+	pts := []int{i}
+	if k <= 1 {
+		return pts, Searching
+	}
+	// Candidates must lie strictly inside what's known: above the
+	// highest pass and below the lowest fail.
+	low, high := 0, s.n
+	if s.lo >= 0 {
+		low = s.lo + 1
+	}
+	if s.hi >= 0 {
+		high = s.hi - 1
+	}
+	add := func(j int) {
+		if j >= low && j <= high && !s.measured[j] && !slices.Contains(pts, j) {
+			pts = append(pts, j)
+		}
+	}
+	if s.lo >= 0 && s.hi >= 0 {
+		// Bracketed: if it's small enough, try all of it; otherwise
+		// spread evenly across it, around Next's guess.
+		if high-low+1 <= k {
+			for j := low; j <= high && len(pts) < k; j++ {
+				add(j)
+			}
+		} else {
+			// Next's guess is usually within a few steps, so cluster
+			// around it, doubling the distance each time: 0, ±1, ±3,
+			// ±7. A near guess closes the bracket; a far one still
+			// narrows it to a few steps.
+			for d := 1; len(pts) < k && (i+d <= high || i-d >= low); d = 2*d + 1 {
+				add(i + d)
+				if len(pts) < k {
+					add(i - d)
+				}
+			}
+		}
+	} else {
+		// Not bracketed. Gallop toward the unknown end, a stride and
+		// then doubling, and hedge with a point between the known end
+		// and the guess, in case the guess overshot. Knowing neither
+		// end, spread both ways.
+		stride := max(s.stride, 1)
+		switch {
+		case s.lo >= 0: // all passes so far: the boundary is above
+			add((s.lo + i + 1) / 2)
+			for d := stride; len(pts) < k && i+d <= high; d *= 2 {
+				add(i + d)
+			}
+		case s.hi >= 0: // all fails so far: the boundary is below
+			add((s.hi + i) / 2)
+			for d := stride; len(pts) < k && i-d >= low; d *= 2 {
+				add(i - d)
+			}
+		default:
+			for d := stride; len(pts) < k && (i+d <= high || i-d >= low); d *= 2 {
+				add(i + d)
+				if len(pts) < k {
+					add(i - d)
+				}
+			}
+		}
+	}
+	// Whatever is left, if the spread ran out of room: the nearest
+	// untried indexes.
+	for d := 1; len(pts) < k && (i+d <= high || i-d >= low); d++ {
+		add(i + d)
+		if len(pts) < k {
+			add(i - d)
+		}
+	}
+	slices.Sort(pts)
+	return pts, Searching
+}
+
 // clampRound rounds x to the nearest index in [lo, hi].
 func clampRound(x float64, lo, hi int) int {
 	return min(max(int(math.Round(x)), lo), hi)
@@ -240,6 +327,10 @@ func abs(i int) int {
 // Observe records whether index i passed, and by how much (margin >= 0
 // when it passed, < 0 when it failed).
 func (s *Search) Observe(i int, pass bool, margin float64) {
+	if s.measured == nil {
+		s.measured = map[int]bool{}
+	}
+	s.measured[i] = true
 	side := -1
 	if pass {
 		side = 1

@@ -659,6 +659,7 @@ vmaf_jobs: 3            # scorings run at once
 references:             # score a sample against another file in samples/
   yuri-h265.mov: yuri.mov
 seed_results: mac-results.csv  # another machine's log, to start searches at its answers
+batch: 1                # quality settings each search tries per round
 flagsets:
   x265-medium:
     args: [-pix_fmt, yuv420p10le, -c:v, libx265, -preset, medium]
@@ -700,6 +701,20 @@ flagsets:
   tries its neighbors first, so it usually takes two encodes, both
   timed. If the new machine's encodes differ slightly, as x264's do
   with a different thread count, the search widens from there.
+- **Batches.** With `batch: N`, each search tries up to N quality
+  settings per round instead of one. They're encoded by a single
+  ffmpeg, which decodes the sample once for all of them, and scored in
+  parallel. A search then takes fewer rounds but more encodes: with
+  seeds near the answer, one setting at a time averages about 4.9
+  rounds and 4.9 encodes, 2 at a time 3.4 rounds and 6.7 encodes, and 4
+  at a time 3.1 rounds and 11 encodes. It pays where encodes are cheap
+  and scoring has cores to spare: hardware encoders, whose time is
+  mostly decoding, and fast presets on many-core machines. The batch's
+  encodes share their time, so their rows are logged with `timed`
+  false, and a search that ends on one encodes the answer again by
+  itself and logs it again, timed. That later row is the one reports
+  use. An interrupted run re-times the answer next time, without
+  searching again.
 - **Color limits.** `min_ciede2000`, `min_chroma_psnr`,
   `max_color_shift` and `max_color_flicker` can fail encodes for color
   errors, which VMAF ignores entirely. All of them are off by default.
@@ -815,6 +830,9 @@ These are all in `workdir`:
     `x265 4.3+1-e9b8812 (NEON Neon_DotProd Neon_I8MM)`, or
     `macOS 26.5.1` for VideoToolbox), so timings from different
     machines and builds can be told apart
+  - `timed`: whether the times are the encode's own. They aren't for
+    an encode made in a batch, whose times are the whole batch's;
+    its answer is logged again, timed, after a re-run by itself.
 
   Interrupting a run loses only the scorings in progress.
 - **`best.csv`.** The answer for each pair, regenerated on every run.

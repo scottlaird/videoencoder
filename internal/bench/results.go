@@ -47,6 +47,12 @@ type Row struct {
 	CPU            string
 	EncoderVersion string
 	Time           time.Time
+	// Timed says WallS, UserS, SysS and MaxRSSKB are this encode's own.
+	// An encode made with others in one ffmpeg (Config.Batch) isn't:
+	// its times are the whole batch's. Such a search's answer is then
+	// encoded again by itself and logged again, timed, under the same
+	// key; the later row is the one that counts. Older rows are timed.
+	Timed bool
 }
 
 var resultColumns = []string{
@@ -55,7 +61,7 @@ var resultColumns = []string{
 	"vmaf", "vmaf_hmean", "vmaf_p1", "vmaf_neg", "psnr_y", "psnr_cb", "psnr_cr", "ciede2000",
 	"ffmpeg_version", "host", "time", "color_shift_p99", "color_shift_p999", "scorer",
 	"color_flicker_p99", "color_flicker_p999", "reference", "cpu", "encoder_version",
-	"cambi", "cambi_fr", "cambi_fr_max",
+	"cambi", "cambi_fr", "cambi_fr_max", "timed",
 }
 
 // scorer is the current scoring method: v2 added CIEDE2000 on sampled
@@ -82,7 +88,7 @@ func (r *Row) record() []string {
 		r.FFmpegVersion, r.Host, r.Time.UTC().Format(time.RFC3339),
 		ftoa(m.ColorShiftP99), ftoa(m.ColorShiftP999), r.Scorer,
 		ftoa(m.ColorFlickerP99), ftoa(m.ColorFlickerP999), r.Reference, r.CPU, r.EncoderVersion,
-		ftoa(m.CAMBI), ftoa(m.CAMBIFR), ftoa(m.CAMBIFRMax),
+		ftoa(m.CAMBI), ftoa(m.CAMBIFR), ftoa(m.CAMBIFRMax), strconv.FormatBool(r.Timed),
 	}
 }
 
@@ -172,6 +178,14 @@ func parseRow(col map[string]int, rec []string) (Row, error) {
 	}
 	if i, ok := col["encoder_version"]; ok && i < len(rec) {
 		r.EncoderVersion = rec[i]
+	}
+	r.Timed = true
+	if i, ok := col["timed"]; ok && i < len(rec) && rec[i] != "" {
+		t, err := strconv.ParseBool(rec[i])
+		if err != nil {
+			errs = append(errs, fmt.Errorf("timed: %w", err))
+		}
+		r.Timed = t
 	}
 	return r, errors.Join(errs...)
 }

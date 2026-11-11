@@ -23,6 +23,9 @@ const (
 	// Quality is its answer, and Kbps and VMAF that encode's, when
 	// there is one (Pass is then true).
 	Finished
+	// Timing: the answer at Quality, first encoded with others (see
+	// Config.Batch), is being encoded again by itself for its time.
+	Timing
 )
 
 // Event is a step of a run, for showing its progress.
@@ -37,10 +40,13 @@ type Event struct {
 	Flagset        string
 	QualityFlag    string
 	Quality        float64
-	Kbps, VMAF     float64
-	Pass           bool
-	Outcome        Outcome
-	Err            error
+	// Qualities are every setting an Encoding event's ffmpeg encodes:
+	// Quality alone, or a batch's (see Config.Batch).
+	Qualities  []float64
+	Kbps, VMAF float64
+	Pass       bool
+	Outcome    Outcome
+	Err        error
 }
 
 func (b *Bench) observe(e Event) {
@@ -97,7 +103,7 @@ func (b *Bench) Status(ctx context.Context) ([]PairStatus, error) {
 				continue
 			}
 			out[i].Skipped = false
-			if !settled(b.Cfg, fs, flagsetKey(fs), s, results) {
+			if done, _ := settled(b.Cfg, fs, flagsetKey(fs), s, results); !done {
 				out[i].Done = false
 			}
 		}
