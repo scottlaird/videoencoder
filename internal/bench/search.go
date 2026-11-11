@@ -410,6 +410,15 @@ func (q Quality) qualityToIndex(v float64) int {
 	return min(max(int(math.Round(i)), 0), q.steps())
 }
 
+// onGrid reports whether v is one of the settings the search can try.
+// A flagset's key doesn't include its step, so after the step changes
+// its log can hold rows between the new steps: the search looks encodes
+// up by exact setting and never sees them, and answers and status
+// ignore them too, rather than round them onto settings they weren't.
+func (q Quality) onGrid(v float64) bool {
+	return math.Abs(q.indexToQuality(q.qualityToIndex(v))-v) <= q.Step/1000
+}
+
 // roundTo rounds v to a multiple of step, with the float noise of
 // decimal steps like 0.1 removed.
 func roundTo(v, step float64) float64 {

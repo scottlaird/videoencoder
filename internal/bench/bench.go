@@ -416,6 +416,12 @@ func settled(c *Config, fs *Flagset, fkey string, s *sample, results *Results) (
 	timed := map[int]bool{}
 	for _, r := range results.Rows {
 		if r.Sample == s.name && r.FlagsetKey == fkey && r.Scorer == s.scoring.Scorer {
+			// Rows from before the flagset's step changed, rounded onto
+			// the grid, could share an index and settle a search that
+			// isn't (see Quality.onGrid).
+			if !q.onGrid(r.Quality) {
+				continue
+			}
 			i := q.qualityToIndex(r.Quality)
 			pass[i] = c.margin(r.Metrics, s.scoring.Target) >= 0
 			timed[i] = timed[i] || r.Timed
