@@ -475,7 +475,7 @@ func (b *Bench) seed(fs *Flagset, fkey string, s *sample, results *Results) int 
 
 // advance moves every unfinished task forward, answering from the log
 // where possible, and returns the encodes needed to go further: up to
-// Config.Batch settings per task, together in the batch, or a task's
+// Flagset.Batch settings per task, together in the batch, or a task's
 // timing re-run.
 func (b *Bench) advance(tasks []*task, results *Results) []*pending {
 	var batch []*pending
@@ -485,7 +485,7 @@ func (b *Bench) advance(tasks []*task, results *Results) []*pending {
 			continue
 		}
 		for {
-			pts, out := t.search.NextBatch(b.Cfg.Batch)
+			pts, out := t.search.NextBatch(t.fs.Batch)
 			if out != Searching {
 				t.outcome = out
 				if p := b.retime(t, results); p != nil {

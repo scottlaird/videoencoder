@@ -74,8 +74,15 @@ type Config struct {
 	// scored in parallel, so searches take fewer rounds for more
 	// encodes in all. Those encodes' times aren't their own: their rows
 	// are logged untimed, and a search that ends on one encodes its
-	// answer again by itself, for a time that is.
+	// answer again by itself, for a time that is. It's the default for
+	// flagsets whose encoder BatchByEncoder doesn't name and that don't
+	// set Flagset.Batch themselves.
 	Batch int `yaml:"batch"`
+	// BatchByEncoder sets Batch for flagsets by encoder (as -c:v names
+	// it), since what a second encode costs depends on what limits the
+	// encoder: almost nothing for hardware with an engine free, about as
+	// much as the first for software sharing the same cores.
+	BatchByEncoder map[string]int `yaml:"batch_by_encoder"`
 	// VMAFModel is a libvmaf JSON model to score SDR samples with,
 	// VMAFModel2160 one for samples 2160p and up (default VMAFModel).
 	// Unset, or BuiltinVMAFModel, is libvmaf's built-in v0.6.1 model,
@@ -175,6 +182,13 @@ type Flagset struct {
 	// SDROnly skips HDR samples, for encoders that shouldn't be used
 	// for HDR: 8-bit H.264 in PQ, say.
 	SDROnly bool `yaml:"sdr_only"`
+	// Batch overrides Config.BatchByEncoder and Config.Batch for this
+	// flagset; a preset can matter as much as the encoder (NVENC's p4
+	// leaves the second engine free; p7 with -tune uhq doesn't). After
+	// LoadConfig it holds the setting in effect. It isn't part of the
+	// flagset's key: batching changes how encodes are timed, not what
+	// they produce.
+	Batch int `yaml:"batch"`
 }
 
 // Quality describes the flag the search varies. Zero fields are filled
@@ -278,8 +292,21 @@ func (c *Config) finish(base string) error {
 	if c.Batch == 0 {
 		c.Batch = 1
 	}
-	if c.Batch < 1 || c.Batch > 16 {
+	if !validBatch(c.Batch) {
 		return fmt.Errorf("batch: must be between 1 and 16")
+	}
+	for enc, n := range c.BatchByEncoder {
+		if !validBatch(n) {
+			return fmt.Errorf("batch_by_encoder: %s: must be between 1 and 16", enc)
+		}
+		// A misspelled encoder would otherwise quietly batch at the
+		// default.
+		if !slices.ContainsFunc(c.FlagsetNames(), func(name string) bool {
+			f := c.Flagsets[name]
+			return f != nil && f.Encoder() == enc
+		}) {
+			return fmt.Errorf("batch_by_encoder: no flagset uses encoder %q", enc)
+		}
 	}
 	if len(c.Flagsets) == 0 {
 		return fmt.Errorf("flagsets: at least one required")
@@ -321,6 +348,16 @@ func (c *Config) finish(base string) error {
 		}
 		if d, ok := DefaultQuality(f.Encoder()); ok {
 			f.Quality.fillFrom(d)
+		}
+		switch n, ok := c.BatchByEncoder[f.Encoder()]; {
+		case f.Batch != 0:
+			if !validBatch(f.Batch) {
+				return fmt.Errorf("flagset %q: batch must be between 1 and 16", name)
+			}
+		case ok:
+			f.Batch = n
+		default:
+			f.Batch = c.Batch
 		}
 		q := f.Quality
 		switch {
@@ -395,3 +432,5 @@ func (c *Config) margin(m Metrics, target float64) float64 {
 	}
 	return margin
 }
+
+func validBatch(n int) bool { return n >= 1 && n <= 16 }

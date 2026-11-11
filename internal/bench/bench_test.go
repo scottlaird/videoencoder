@@ -76,6 +76,35 @@ flagsets:
 		{name: "2160 model alone", yaml: "samples: s\nvmaf_model_2160: m.json\nflagsets: {a: {args: [-c:v, libx265]}}", wantErr: "needs vmaf_model"},
 		{name: "missing model", yaml: "samples: s\nvmaf_model: missing.json\nflagsets: {a: {args: [-c:v, libx265]}}", wantErr: "missing.json"},
 		{name: "HDR target out of range", yaml: "samples: s\nhdr: {target_vmaf: 120}\nflagsets: {a: {args: [-c:v, libx265]}}", wantErr: "hdr.target_vmaf"},
+		{
+			name: "batch: flagset, then encoder, then default",
+			yaml: `
+samples: s
+batch: 3
+batch_by_encoder: {libx265: 1, hevc_nvenc: 2}
+flagsets:
+  x265:
+    args: [-c:v, libx265]
+  nv-p4:
+    args: [-c:v, hevc_nvenc, -preset, p4]
+  nv-p7:
+    args: [-c:v, hevc_nvenc, -preset, p7]
+    batch: 1
+  vt:
+    args: [-c:v, hevc_videotoolbox]
+`,
+			check: func(t *testing.T, c *Config) {
+				for name, want := range map[string]int{"x265": 1, "nv-p4": 2, "nv-p7": 1, "vt": 3} {
+					if got := c.Flagsets[name].Batch; got != want {
+						t.Errorf("%s: batch %d, want %d", name, got, want)
+					}
+				}
+			},
+		},
+		{name: "batch out of range", yaml: "samples: s\nbatch: 17\nflagsets: {a: {args: [-c:v, libx265]}}", wantErr: "batch: must be"},
+		{name: "flagset batch out of range", yaml: "samples: s\nflagsets: {a: {args: [-c:v, libx265], batch: 20}}", wantErr: `flagset "a": batch`},
+		{name: "encoder batch out of range", yaml: "samples: s\nbatch_by_encoder: {libx265: 0}\nflagsets: {a: {args: [-c:v, libx265]}}", wantErr: "batch_by_encoder: libx265"},
+		{name: "encoder batch misspelled", yaml: "samples: s\nbatch_by_encoder: {libx256: 2}\nflagsets: {a: {args: [-c:v, libx265]}}", wantErr: `no flagset uses encoder "libx256"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -240,6 +269,7 @@ type fakeFFmpeg struct {
 	graphs     []string // scoring filtergraphs
 	scored     []string // "encoded-from -> reference" per scoring
 	runs       []int    // outputs per encoding ffmpeg, in order
+	runPresets []string // each encoding ffmpeg's -preset, in order
 	downscales int
 }
 
@@ -311,6 +341,11 @@ func (f *fakeFFmpeg) Exec(_ context.Context, argv []string) (Measurement, error)
 		return Measurement{}, errors.New("no quality flag")
 	}
 	f.runs = append(f.runs, len(outs))
+	preset := ""
+	if i := slices.Index(argv, "-preset"); i >= 0 {
+		preset = argv[i+1]
+	}
+	f.runPresets = append(f.runPresets, preset)
 	// A batch takes longer than one encode, but less than one each.
 	return Measurement{Wall: time.Duration(1+len(outs)) * time.Second, User: time.Duration(5+5*len(outs)) * time.Second}, nil
 }
@@ -1146,6 +1181,35 @@ func TestTimedColumn(t *testing.T) {
 	r, err = parseRow(columnIndex(resultColumns), (&Row{Time: time.Unix(0, 0)}).record())
 	if err != nil || r.Timed {
 		t.Errorf("untimed row: timed %v, %v; want false", r.Timed, err)
+	}
+}
+
+func TestBenchBatchPerFlagset(t *testing.T) {
+	// Each flagset searches at its own batch size: fast at the default
+	// of 1, slow at its own 3.
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "samples", "a.mov"), "sample a")
+	path := filepath.Join(dir, "bench.yaml")
+	writeFile(t, path, `samples: samples
+workdir: work
+flagsets:
+  fast: {args: [-c:v, libx265, -preset, fast]}
+  slow: {args: [-c:v, libx265, -preset, slow], batch: 3}
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := newFake(18.7)
+	if err := (&Bench{Cfg: cfg, Exec: fake, Prober: fakeProber{}}).Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	most := map[string]int{}
+	for i, n := range fake.runs {
+		most[fake.runPresets[i]] = max(most[fake.runPresets[i]], n)
+	}
+	if most["fast"] != 1 || most["slow"] < 2 || most["slow"] > 3 {
+		t.Errorf("most settings per ffmpeg: fast %d, slow %d; want 1 and 2 or 3", most["fast"], most["slow"])
 	}
 }
 
