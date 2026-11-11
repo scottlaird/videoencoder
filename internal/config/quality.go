@@ -15,14 +15,17 @@ type QualityScale struct {
 }
 
 var qualityScales = map[string]QualityScale{
-	"libx264":           {Flag: "-crf", Min: 10, Max: 40, Step: 0.1, Default: 20},
-	"libx265":           {Flag: "-crf", Min: 10, Max: 40, Step: 0.1, Default: 20},
-	"libsvtav1":         {Flag: "-crf", Min: 10, Max: 63, Step: 1, Default: 32},
-	"libaom-av1":        {Flag: "-crf", Min: 10, Max: 63, Step: 1, Default: 32},
-	"librav1e":          {Flag: "-qp", Min: 20, Max: 255, Step: 1, Default: 80},
-	"h264_nvenc":        {Flag: "-cq:v", Min: 15, Max: 51, Step: 0.1, Default: 28},
-	"hevc_nvenc":        {Flag: "-cq:v", Min: 15, Max: 51, Step: 0.1, Default: 28},
-	"av1_nvenc":         {Flag: "-cq:v", Min: 15, Max: 51, Step: 0.1, Default: 30},
+	"libx264":    {Flag: "-crf", Min: 10, Max: 40, Step: 0.1, Default: 20},
+	"libx265":    {Flag: "-crf", Min: 10, Max: 40, Step: 0.1, Default: 20},
+	"libsvtav1":  {Flag: "-crf", Min: 10, Max: 63, Step: 1, Default: 32},
+	"libaom-av1": {Flag: "-crf", Min: 10, Max: 63, Step: 1, Default: 32},
+	"librav1e":   {Flag: "-qp", Min: 20, Max: 255, Step: 1, Default: 80},
+	// NVENC takes -cq:v in quarters: 33.0 to 33.2 all encode as 33.0,
+	// 33.3 and 33.4 as 33.25, and so on, the same on every clip (H.264,
+	// HEVC and AV1 on an RTX 4090), so finer steps only repeat encodes.
+	"h264_nvenc":        {Flag: "-cq:v", Min: 15, Max: 51, Step: 0.25, Default: 28},
+	"hevc_nvenc":        {Flag: "-cq:v", Min: 15, Max: 51, Step: 0.25, Default: 28},
+	"av1_nvenc":         {Flag: "-cq:v", Min: 15, Max: 51, Step: 0.25, Default: 30},
 	"h264_videotoolbox": {Flag: "-q:v", Min: 1, Max: 100, Step: 1, Default: 60, HigherIsBetter: true},
 	"hevc_videotoolbox": {Flag: "-q:v", Min: 1, Max: 100, Step: 1, Default: 60, HigherIsBetter: true},
 }

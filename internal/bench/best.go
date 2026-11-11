@@ -97,7 +97,7 @@ func bestByPair(c *Config, results *Results, sc Scorings) map[pair]Row {
 	best := map[pair]Row{}
 	for _, r := range results.Rows {
 		fs, ok := byKey[r.FlagsetKey]
-		if !ok {
+		if !ok || !fs.Quality.onGrid(r.Quality) {
 			continue
 		}
 		if s := sc.of(c, r.Sample); r.Scorer != s.Scorer || c.margin(r.Metrics, s.Target) < 0 {

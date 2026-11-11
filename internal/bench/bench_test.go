@@ -1184,6 +1184,57 @@ func TestTimedColumn(t *testing.T) {
 	}
 }
 
+func TestBenchStepChange(t *testing.T) {
+	// Results logged at one step don't settle a search at another. At
+	// step 0.1 the answer is 18.7 (and 18.8 fails); at 0.25 both round
+	// to 18.75, so treating them as on the grid could settle a search
+	// that isn't. The search runs again, reusing what lands on its grid.
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "samples", "a.mov"), "sample a")
+	ctx := context.Background()
+	answer := func(c *Config) float64 {
+		t.Helper()
+		results, err := LoadResults(filepath.Join(dir, "work", "results.csv"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		bests := Bests(c, results, nil)
+		if len(bests) != 1 {
+			t.Fatalf("got %d answers, want 1", len(bests))
+		}
+		return bests[0].Quality
+	}
+
+	fine := benchConfig(t, dir, "  x: {args: [-c:v, libx265]}\n")
+	if err := (&Bench{Cfg: fine, Exec: newFake(18.7), Prober: fakeProber{}}).Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := answer(fine); got != 18.7 {
+		t.Fatalf("at step 0.1, answer %v, want 18.7", got)
+	}
+
+	coarse := benchConfig(t, dir, "  x: {args: [-c:v, libx265], quality: {step: 0.25}}\n")
+	fake := newFake(18.7)
+	if err := (&Bench{Cfg: coarse, Exec: fake, Prober: fakeProber{}}).Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.encodes) == 0 {
+		t.Fatal("no encodes at step 0.25: the 0.1 results settled it")
+	}
+	for _, e := range fake.encodes {
+		var q float64
+		if _, err := fmt.Sscanf(e[strings.LastIndex(e, " ")+1:], "%g", &q); err != nil {
+			t.Fatal(err)
+		}
+		if q*4 != math.Round(q*4) {
+			t.Errorf("encoded %s, off the 0.25 grid", e)
+		}
+	}
+	if got := answer(coarse); got != 18.5 {
+		t.Errorf("at step 0.25, answer %v, want 18.5", got)
+	}
+}
+
 func TestBenchBatchPerFlagset(t *testing.T) {
 	// Each flagset searches at its own batch size: fast at the default
 	// of 1, slow at its own 3.

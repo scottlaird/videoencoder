@@ -675,8 +675,12 @@ flagsets:
 
 - **Quality ranges.** Each flagset's quality flag, range and step
   default from its encoder. x264 and x265 search CRF 10–40, SVT-AV1
-  and libaom 10–63, and VideoToolbox `-q:v`, where higher is better.
-  Override them with `quality`.
+  and libaom 10–63, NVENC `-cq:v` 15–51 in steps of 0.25 (it rounds
+  finer values down to a quarter, so 33.0 through 33.2 are one encode),
+  and VideoToolbox `-q:v`, where higher is better. Override them with
+  `quality`. Changing a flagset's step searches its samples again:
+  logged settings between the new steps are ignored, and those on
+  them are reused.
 - **Scales.** A sample taller than a scale is downscaled once with
   Lanczos, and the copy is cached in `workdir`. A sample no taller
   than a scale is used as it is. Encodes are scored at the sample's
