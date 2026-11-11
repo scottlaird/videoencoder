@@ -148,6 +148,7 @@ var bestColumns = []string{
 	"sample", "flagset", "encoder", "args", "quality_flag", "quality", "outcome", "encodes",
 	"bytes", "kbps", "wall_s", "user_s", "vmaf", "vmaf_neg", "vmaf_p1", "psnr_cb", "psnr_cr", "ciede2000",
 	"color_shift_p99", "color_shift_p999", "color_flicker_p99", "color_flicker_p999", "color_flag",
+	"cambi", "cambi_fr", "cambi_fr_max",
 }
 
 // WriteBest rewrites best.csv from the log.
@@ -165,6 +166,7 @@ func WriteBest(path string, c *Config, results *Results, sc Scorings) error {
 			strconv.Itoa(b.Encodes), strconv.FormatInt(b.Bytes, 10), ftoa(b.Kbps), ftoa(b.WallS), ftoa(b.UserS),
 			ftoa(m.VMAF), ftoa(m.VMAFNeg), ftoa(m.VMAFP1), ftoa(m.PSNRCb), ftoa(m.PSNRCr), ftoa(m.CIEDE2000),
 			ftoa(m.ColorShiftP99), ftoa(m.ColorShiftP999), ftoa(m.ColorFlickerP99), ftoa(m.ColorFlickerP999), b.ColorFlag,
+			ftoa(m.CAMBI), ftoa(m.CAMBIFR), ftoa(m.CAMBIFRMax),
 		})
 	}
 	w.Flush()
@@ -182,15 +184,15 @@ func Report(w io.Writer, c *Config, results *Results, sc Scorings) {
 		if b.Sample != sample {
 			sample = b.Sample
 			fmt.Fprintf(w, "\n### %s\n\n", sample)
-			fmt.Fprintln(w, "| flags | kbps | wall s | user s | vmaf | vmaf_neg | vmaf p1 | ciede2000 | color shift p99.9 | color flicker p99.9 | look at | encodes |")
-			fmt.Fprintln(w, "|:--|--:|--:|--:|--:|--:|--:|--:|--:|--:|:--|--:|")
+			fmt.Fprintln(w, "| flags | kbps | wall s | user s | vmaf | vmaf_neg | vmaf p1 | ciede2000 | color shift p99.9 | color flicker p99.9 | cambi fr | look at | encodes |")
+			fmt.Fprintln(w, "|:--|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|:--|--:|")
 		}
 		flags := fmt.Sprintf("`%s %s %s`", b.Args, b.QualityFlag, ftoa(b.Quality))
 		if b.Outcome == AllPass {
 			flags += " (range limit)"
 		}
 		m := b.Metrics
-		fmt.Fprintf(w, "| %s | %.0f | %.2f | %.2f | %.3f | %.3f | %.3f | %.2f | %.2f | %.2f | %s | %d |\n",
-			flags, b.Kbps, b.WallS, b.UserS, m.VMAF, m.VMAFNeg, m.VMAFP1, m.CIEDE2000, m.ColorShiftP999, m.ColorFlickerP999, b.ColorFlag, b.Encodes)
+		fmt.Fprintf(w, "| %s | %.0f | %.2f | %.2f | %.3f | %.3f | %.3f | %.2f | %.2f | %.2f | %.2f | %s | %d |\n",
+			flags, b.Kbps, b.WallS, b.UserS, m.VMAF, m.VMAFNeg, m.VMAFP1, m.CIEDE2000, m.ColorShiftP999, m.ColorFlickerP999, m.CAMBIFR, b.ColorFlag, b.Encodes)
 	}
 }
