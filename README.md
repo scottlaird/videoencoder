@@ -626,6 +626,20 @@ It searches rather than sweeping the range, which typically takes
 3–8 encodes per pair. Every encode is logged, so adding a sample or a
 flagset only runs the new combinations.
 
+The sample masters used in the "Video Encoding for the Web in 2026"
+posts, about 98 GB in all, can be downloaded with
+[`fetch-samples.sh`](fetch-samples.sh):
+
+```sh
+./fetch-samples.sh -n             # list what it would download
+./fetch-samples.sh -d masters     # all of them, into masters/
+./fetch-samples.sh heron3 cnc     # only these
+```
+
+It can be rerun at any time: complete files are skipped, interrupted
+downloads resume, and masters that have changed on the server are
+downloaded again.
+
 ### encbench configuration
 
 ```yaml
