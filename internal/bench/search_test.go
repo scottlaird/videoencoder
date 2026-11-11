@@ -157,3 +157,74 @@ func TestSearchAt(t *testing.T) {
 		})
 	}
 }
+
+// runBatch drives a Search k indexes per round against score(i), with
+// threshold 95, and returns the outcome, answer, rounds and
+// measurements taken.
+func runBatch(t *testing.T, s *Search, k int, score func(int) float64) (Outcome, int, int, int) {
+	t.Helper()
+	seen := map[int]bool{}
+	evals := 0
+	for rounds := 0; rounds < 100; rounds++ {
+		pts, out := s.NextBatch(k)
+		if out != Searching {
+			return out, s.Answer(), rounds, evals
+		}
+		if len(pts) == 0 || len(pts) > k {
+			t.Fatalf("round %d: %d indexes, want 1..%d", rounds+1, len(pts), k)
+		}
+		for _, i := range pts {
+			if i < 0 || i > s.n {
+				t.Fatalf("index %d out of [0, %d]", i, s.n)
+			}
+			if seen[i] {
+				t.Fatalf("index %d measured twice", i)
+			}
+			seen[i] = true
+			evals++
+		}
+		// The round's results arrive together, in any order.
+		for j := len(pts) - 1; j >= 0; j-- {
+			m := score(pts[j]) - 95
+			s.Observe(pts[j], m >= 0, m)
+		}
+	}
+	t.Fatal("search did not finish in 100 rounds")
+	return 0, 0, 0, 0
+}
+
+func TestSearchBatch(t *testing.T) {
+	scores := map[string]func(int) float64{
+		"linear":  func(i int) float64 { return 100 - 0.05*float64(i) },               // passes up to 100
+		"curved":  func(i int) float64 { return 100 - 5*math.Pow(float64(i)/180, 2) }, // up to 180
+		"plateau": func(i int) float64 { return 100 - 0.3*float64(i/7) },              // up to 118
+		"steep":   func(i int) float64 { return 100 - 0.002*float64(i)*float64(i) },   // up to 50
+		"low":     func(i int) float64 { return 95.5 - 0.5*float64(i) },               // up to 1
+	}
+	for name, score := range scores {
+		for _, seed := range []int{0, 40, 150, 290} {
+			want, wantAns, _ := runSearch(t, 300, seed, false, score)
+			_, _, single, _ := runBatch(t, NewSearch(300, seed), 1, score)
+			for _, k := range []int{1, 2, 4, 8} {
+				out, ans, rounds, _ := runBatch(t, NewSearch(300, seed), k, score)
+				if out != want || ans != wantAns {
+					t.Errorf("%s seed %d k=%d: %v %d, want %v %d (as one at a time)", name, seed, k, out, ans, want, wantAns)
+				}
+				if k >= 4 && rounds > single {
+					t.Errorf("%s seed %d k=%d: %d rounds, more than one at a time's %d", name, seed, k, rounds, single)
+				}
+			}
+		}
+	}
+}
+
+func TestSearchBatchAt(t *testing.T) {
+	// A seed at the answer, or one off, closes in one round of 4.
+	linear := func(i int) float64 { return 100 - 0.05*float64(i) } // passes up to 100
+	for _, seed := range []int{99, 100, 101} {
+		out, ans, rounds, _ := runBatch(t, NewSearchAt(300, seed), 4, linear)
+		if out != Found || ans != 100 || rounds != 1 {
+			t.Errorf("seed %d: %v %d in %d rounds, want found 100 in 1", seed, out, ans, rounds)
+		}
+	}
+}

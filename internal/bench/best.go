@@ -105,7 +105,9 @@ func bestByPair(c *Config, results *Results, sc Scorings) map[pair]Row {
 		}
 		p := pair{r.Sample, r.FlagsetKey}
 		cur, seen := best[p]
-		if !seen || fs.Quality.qualityToIndex(r.Quality) > fs.Quality.qualityToIndex(cur.Quality) {
+		// At the same setting, the later row wins: it's the same
+		// encode logged again with its own time (see Row.Timed).
+		if !seen || fs.Quality.qualityToIndex(r.Quality) >= fs.Quality.qualityToIndex(cur.Quality) {
 			best[p] = r
 		}
 	}
@@ -120,9 +122,12 @@ func Bests(c *Config, results *Results, sc Scorings) []Best {
 	for _, name := range c.FlagsetNames() {
 		names[flagsetKey(c.Flagsets[name])] = name
 	}
+	// Encodes, not rows: a timing re-run logs an encode twice.
 	counts := map[pair]int{}
+	counted := map[string]bool{}
 	for _, r := range results.Rows {
-		if r.Scorer == sc.of(c, r.Sample).Scorer {
+		if r.Scorer == sc.of(c, r.Sample).Scorer && !counted[r.Key] {
+			counted[r.Key] = true
 			counts[pair{r.Sample, r.FlagsetKey}]++
 		}
 	}

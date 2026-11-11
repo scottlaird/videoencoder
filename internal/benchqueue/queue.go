@@ -556,7 +556,17 @@ func (r *Runner) runUnit(ctx context.Context, u Unit) {
 		switch ev.Kind {
 		case bench.Encoding:
 			cur.Round, cur.Sample = ev.Round, ev.Sample
-			cur.Detail = fmt.Sprintf("encoding %s %s", flagName(ev.QualityFlag), ftoa(ev.Quality))
+			qs := []string{ftoa(ev.Quality)}
+			if len(ev.Qualities) > 1 {
+				qs = qs[:0]
+				for _, q := range ev.Qualities {
+					qs = append(qs, ftoa(q))
+				}
+			}
+			cur.Detail = fmt.Sprintf("encoding %s %s", flagName(ev.QualityFlag), strings.Join(qs, ", "))
+		case bench.Timing:
+			cur.Round, cur.Sample = ev.Round, ev.Sample
+			cur.Detail = fmt.Sprintf("timing %s %s by itself", flagName(ev.QualityFlag), ftoa(ev.Quality))
 		case bench.Scored:
 			verdict := "fail"
 			if ev.Pass {

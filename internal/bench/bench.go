@@ -71,6 +71,9 @@ type task struct {
 	search  *Search
 	outcome Outcome
 	encoded map[int]string // files encoded this run, by index
+	// retimed means the answer's timing re-run has been queued (or
+	// wasn't needed), so the task can finish.
+	retimed bool
 }
 
 // pending is an encode a task is waiting on.
@@ -84,6 +87,11 @@ type pending struct {
 	bytes   int64
 	metrics Metrics
 	err     error
+	// alone says the encode ran by itself, so m is its own.
+	alone bool
+	// retime is the logged row of an answer encoded with others, which
+	// this encode repeats alone for its time; it isn't scored.
+	retime *Row
 }
 
 func (b *Bench) resultsPath() string { return filepath.Join(b.Cfg.Workdir, "results.csv") }
@@ -362,12 +370,24 @@ func (b *Bench) tasks(samples []*sample, results *Results) []*task {
 				continue
 			}
 			fkey := flagsetKey(fs)
-			if settled(b.Cfg, fs, fkey, s, results) {
+			done, untimed := settled(b.Cfg, fs, fkey, s, results)
+			if done {
 				continue
 			}
 			search := NewSearch(fs.Quality.steps(), b.seed(fs, fkey, s, results))
 			if row, ok := b.seeds[pair{s.name, fkey}]; ok {
 				search = NewSearchAt(fs.Quality.steps(), fs.Quality.qualityToIndex(row.Quality))
+			}
+			// An answer that only lacks its time: give the search what
+			// the log knows, so it ends at once, on that answer, and
+			// re-times it, instead of searching a path of its own.
+			if untimed {
+				for _, r := range results.Rows {
+					if r.Sample == s.name && r.FlagsetKey == fkey && r.Scorer == s.scoring.Scorer {
+						m := b.Cfg.margin(r.Metrics, s.scoring.Target)
+						search.Observe(fs.Quality.qualityToIndex(r.Quality), m >= 0, m)
+					}
+				}
 			}
 			tasks = append(tasks, &task{
 				sample:  s,
@@ -386,13 +406,19 @@ func (b *Bench) tasks(samples []*sample, results *Results) []*task {
 // s: a passing setting whose next step fails, or a pass or fail at the
 // end of the range. Without this, a finished pair would be searched
 // again whenever its seed moved (say, because samples were added), and
-// a different path needs encodes the log doesn't have.
-func settled(c *Config, fs *Flagset, fkey string, s *sample, results *Results) bool {
+// a different path needs encodes the log doesn't have. An answer
+// without a time of its own (see Row.Timed) isn't settled: untimed
+// says so, and the search is given the log's measurements so that it
+// ends on that answer and re-times it.
+func settled(c *Config, fs *Flagset, fkey string, s *sample, results *Results) (done, untimed bool) {
 	q := fs.Quality
 	pass := map[int]bool{}
+	timed := map[int]bool{}
 	for _, r := range results.Rows {
 		if r.Sample == s.name && r.FlagsetKey == fkey && r.Scorer == s.scoring.Scorer {
-			pass[q.qualityToIndex(r.Quality)] = c.margin(r.Metrics, s.scoring.Target) >= 0
+			i := q.qualityToIndex(r.Quality)
+			pass[i] = c.margin(r.Metrics, s.scoring.Target) >= 0
+			timed[i] = timed[i] || r.Timed
 		}
 	}
 	best := -1
@@ -401,15 +427,20 @@ func settled(c *Config, fs *Flagset, fkey string, s *sample, results *Results) b
 			best = i
 		}
 	}
+	answered := false
 	switch {
 	case best == q.steps():
-		return true
+		answered = true
 	case best >= 0:
 		failed, logged := pass[best+1]
-		return logged && !failed
+		answered = logged && !failed
+	default:
+		// Nothing passes: settled once the best setting is known to
+		// fail. There's no answer to time.
+		failed, logged := pass[0]
+		return logged && !failed, false
 	}
-	failed, logged := pass[0]
-	return logged && !failed
+	return answered && timed[best], answered && !timed[best]
 }
 
 // seed guesses where a search should start: the median answer of the
@@ -443,7 +474,9 @@ func (b *Bench) seed(fs *Flagset, fkey string, s *sample, results *Results) int 
 }
 
 // advance moves every unfinished task forward, answering from the log
-// where possible, and returns the encodes needed to go further.
+// where possible, and returns the encodes needed to go further: up to
+// Config.Batch settings per task, together in the batch, or a task's
+// timing re-run.
 func (b *Bench) advance(tasks []*task, results *Results) []*pending {
 	var batch []*pending
 	queued := map[string]bool{}
@@ -452,27 +485,40 @@ func (b *Bench) advance(tasks []*task, results *Results) []*pending {
 			continue
 		}
 		for {
-			i, out := t.search.Next()
+			pts, out := t.search.NextBatch(b.Cfg.Batch)
 			if out != Searching {
 				t.outcome = out
+				if p := b.retime(t, results); p != nil {
+					batch = append(batch, p)
+					break
+				}
 				b.finish(t, results)
 				break
 			}
-			q := t.fs.Quality.indexToQuality(i)
-			key := encodeKey(t.sample.scoring.Scorer, t.sample.id, t.fkey, q)
-			if row, ok := results.Lookup(key); ok {
-				m := b.Cfg.margin(row.Metrics, t.sample.scoring.Target)
-				t.search.Observe(i, m >= 0, m)
+			var need []*pending
+			logged := false
+			for _, i := range pts {
+				q := t.fs.Quality.indexToQuality(i)
+				key := encodeKey(t.sample.scoring.Scorer, t.sample.id, t.fkey, q)
+				if row, ok := results.Lookup(key); ok {
+					m := b.Cfg.margin(row.Metrics, t.sample.scoring.Target)
+					t.search.Observe(i, m >= 0, m)
+					logged = true
+					continue
+				}
+				need = append(need, &pending{t: t, i: i, quality: q, key: key, out: filepath.Join(b.scratchDir(), key+".mp4")})
+			}
+			// The log answered some: plan again with what it knew.
+			if logged {
 				continue
 			}
 			// Two flagsets with identical args would queue the same
 			// encode; let the second wait a round for the first.
-			if !queued[key] {
-				queued[key] = true
-				batch = append(batch, &pending{
-					t: t, i: i, quality: q, key: key,
-					out: filepath.Join(b.scratchDir(), key+".mp4"),
-				})
+			for _, p := range need {
+				if !queued[p.key] {
+					queued[p.key] = true
+					batch = append(batch, p)
+				}
 			}
 			break
 		}
@@ -480,13 +526,41 @@ func (b *Bench) advance(tasks []*task, results *Results) []*pending {
 	return batch
 }
 
-func (b *Bench) encodeArgv(p *pending) []string {
+// retime returns the encode that times t's answer, if the answer was
+// encoded with others and so has no time of its own (see Row.Timed),
+// or nil if the task can finish.
+func (b *Bench) retime(t *task, results *Results) *pending {
+	if t.retimed || (t.outcome != Found && t.outcome != AllPass) {
+		return nil
+	}
+	t.retimed = true
+	i := t.search.Answer()
+	if i < 0 {
+		return nil
+	}
+	q := t.fs.Quality.indexToQuality(i)
+	key := encodeKey(t.sample.scoring.Scorer, t.sample.id, t.fkey, q)
+	row, ok := results.Lookup(key)
+	if !ok || row.Timed {
+		return nil
+	}
+	return &pending{t: t, i: i, quality: q, key: key, out: filepath.Join(b.scratchDir(), key+".timing.mp4"), retime: &row}
+}
+
+// encodeArgv is the ffmpeg command for ps, which are all the same task's:
+// one decode of the sample, and an output for each setting, so a batch
+// shares the decode. One setting is the usual single encode.
+func (b *Bench) encodeArgv(ps ...*pending) []string {
 	argv := []string{"ffmpeg", "-hide_banner", "-loglevel", "error", "-nostats", "-y",
-		"-i", p.t.sample.path, "-map", "0:v:0"}
-	argv = append(argv, p.t.fs.Args...)
-	argv = append(argv, p.t.fs.Quality.Flag, ftoa(p.quality), "-an")
-	argv = append(argv, containerArgs(p.t.fs)...)
-	return append(argv, p.out)
+		"-i", ps[0].t.sample.path}
+	for _, p := range ps {
+		argv = append(argv, "-map", "0:v:0")
+		argv = append(argv, p.t.fs.Args...)
+		argv = append(argv, p.t.fs.Quality.Flag, ftoa(p.quality), "-an")
+		argv = append(argv, containerArgs(p.t.fs)...)
+		argv = append(argv, p.out)
+	}
+	return argv
 }
 
 // containerArgs are muxing options that don't change the encoded
@@ -501,23 +575,47 @@ func containerArgs(fs *Flagset) []string {
 	return nil
 }
 
+// encodeAll runs the round's encodes one ffmpeg at a time, so each
+// one's time is clean: a task's settings together, sharing a decode,
+// and a timing re-run by itself.
 func (b *Bench) encodeAll(ctx context.Context, round int, batch []*pending) error {
-	for _, p := range batch {
-		slog.Info("Encoding", "sample", p.t.sample.name, "flagset", p.t.name, "quality", p.quality)
-		b.observe(Event{Kind: Encoding, Round: round, Source: p.t.sample.source, Sample: p.t.sample.name, Flagset: p.t.name, QualityFlag: p.t.fs.Quality.Flag, Quality: p.quality})
-		p.m, p.err = b.Exec.Exec(ctx, b.encodeArgv(p))
+	for start := 0; start < len(batch); {
+		end := start + 1
+		for end < len(batch) && batch[end].t == batch[start].t && batch[start].retime == nil && batch[end].retime == nil {
+			end++
+		}
+		group := batch[start:end]
+		start = end
+
+		p0 := group[0]
+		qs := make([]float64, len(group))
+		for i, p := range group {
+			qs[i] = p.quality
+		}
+		kind := Encoding
+		if p0.retime != nil {
+			kind = Timing
+			slog.Info("Timing", "sample", p0.t.sample.name, "flagset", p0.t.name, "quality", p0.quality)
+		} else {
+			slog.Info("Encoding", "sample", p0.t.sample.name, "flagset", p0.t.name, "quality", qs)
+		}
+		b.observe(Event{Kind: kind, Round: round, Source: p0.t.sample.source, Sample: p0.t.sample.name, Flagset: p0.t.name, QualityFlag: p0.t.fs.Quality.Flag, Quality: p0.quality, Qualities: qs})
+		m, err := b.Exec.Exec(ctx, b.encodeArgv(group...))
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if p.err != nil {
-			continue
+		for _, p := range group {
+			p.m, p.err, p.alone = m, err, len(group) == 1
+			if p.err != nil {
+				continue
+			}
+			st, err := os.Stat(p.out)
+			if err != nil {
+				p.err = err
+				continue
+			}
+			p.bytes = st.Size()
 		}
-		st, err := os.Stat(p.out)
-		if err != nil {
-			p.err = err
-			continue
-		}
-		p.bytes = st.Size()
 	}
 	return nil
 }
@@ -529,7 +627,8 @@ func (b *Bench) encodeAll(ctx context.Context, round int, batch []*pending) erro
 func (b *Bench) scoreAll(ctx context.Context, batch []*pending, record func(*pending) error) error {
 	var toScore []*pending
 	for _, p := range batch {
-		if p.err != nil {
+		// A timing re-run repeats an encode already scored.
+		if p.err != nil || p.retime != nil {
 			if err := record(p); err != nil {
 				return err
 			}
@@ -566,6 +665,9 @@ func (b *Bench) score(ctx context.Context, p *pending) (Metrics, error) {
 func (b *Bench) record(results *Results, round int, p *pending) error {
 	t := p.t
 	ev := Event{Round: round, Source: t.sample.source, Sample: t.sample.name, Flagset: t.name, QualityFlag: t.fs.Quality.Flag, Quality: p.quality}
+	if p.retime != nil {
+		return b.recordTiming(results, p)
+	}
 	if p.err != nil {
 		ev.Kind, ev.Err = Failed, p.err
 		b.observe(ev)
@@ -604,6 +706,7 @@ func (b *Bench) record(results *Results, round int, p *pending) error {
 		CPU:            b.CPU,
 		EncoderVersion: b.EncoderVersions[t.fs.Encoder()],
 		Time:           b.now(),
+		Timed:          p.alone,
 	}
 	if err := results.Append(row); err != nil {
 		return err
@@ -614,6 +717,34 @@ func (b *Bench) record(results *Results, round int, p *pending) error {
 	t.search.Observe(p.i, margin >= 0, margin)
 	ev.Kind, ev.Kbps, ev.VMAF, ev.Pass = Scored, row.Kbps, m.VMAF, margin >= 0
 	b.observe(ev)
+	return nil
+}
+
+// recordTiming logs the answer's row again with p's time, which is the
+// encode's own. The encode is the same as the scored one; a size that
+// differs means the encoder isn't deterministic across runs (some vary
+// with thread count or timing), which the log notes but keeps.
+func (b *Bench) recordTiming(results *Results, p *pending) error {
+	t := p.t
+	defer os.Remove(p.out)
+	if p.err != nil {
+		slog.Warn("Timing re-run failed; the answer keeps its batched time", "sample", t.sample.name, "flagset", t.name, "quality", p.quality, "err", p.err)
+		return nil
+	}
+	row := *p.retime
+	if p.bytes != row.Bytes {
+		slog.Warn("Timing re-run came out a different size; its time is kept, the scored encode's size and scores stand",
+			"sample", t.sample.name, "flagset", t.name, "quality", p.quality, "scored_bytes", row.Bytes, "timing_bytes", p.bytes)
+	}
+	row.WallS, row.UserS, row.SysS, row.MaxRSSKB = p.m.Wall.Seconds(), p.m.User.Seconds(), p.m.Sys.Seconds(), p.m.MaxRSSKB
+	row.FFmpegVersion, row.Host, row.CPU = b.FFmpegVersion, b.Host, b.CPU
+	row.EncoderVersion = b.EncoderVersions[t.fs.Encoder()]
+	row.Time = b.now()
+	row.Timed = true
+	if err := results.Append(row); err != nil {
+		return err
+	}
+	slog.Info("Timed", "sample", t.sample.name, "flagset", t.name, "quality", p.quality, "wall_s", row.WallS, "user_s", row.UserS)
 	return nil
 }
 

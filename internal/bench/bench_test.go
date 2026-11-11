@@ -239,6 +239,7 @@ type fakeFFmpeg struct {
 	scores     int
 	graphs     []string // scoring filtergraphs
 	scored     []string // "encoded-from -> reference" per scoring
+	runs       []int    // outputs per encoding ffmpeg, in order
 	downscales int
 }
 
@@ -278,22 +279,40 @@ func (f *fakeFFmpeg) Exec(_ context.Context, argv []string) (Measurement, error)
 	if slices.Contains(argv, "libbroken") {
 		return Measurement{}, errors.New("Unknown encoder 'libbroken'")
 	}
-	out := argv[len(argv)-1]
-	qi := slices.IndexFunc(argv, func(a string) bool { return a == "-crf" || a == "-qp" })
-	if qi < 0 {
+	// One input, then an output per quality setting: its options, the
+	// quality flag and value, and its file (the next .mp4).
+	src := filepath.Base(argv[slices.Index(argv, "-i")+1])
+	var outs []string
+	for qi, a := range argv {
+		if a != "-crf" && a != "-qp" {
+			continue
+		}
+		q, err := strconv.ParseFloat(argv[qi+1], 64)
+		if err != nil {
+			return Measurement{}, err
+		}
+		oi := slices.IndexFunc(argv[qi:], func(a string) bool { return strings.HasSuffix(a, ".mp4") })
+		if oi < 0 {
+			return Measurement{}, errors.New("output without a file")
+		}
+		out := argv[qi+oi]
+		if slices.Contains(argv, "libx265") && !slices.Contains(argv[:qi+oi], "hvc1") {
+			return Measurement{}, errors.New("HEVC encode not tagged hvc1")
+		}
+		f.quality[out] = q
+		f.source[out] = src
+		f.encodes = append(f.encodes, fmt.Sprintf("%s %v", src, q))
+		if err := os.WriteFile(out, bytes.Repeat([]byte("x"), int(10000/q)), 0o644); err != nil {
+			return Measurement{}, err
+		}
+		outs = append(outs, out)
+	}
+	if len(outs) == 0 {
 		return Measurement{}, errors.New("no quality flag")
 	}
-	q, err := strconv.ParseFloat(argv[qi+1], 64)
-	if err != nil {
-		return Measurement{}, err
-	}
-	f.quality[out] = q
-	f.source[out] = filepath.Base(argv[slices.Index(argv, "-i")+1])
-	if slices.Contains(argv, "libx265") && !slices.Contains(argv, "hvc1") {
-		return Measurement{}, errors.New("HEVC encode not tagged hvc1")
-	}
-	f.encodes = append(f.encodes, fmt.Sprintf("%s %v", filepath.Base(argv[slices.Index(argv, "-i")+1]), q))
-	return Measurement{Wall: 2 * time.Second, User: 10 * time.Second}, os.WriteFile(out, bytes.Repeat([]byte("x"), int(10000/q)), 0o644)
+	f.runs = append(f.runs, len(outs))
+	// A batch takes longer than one encode, but less than one each.
+	return Measurement{Wall: time.Duration(1+len(outs)) * time.Second, User: time.Duration(5+5*len(outs)) * time.Second}, nil
 }
 
 type fakeProber struct{}
@@ -986,5 +1005,159 @@ func TestBenchSeedResults(t *testing.T) {
 	}
 	if err := (&Bench{Cfg: cfg, Exec: newFake(18.7), Prober: fakeProber{}}).Run(ctx); err == nil || !strings.Contains(err.Error(), "seed_results") {
 		t.Errorf("missing seed_results: got %v, want an error naming it", err)
+	}
+}
+
+func TestBenchBatch(t *testing.T) {
+	ctx := context.Background()
+	runWith := func(t *testing.T, dir string, batch int, fake *fakeFFmpeg) (*Config, *Results) {
+		t.Helper()
+		path := filepath.Join(dir, "bench.yaml")
+		writeFile(t, path, fmt.Sprintf("samples: samples\nworkdir: work\nbatch: %d\nflagsets:\n%s", batch, twoFlagsets))
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := (&Bench{Cfg: cfg, Exec: fake, Prober: fakeProber{}}).Run(ctx); err != nil {
+			t.Fatal(err)
+		}
+		results, err := LoadResults(filepath.Join(dir, "work", "results.csv"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg, results
+	}
+	newDir := func(t *testing.T) string {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "samples", "a.mov"), "sample a")
+		return dir
+	}
+
+	single := newFake(18.7)
+	runWith(t, newDir(t), 1, single)
+
+	dir := newDir(t)
+	fake := newFake(18.7)
+	cfg, results := runWith(t, dir, 4, fake)
+
+	// Each ffmpeg encodes one search's settings for a round, at most 4;
+	// some encode more than one; and there are fewer of them than
+	// rounds one setting at a time, even counting the timing re-runs.
+	multi := 0
+	for _, n := range fake.runs {
+		if n > 4 {
+			t.Errorf("an ffmpeg encoded %d settings, want at most 4", n)
+		}
+		if n > 1 {
+			multi++
+		}
+	}
+	if multi == 0 {
+		t.Errorf("no ffmpeg encoded more than one setting: %v", fake.runs)
+	}
+	// Searching took fewer ffmpegs than one setting at a time, not
+	// counting the two answers' timing re-runs.
+	if n := len(fake.runs) - 2; n >= len(single.runs) {
+		t.Errorf("%d searching ffmpegs with batch 4, want fewer than batch 1's %d", n, len(single.runs))
+	}
+
+	// Same answers. Each answer's row is logged untimed from its batch
+	// and again timed from its re-run, alone; the answer is the timed one.
+	bests := Bests(cfg, results, nil)
+	if len(bests) != 2 {
+		t.Fatalf("got %d answers, want 2", len(bests))
+	}
+	for _, best := range bests {
+		if best.Quality != 18.7 || best.Outcome != Found {
+			t.Errorf("%s: answer %v (%v), want 18.7 found", best.Name, best.Quality, best.Outcome)
+		}
+		if !best.Timed || best.WallS != 2 {
+			t.Errorf("%s: answer timed %v, %v s, want its own time (2 s, as one encode)", best.Name, best.Timed, best.WallS)
+		}
+		var rows []Row
+		for _, r := range results.Rows {
+			if r.Key == best.Key {
+				rows = append(rows, r)
+			}
+		}
+		if len(rows) != 2 || rows[0].Timed || !rows[1].Timed || rows[0].Metrics.VMAF != rows[1].Metrics.VMAF || rows[0].Bytes != rows[1].Bytes {
+			t.Errorf("%s: answer logged %+v, want an untimed row then a timed copy", best.Name, rows)
+		}
+		if best.Encodes != countKeys(results, best) {
+			t.Errorf("%s: %d encodes counted, want %d (the re-run isn't another encode)", best.Name, best.Encodes, countKeys(results, best))
+		}
+	}
+
+	// Nothing to do on a rerun.
+	fake.runs, fake.encodes = nil, nil
+	runWith(t, dir, 4, fake)
+	if len(fake.encodes) != 0 {
+		t.Errorf("rerun encoded %q, want nothing", fake.encodes)
+	}
+
+	// An answer left untimed (the run stopped before its re-run) is
+	// timed next run, even one setting at a time, with nothing else
+	// encoded or scored.
+	log := filepath.Join(dir, "work", "results.csv")
+	var keep []Row
+	for _, r := range results.Rows {
+		if r.Timed && r.Key != "" && slices.ContainsFunc(bests, func(b Best) bool { return b.Key == r.Key }) {
+			continue
+		}
+		keep = append(keep, r)
+	}
+	untimed := &Results{path: log, byKey: map[string]int{}}
+	for _, r := range keep {
+		untimed.add(r)
+	}
+	if err := untimed.rewrite(); err != nil {
+		t.Fatal(err)
+	}
+	fake.runs, fake.encodes, fake.scores = nil, nil, 0
+	_, results = runWith(t, dir, 1, fake)
+	if !slices.Equal(fake.runs, []int{1, 1}) || fake.scores != 0 {
+		t.Errorf("resumed: encoded %v (%d scored), want just the two answers' timing re-runs, unscored", fake.runs, fake.scores)
+	}
+	for _, best := range Bests(cfg, results, nil) {
+		if !best.Timed {
+			t.Errorf("%s: resumed answer still untimed", best.Name)
+		}
+	}
+}
+
+func countKeys(results *Results, b Best) int {
+	keys := map[string]bool{}
+	for _, r := range results.Rows {
+		if r.Sample == b.Sample && r.FlagsetKey == b.FlagsetKey {
+			keys[r.Key] = true
+		}
+	}
+	return len(keys)
+}
+
+func TestTimedColumn(t *testing.T) {
+	// Rows from before the column are timed; rows with it say.
+	col := columnIndex(resultColumns[:len(resultColumns)-1])
+	rec := (&Row{Time: time.Unix(0, 0)}).record()
+	r, err := parseRow(col, rec[:len(rec)-1])
+	if err != nil || !r.Timed {
+		t.Errorf("old row: timed %v, %v; want true", r.Timed, err)
+	}
+	r, err = parseRow(columnIndex(resultColumns), (&Row{Time: time.Unix(0, 0)}).record())
+	if err != nil || r.Timed {
+		t.Errorf("untimed row: timed %v, %v; want false", r.Timed, err)
+	}
+}
+
+func TestEncodeArgvBatch(t *testing.T) {
+	fs := &Flagset{Args: []string{"-c:v", "libx265", "-preset", "fast"}, Quality: Quality{Flag: "-crf"}}
+	task := &task{sample: &sample{path: "in.mov"}, fs: fs}
+	ps := []*pending{{t: task, quality: 20, out: "a.mp4"}, {t: task, quality: 22.5, out: "b.mp4"}}
+	got := strings.Join((&Bench{}).encodeArgv(ps...), " ")
+	want := "ffmpeg -hide_banner -loglevel error -nostats -y -i in.mov" +
+		" -map 0:v:0 -c:v libx265 -preset fast -crf 20 -an -tag:v hvc1 a.mp4" +
+		" -map 0:v:0 -c:v libx265 -preset fast -crf 22.5 -an -tag:v hvc1 b.mp4"
+	if got != want {
+		t.Errorf("encodeArgv =\n  %s\nwant\n  %s", got, want)
 	}
 }
