@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>encbench queue</title>
+<style>
+:root {
+  --bg: #fafafa; --panel: #fff; --text: #1d1d1f; --muted: #6e6e73; --line: #e3e3e6;
+  --run: #0a66c2; --ok: #1f7a3a; --bad: #b3261e; --warn: #8a5a00; --bar: #d7e6f7;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161618; --panel: #1f1f22; --text: #ececee; --muted: #9a9aa1; --line: #333338;
+    --run: #6aaeff; --ok: #6fd08c; --bad: #ff8a80; --warn: #e6b450; --bar: #23364d;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, sans-serif; }
+main { max-width: 1200px; margin: 0 auto; padding: 16px; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-bottom: 12px; }
+h1 { font-size: 18px; margin: 0; font-weight: 600; }
+.summary { color: var(--muted); }
+.phase { font-weight: 600; }
+.phase.running { color: var(--run); } .phase.paused, .phase.waiting { color: var(--warn); }
+.phase.finished, .phase.idle { color: var(--ok); }
+button { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); cursor: pointer; }
+button:hover { border-color: var(--run); }
+button:disabled { opacity: .5; cursor: default; }
+.spacer { flex: 1; }
+.conn { font-size: 12px; color: var(--muted); }
+.conn.down { color: var(--bad); }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 8px; font-weight: 600; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 4px 8px 4px 0; vertical-align: top; border-top: 1px solid var(--line); }
+th { color: var(--muted); font-weight: 500; font-size: 12px; border-top: none; }
+td.num, th.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+code, .mono { font-family: var(--mono); font-size: 12.5px; }
+.muted { color: var(--muted); }
+.ok { color: var(--ok); } .bad { color: var(--bad); } .run { color: var(--run); }
+.progress { position: relative; height: 6px; background: var(--line); border-radius: 3px; min-width: 80px; }
+.progress > span { position: absolute; inset: 0 auto 0 0; background: var(--run); border-radius: 3px; }
+.now-unit { font-size: 15px; font-weight: 600; }
+.answers { margin: 4px 0 0; padding: 0; list-style: none; }
+details summary { cursor: pointer; color: var(--muted); margin-top: 8px; }
+pre.log { margin: 0; max-height: 360px; overflow: auto; font: 12px/1.4 var(--mono); white-space: pre-wrap; word-break: break-all; }
+.status-line { color: var(--muted); }
+.table-wrap { overflow-x: auto; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1 id="title">encbench queue</h1>
+    <span class="summary" id="summary"></span>
+    <span class="spacer"></span>
+    <span class="conn" id="conn">connecting…</span>
+    <button id="pause" disabled>Pause</button>
+  </header>
+
+  <section>
+    <h2>Now</h2>
+    <div id="now" class="muted">…</div>
+  </section>
+
+  <section>
+    <h2>Queue</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Work file</th><th class="num">Done</th><th class="num">Failed</th><th class="num">Left</th><th style="width:30%">Progress</th></tr></thead>
+        <tbody id="files"></tbody>
+      </table>
+    </div>
+    <details id="next-wrap">
+      <summary id="next-summary">Next units</summary>
+      <table><tbody id="next"></tbody></table>
+    </details>
+  </section>
+
+  <section>
+    <h2>Results</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th></th><th>Unit</th><th class="num">Took</th><th>Answer</th><th>File</th></tr></thead>
+        <tbody id="recent"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Log</h2>
+    <pre class="log" id="log"></pre>
+  </section>
+</main>
+<script>
+"use strict";
+let state = null, offset = 0; // offset: server clock minus ours, in ms
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+function dur(sec) {
+  sec = Math.max(0, Math.round(sec));
+  const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+  return h ? `${h}h${String(m).padStart(2, "0")}m` : m ? `${m}m${String(s).padStart(2, "0")}s` : `${s}s`;
+}
+const since = t => (Date.now() + offset - Date.parse(t)) / 1000;
+
+function phaseText(s) {
+  let t = { starting: "starting", running: "running", waiting: "waiting: " + s.waiting, paused: "paused",
+            idle: "watching for work", finished: "finished" }[s.phase] || s.phase;
+  if (s.phase !== "finished") {
+    if (s.stopping) t += " · quitting after this unit";
+    else if (s.pausing && s.phase === "running") t += " · pausing after this unit";
+    else if (s.pausing && s.phase !== "paused") t += " · paused";
+  }
+  return t;
+}
+
+function renderClock() {
+  if (!state) return;
+  $("summary").innerHTML = `${state.done}/${state.total} units · <span class="phase ${esc(state.phase)}">${esc(phaseText(state))}</span> · ${dur(since(state.started))}`;
+  const el = $("now-elapsed");
+  if (el && state.current) el.textContent = dur(since(state.current.started));
+}
+
+function render(s) {
+  state = s;
+  offset = Date.parse(s.now) - Date.now();
+  document.title = `${s.title || "encbench queue"} · ${s.done}/${s.total}`;
+  $("title").textContent = s.title || "encbench queue";
+
+  const b = $("pause");
+  b.disabled = s.phase === "finished";
+  b.textContent = s.pausing ? "Resume" : "Pause";
+  b.dataset.action = s.pausing ? "resume" : "pause";
+
+  const c = s.current;
+  if (c) {
+    const detail = c.round > 0 ? `round ${c.round} · ${esc(c.version)} · ${esc(c.detail)}` : esc(c.detail);
+    $("now").innerHTML =
+      `<div class="now-unit run">▶ <code>${esc(c.flagset)}</code> on <code>${esc(c.sample)}</code> <span class="muted mono" id="now-elapsed"></span></div>` +
+      `<div class="muted">${esc(c.file)}</div>` +
+      (detail ? `<div class="mono">${detail}</div>` : "") +
+      (c.answers.length ? `<ul class="answers">${c.answers.map(a => `<li class="ok mono">✓ ${esc(a)}</li>`).join("")}</ul>` : "");
+  } else {
+    const why = { waiting: "waiting: " + s.waiting, paused: "paused", idle: "nothing to run; add or edit a file in " + s.dir }[s.phase] || "nothing running";
+    $("now").innerHTML = `<span class="muted">${esc(why)}</span>`;
+  }
+
+  $("files").innerHTML = s.files.length ? s.files.map(f => {
+    const mark = f.error ? `<span class="bad">✗</span>` : f.pending ? `<span class="muted">…</span>` :
+      f.running ? `<span class="run">▶</span>` : f.remaining === 0 ? `<span class="ok">✓</span>` : `<span class="muted">·</span>`;
+    const pct = f.total ? 100 * (f.done + f.failed) / f.total : 0;
+    const right = f.error ? `<td colspan="4" class="bad">${esc(f.error)}</td>` : f.pending ? `<td colspan="4" class="muted">counted after this unit</td>` :
+      `<td class="num">${f.done}/${f.total}</td><td class="num ${f.failed ? "bad" : "muted"}">${f.failed}</td><td class="num">${f.remaining}</td>` +
+      `<td><div class="progress"><span style="width:${pct.toFixed(1)}%"></span></div></td>`;
+    return `<tr><td>${mark} <code>${esc(f.name)}</code></td>${right}</tr>`;
+  }).join("") : `<tr><td colspan="5" class="${s.error ? "bad" : "muted"}">${esc(s.error || "no work files in " + s.dir)}</td></tr>`;
+
+  $("next-summary").textContent = s.next_total ? `Next ${s.next.length} of ${s.next_total} units` : c ? "Nothing queued after this unit" : "Nothing queued";
+  $("next").innerHTML = s.next.map(u => `<tr><td><code>${esc(u.flagset)}</code> on <code>${esc(u.sample)}</code></td><td class="muted">${esc(u.file)}</td></tr>`).join("");
+
+  $("recent").innerHTML = s.recent.length ? s.recent.slice().reverse().map(r => {
+    const mark = r.abandoned ? `<span class="bad">!</span>` : r.error ? `<span class="bad">✗</span>` : `<span class="ok">✓</span>`;
+    const ans = r.abandoned ? `<span class="bad">abandoned</span>` : r.error ? `<span class="bad">${esc(r.error)}</span>` : `<span class="mono">${esc(r.answers.join("; "))}</span>`;
+    return `<tr><td>${mark}</td><td><code>${esc(r.flagset)}</code> on <code>${esc(r.sample)}</code></td><td class="num">${dur(r.elapsed)}</td><td>${ans}</td><td class="muted">${esc(r.file)}</td></tr>`;
+  }).join("") : `<tr><td colspan="5" class="muted">none yet</td></tr>`;
+
+  const log = $("log");
+  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 24;
+  log.innerHTML = s.log.map(esc).join("\n") + (s.status ? `\n<span class="status-line">${esc(s.status)}</span>` : "");
+  if (atBottom) log.scrollTop = log.scrollHeight;
+
+  renderClock();
+}
+
+$("pause").addEventListener("click", async () => {
+  const b = $("pause");
+  b.disabled = true;
+  try {
+    const r = await fetch("api/" + b.dataset.action, { method: "POST" });
+    if (r.ok) render(await r.json());
+  } finally {
+    if (state) b.disabled = state.phase === "finished";
+  }
+});
+
+function connect() {
+  const es = new EventSource("api/events");
+  es.onopen = () => { $("conn").textContent = "live"; $("conn").className = "conn"; };
+  es.onmessage = e => render(JSON.parse(e.data));
+  es.onerror = () => {
+    $("conn").textContent = "disconnected; retrying…";
+    $("conn").className = "conn down";
+    // EventSource retries on its own unless the server closed for good.
+    if (es.readyState === EventSource.CLOSED) setTimeout(connect, 3000);
+  };
+}
+connect();
+setInterval(renderClock, 1000);
+</script>
+</body>
+</html>

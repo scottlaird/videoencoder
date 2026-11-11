@@ -712,7 +712,7 @@ flagsets:
 encbench [-config bench.yaml] run [-n] [-sample GLOB] [-flagset GLOB]
 encbench [-config bench.yaml] report
 encbench [-config bench.yaml] prune [-n]
-encbench queue [-watch] [-report=false] [-poll 5s] [-tui auto] DIR
+encbench queue [-watch] [-report=false] [-poll 5s] [-tui auto] [-http ADDR] DIR
 ```
 
 - **`run`** searches every unfinished sample and flagset pair. `-n`
@@ -783,6 +783,20 @@ In the terminal UI:
 
 Without a terminal (`-tui off`), the queue logs to stderr, and an
 interrupt abandons the current unit.
+
+With `-http ADDR`, such as `-http :8090`, the queue also serves a web
+view, alongside the terminal UI or without it. The page shows what the
+terminal UI does and updates as the queue changes. Its **Pause** button
+works like `p`. The same is available as JSON:
+
+- `GET /api/state` is the queue's state.
+- `GET /api/events` streams it as server-sent events, on every change.
+- `POST /api/pause` and `POST /api/resume` pause after the current unit,
+  and resume.
+
+The web view has no login. Anyone who can reach the address can watch
+the queue and pause it, so `-http localhost:8090` keeps it to this
+machine.
 
 ### encbench output
 
