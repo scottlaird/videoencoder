@@ -191,7 +191,18 @@ type Results struct {
 // read as NaN), and rows appended since carry them past the old header.
 // The file is then rewritten with the current header, so later appends
 // line up.
-func LoadResults(path string) (*Results, error) {
+func LoadResults(path string) (*Results, error) { return loadResults(path, true) }
+
+// readResults reads the log at path like LoadResults, but never
+// rewrites it: for another machine's log. A missing file is an error.
+func readResults(path string) (*Results, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, err
+	}
+	return loadResults(path, false)
+}
+
+func loadResults(path string, upgrade bool) (*Results, error) {
 	r := &Results{path: path, byKey: map[string]int{}}
 	f, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -241,6 +252,9 @@ func LoadResults(path string) (*Results, error) {
 	if !slices.Equal(asWritten, resultColumns) {
 		if !upgradable {
 			return nil, fmt.Errorf("%s: unrecognized columns %q", path, header)
+		}
+		if !upgrade {
+			return r, nil
 		}
 		if err := r.rewrite(); err != nil {
 			return nil, fmt.Errorf("upgrading %s: %w", path, err)

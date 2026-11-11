@@ -39,6 +39,8 @@ type Bench struct {
 	Observe func(Event)
 
 	scorings Scorings
+	// seeds is Config.SeedResults's answers, if it's set.
+	seeds map[pair]Row
 	// listing makes loadSamples skip making copies, quietly.
 	listing bool
 }
@@ -111,6 +113,13 @@ func (b *Bench) Run(ctx context.Context) error {
 	b.scorings = Scorings{}
 	for _, s := range samples {
 		b.scorings[s.name] = s.scoring
+	}
+	if b.Cfg.SeedResults != "" {
+		seeds, err := readResults(b.Cfg.SeedResults)
+		if err != nil {
+			return fmt.Errorf("seed_results: %w", err)
+		}
+		b.seeds = bestByPair(b.Cfg, seeds, b.scorings)
 	}
 	tasks := b.tasks(samples, results)
 
@@ -356,13 +365,16 @@ func (b *Bench) tasks(samples []*sample, results *Results) []*task {
 			if settled(b.Cfg, fs, fkey, s, results) {
 				continue
 			}
-			seed := b.seed(fs, fkey, s, results)
+			search := NewSearch(fs.Quality.steps(), b.seed(fs, fkey, s, results))
+			if row, ok := b.seeds[pair{s.name, fkey}]; ok {
+				search = NewSearchAt(fs.Quality.steps(), fs.Quality.qualityToIndex(row.Quality))
+			}
 			tasks = append(tasks, &task{
 				sample:  s,
 				name:    name,
 				fs:      fs,
 				fkey:    fkey,
-				search:  NewSearch(fs.Quality.steps(), seed),
+				search:  search,
 				encoded: map[int]string{},
 			})
 		}

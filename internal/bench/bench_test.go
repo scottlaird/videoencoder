@@ -915,3 +915,76 @@ flagsets:
 		t.Error("HDR samples weren't searched again with the built-in model")
 	}
 }
+
+func TestBenchSeedResults(t *testing.T) {
+	ctx := context.Background()
+	// Machine A searches as usual.
+	a := t.TempDir()
+	writeFile(t, filepath.Join(a, "samples", "a.mov"), "sample a")
+	if err := (&Bench{Cfg: benchConfig(t, a, twoFlagsets), Exec: newFake(18.7), Prober: fakeProber{}}).Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	aLog := filepath.Join(a, "work", "results.csv")
+	before, err := os.ReadFile(aLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Machine B has its own log and A's as seed_results. Its encoder
+	// lands a step off A's, as different thread counts can.
+	tests := []struct {
+		name      string
+		cutoff    float64
+		maxEncode int // per flagset
+	}{
+		{"same answer", 18.7, 2},
+		{"one step off", 18.8, 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := t.TempDir()
+			writeFile(t, filepath.Join(b, "samples", "a.mov"), "sample a")
+			path := filepath.Join(b, "bench.yaml")
+			writeFile(t, path, "samples: samples\nworkdir: work\nseed_results: "+aLog+"\nflagsets:\n"+twoFlagsets)
+			cfg, err := LoadConfig(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fake := newFake(tt.cutoff)
+			if err := (&Bench{Cfg: cfg, Exec: fake, Prober: fakeProber{}}).Run(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if got, max := len(fake.encodes), 2*tt.maxEncode; got > max {
+				t.Errorf("%d encodes for two flagsets, want at most %d: %q", got, max, fake.encodes)
+			}
+			results, err := LoadResults(filepath.Join(b, "work", "results.csv"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, best := range Bests(cfg, results, nil) {
+				if best.Quality != tt.cutoff || best.Outcome != Found {
+					t.Errorf("%s: answer %v (%v), want %v found", best.Name, best.Quality, best.Outcome, tt.cutoff)
+				}
+			}
+		})
+	}
+
+	after, err := os.ReadFile(aLog)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Errorf("seed_results log changed (err %v)", err)
+	}
+
+	// A seed_results file that isn't there is an error, not a silent
+	// full search.
+	c := t.TempDir()
+	writeFile(t, filepath.Join(c, "samples", "a.mov"), "sample a")
+	path := filepath.Join(c, "bench.yaml")
+	writeFile(t, path, "samples: samples\nworkdir: work\nseed_results: missing.csv\nflagsets:\n"+twoFlagsets)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (&Bench{Cfg: cfg, Exec: newFake(18.7), Prober: fakeProber{}}).Run(ctx); err == nil || !strings.Contains(err.Error(), "seed_results") {
+		t.Errorf("missing seed_results: got %v, want an error naming it", err)
+	}
+}

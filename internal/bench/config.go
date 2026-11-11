@@ -33,6 +33,14 @@ type Config struct {
 	// encoding from the export costs. The two must have the same
 	// frames. Scaled copies are scored against the reference's copies.
 	References map[string]string `yaml:"references"`
+	// SeedResults is another machine's results.csv, read but never
+	// written. A search whose sample and flagset it already answers
+	// (same sample name, same args and quality flag, same scoring)
+	// starts at that answer and tries its neighbors first, so it
+	// usually takes two encodes: for timing the same encodes on new
+	// hardware without searching again. Without it, a search starts
+	// from this log's answers for other samples.
+	SeedResults string `yaml:"seed_results"`
 	// An encode passes when its mean VMAF reaches TargetVMAF (default
 	// 95) and it meets the optional color limits. VMAF ignores chroma,
 	// so a color cast only fails an encode through MinCIEDE2000 (a
@@ -244,6 +252,9 @@ func (c *Config) finish(base string) error {
 		c.Workdir = "bench"
 	}
 	c.Workdir = resolve(base, c.Workdir)
+	if c.SeedResults != "" {
+		c.SeedResults = resolve(base, c.SeedResults)
+	}
 	if c.TargetVMAF == 0 {
 		c.TargetVMAF = 95
 	}
