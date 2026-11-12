@@ -18,6 +18,10 @@ import (
 // Config is the contents of bench.yaml. Relative paths are relative to
 // the config file.
 type Config struct {
+	// Path is the file the config was loaded from, and Job the queue
+	// work file it runs for, if any; both are logged with each result.
+	Path string `yaml:"-"`
+	Job  string `yaml:"-"`
 	// Samples is a directory of sample clips.
 	Samples string `yaml:"samples"`
 	// Workdir holds results.csv, best.csv, kept encodes and scratch
@@ -262,6 +266,7 @@ func LoadConfig(path string) (*Config, error) {
 	if err := c.finish(filepath.Dir(path)); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	c.Path = path
 	return &c, nil
 }
 

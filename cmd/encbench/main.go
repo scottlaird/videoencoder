@@ -133,6 +133,7 @@ func runCmd(ctx context.Context, cfg *bench.Config, args []string, stderr io.Wri
 		Cfg:             cfg,
 		Exec:            bench.ExecExecutor{Stderr: stderr},
 		Prober:          probe.FFProbe{},
+		OutputProber:    bench.FFProbeOutput{},
 		Host:            host,
 		FFmpegVersion:   version,
 		CPU:             bench.CPUModel(ctx),

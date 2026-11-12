@@ -121,6 +121,16 @@ func (m VMAFModel) Name() string {
 // ID identifies the model's contents, or is "" for the built-in model.
 func (m VMAFModel) ID() string { return m.id }
 
+// LogName names the model that scores a rendition height pixels tall,
+// for the log: the built-in model's name for that height, or the model
+// file's Name and ID.
+func (m VMAFModel) LogName(height uint64) string {
+	if m.Path == "" {
+		return vmafModel(height)
+	}
+	return m.Name() + " " + m.id
+}
+
 // ScorerAt identifies the model that scores a rendition height pixels
 // tall: the built-in model switches to its 4K variant at 2160p.
 func (m VMAFModel) ScorerAt(height uint64) string {

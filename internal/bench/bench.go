@@ -2,9 +2,14 @@ package bench
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -22,6 +27,9 @@ type Bench struct {
 	Cfg    *Config
 	Exec   Executor
 	Prober probe.Prober
+	// OutputProber, if set, reads each scored encode's stream details
+	// (Row.Output); a failure only leaves them out.
+	OutputProber OutputProber
 	// Host, FFmpegVersion and CPU are recorded with each result, and
 	// so is EncoderVersions' entry for its encoder (see EncoderVersion).
 	Host            string
@@ -52,6 +60,8 @@ type sample struct {
 	path   string
 	id     string
 	vd     probe.VideoData
+	// srcVD is the source's, before any scaling.
+	srcVD probe.VideoData
 	// ref, if not nil, is what encodes of this sample are scored
 	// against (see Config.References); otherwise the sample itself.
 	ref *sample
@@ -87,8 +97,20 @@ type pending struct {
 	bytes   int64
 	metrics Metrics
 	err     error
-	// alone says the encode ran by itself, so m is its own.
-	alone bool
+	// alone says the encode ran by itself, so m is its own; batchSize
+	// is how many shared the ffmpeg run, and batchID names it when
+	// that's more than one.
+	alone     bool
+	batchSize int
+	batchID   string
+	// stage is where err came from: "encode" or "score".
+	stage string
+	// scoreTime is how long scoring took, and output the encode's
+	// stream details.
+	scoreTime time.Duration
+	output    OutputInfo
+	// sha256 is the encoded file's, in hex.
+	sha256 string
 	// retime is the logged row of an answer encoded with others, which
 	// this encode repeats alone for its time; it isn't scored.
 	retime *Row
@@ -104,7 +126,19 @@ func (b *Bench) keepDir() string     { return filepath.Join(b.Cfg.Workdir, "keep
 //
 // Encodes run one at a time so their timings are comparable; scoring
 // runs in parallel, but only while no encode is running.
+//
+// A failure that stops the run (rather than one encode, which only ends
+// its search) is logged to failures.csv as well as returned.
 func (b *Bench) Run(ctx context.Context) error {
+	err := b.run(ctx)
+	if err != nil && ctx.Err() == nil && !b.DryRun {
+		sample, flagset := b.SampleFilter, b.FlagsetFilter
+		b.logFailure(sample, flagset, math.NaN(), "run", err)
+	}
+	return err
+}
+
+func (b *Bench) run(ctx context.Context) error {
 	for _, d := range []string{b.Cfg.Workdir, b.scratchDir(), b.keepDir()} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return err
@@ -177,6 +211,7 @@ func (b *Bench) loadSamples(ctx context.Context) ([]*sample, error) {
 		if s.vd, err = b.Prober.Probe(ctx, s.path); err != nil {
 			return nil, err
 		}
+		s.srcVD = s.vd
 		if s.vd.Tone() == probe.HDR {
 			s.prefilter = plan.ToneMapSDR
 		}
@@ -212,6 +247,7 @@ func (b *Bench) attachReferences(ctx context.Context, s *sample, scaled []*sampl
 	if ref.vd, err = b.Prober.Probe(ctx, ref.path); err != nil {
 		return fmt.Errorf("reference: %w", err)
 	}
+	ref.srcVD = ref.vd
 	if ref.vd.Width != s.vd.Width || ref.vd.Height != s.vd.Height {
 		return fmt.Errorf("reference %s is %dx%d, sample is %dx%d", refName, ref.vd.Width, ref.vd.Height, s.vd.Width, s.vd.Height)
 	}
@@ -296,6 +332,7 @@ func (b *Bench) scaledSamples(ctx context.Context, s *sample) ([]*sample, error)
 			source:    s.source,
 			id:        hashKey("scaled/v1", s.id, fmt.Sprint(h)),
 			prefilter: s.prefilter,
+			srcVD:     s.srcVD,
 		}
 		c.path = filepath.Join(b.Cfg.Workdir, "samples", c.name)
 		c.vd = s.vd
@@ -610,17 +647,26 @@ func (b *Bench) encodeAll(ctx context.Context, round int, batch []*pending) erro
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		batchID := ""
+		if len(group) > 1 {
+			batchID = newID()
+		}
 		for _, p := range group {
 			p.m, p.err, p.alone = m, err, len(group) == 1
+			p.batchSize, p.batchID = len(group), batchID
 			if p.err != nil {
+				p.stage = "encode"
 				continue
 			}
 			st, err := os.Stat(p.out)
 			if err != nil {
-				p.err = err
+				p.err, p.stage = err, "encode"
 				continue
 			}
 			p.bytes = st.Size()
+			if p.sha256, err = fileSHA256(p.out); err != nil {
+				p.err, p.stage = err, "encode"
+			}
 		}
 	}
 	return nil
@@ -648,7 +694,18 @@ func (b *Bench) scoreAll(ctx context.Context, batch []*pending, record func(*pen
 	for _, p := range toScore {
 		go func() {
 			sem <- struct{}{}
+			start := time.Now()
 			p.metrics, p.err = b.score(ctx, p)
+			p.scoreTime = time.Since(start)
+			if p.err != nil {
+				p.stage = "score"
+			} else if b.OutputProber != nil {
+				out, err := b.OutputProber.ProbeOutput(ctx, p.out)
+				if err != nil {
+					slog.Warn("Couldn't probe encode", "sample", p.t.sample.name, "flagset", p.t.name, "quality", p.quality, "err", err)
+				}
+				p.output = out
+			}
 			<-sem
 			done <- p
 		}()
@@ -680,6 +737,7 @@ func (b *Bench) record(results *Results, round int, p *pending) error {
 		// A failed encode (say, an unsupported option) would fail at
 		// every quality, so give up on this task rather than retrying.
 		slog.Error("Encode or scoring failed; skipping flagset for this sample", "sample", t.sample.name, "flagset", t.name, "err", p.err)
+		b.logFailure(t.sample.name, t.name, p.quality, p.stage, p.err)
 		os.Remove(p.out)
 		for _, f := range t.encoded {
 			os.Remove(f)
@@ -714,10 +772,16 @@ func (b *Bench) record(results *Results, round int, p *pending) error {
 		Time:           b.now(),
 		Timed:          p.alone,
 	}
+	margin := b.Cfg.margin(m, t.sample.scoring.Target)
+	pass := margin >= 0
+	b.describe(&row, t.sample)
+	row.Output, row.OutSHA256 = p.output, p.sha256
+	row.Pass = &pass
+	row.ScoreS = p.scoreTime.Seconds()
+	row.BatchSize, row.BatchID = int64(p.batchSize), p.batchID
 	if err := results.Append(row); err != nil {
 		return err
 	}
-	margin := b.Cfg.margin(m, t.sample.scoring.Target)
 	slog.Info("Scored", "sample", t.sample.name, "flagset", t.name, "quality", p.quality,
 		"kbps", int(row.Kbps), "vmaf", m.VMAF, "ciede2000", m.CIEDE2000, "color_shift", m.ColorShiftP99, "pass", margin >= 0)
 	t.search.Observe(p.i, margin >= 0, margin)
@@ -747,11 +811,65 @@ func (b *Bench) recordTiming(results *Results, p *pending) error {
 	row.EncoderVersion = b.EncoderVersions[t.fs.Encoder()]
 	row.Time = b.now()
 	row.Timed = true
+	// The scored row's sample, output and scores stand; the rest is
+	// this run's.
+	b.describe(&row, t.sample)
+	row.ScoreS, row.BatchSize, row.BatchID = 0, 1, ""
+	if p.sha256 != row.OutSHA256 && row.OutSHA256 != "" && p.bytes == row.Bytes {
+		slog.Warn("Timing re-run has the same size but different contents", "sample", t.sample.name, "flagset", t.name, "quality", p.quality)
+	}
+	row.OutSHA256 = p.sha256
 	if err := results.Append(row); err != nil {
 		return err
 	}
 	slog.Info("Timed", "sample", t.sample.name, "flagset", t.name, "quality", p.quality, "wall_s", row.WallS, "user_s", row.UserS)
 	return nil
+}
+
+// describe fills in the row's run and sample details: a fresh RowID,
+// this build and config, and s and how it's scored.
+func (b *Bench) describe(row *Row, s *sample) {
+	row.RowID = newID()
+	row.EncbenchVersion, row.Config, row.Job = BuildVersion(), b.Cfg.Path, b.Cfg.Job
+	row.Source, row.SampleID = s.source, s.id
+	row.Width, row.Height = int64(s.vd.Width), int64(s.vd.Height)
+	row.FPS, row.DurationS = s.vd.FPS, s.vd.Duration.Seconds()
+	row.SourceWidth, row.SourceHeight = int64(s.srcVD.Width), int64(s.srcVD.Height)
+	row.ColorTransfer, row.ColorPrimaries = s.vd.ColorTransfer, s.vd.ColorPrimaries
+	sc := s.scoring
+	row.VMAFModel, row.TargetVMAF = sc.Model.LogName(s.reference().vd.Height), sc.Target
+}
+
+// logFailure adds a failure to the workdir's failures.csv, logging
+// (not returning) any error doing so.
+func (b *Bench) logFailure(sampleName, flagset string, quality float64, stage string, err error) {
+	f := Failure{Time: b.now(), Host: b.Host, Job: b.Cfg.Job, Config: b.Cfg.Path, Sample: sampleName,
+		Flagset: flagset, Quality: quality, Stage: stage, Err: err.Error(),
+		FFmpegVersion: b.FFmpegVersion, EncbenchVersion: BuildVersion()}
+	if err := AppendFailure(b.Cfg.Workdir, f); err != nil {
+		slog.Warn("Couldn't log failure", "err", err)
+	}
+}
+
+// fileSHA256 returns the SHA-256 of the file at path, in hex.
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// newID returns a random 16-hex-digit ID.
+func newID() string {
+	var b [8]byte
+	rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 func (b *Bench) now() time.Time {

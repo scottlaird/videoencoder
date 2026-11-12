@@ -104,6 +104,7 @@ func loadWorkFile(path string) (*workFile, error) {
 	if wf.cfg, err = bench.LoadConfig(wf.configPath); err != nil {
 		return nil, err
 	}
+	wf.cfg.Job = wf.name
 	order, err := flagsetOrder(cfgData)
 	if err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", wf.configPath, err)
