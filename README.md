@@ -847,13 +847,33 @@ These are all in `workdir`:
   - the CPU model and thread count, and the encoder library's version
     and the SIMD it chose where it reports them (for example
     `x265 4.3+1-e9b8812 (NEON Neon_DotProd Neon_I8MM)`, or
-    `macOS 26.5.1` for VideoToolbox), so timings from different
-    machines and builds can be told apart
+    `macOS 26.5.1` for VideoToolbox, or the GPU and driver for NVENC,
+    Quick Sync and VA-API, such as
+    `NVIDIA GeForce RTX 4090, driver 615.71.09`), so timings from
+    different machines and builds can be told apart
   - `timed`: whether the times are the encode's own. They aren't for
     an encode made in a batch, whose times are the whole batch's;
     its answer is logged again, timed, after a re-run by itself.
+  - `batch_size` and `batch_id`: how many encodes shared the ffmpeg
+    run, and an ID shared by the rows of a batch of more than one
+  - the sample as encoded: `width`, `height`, `fps`, `duration_s`,
+    `color_transfer` and `color_primaries`; `source`, the file it came
+    from, at `source_width` by `source_height`; and `sample_id`, its
+    content identity
+  - the encode as ffprobe sees it: `out_codec`, `out_profile`,
+    `out_level` (as ffprobe reports it: H.264's level times 10, HEVC's
+    times 30, AV1's level index), `out_pix_fmt`, `keyframes`, and
+    `peak_kbps_1s`, the most bits in any one second
+  - `vmaf_model`, `target_vmaf`, `pass` (whether it met every
+    threshold) and `score_s`, how long scoring took
+  - `row_id`, unique to the row; `encbench_version`, the build; and
+    `config` and `job`, the config file and the queue's work file
 
-  Interrupting a run loses only the scorings in progress.
+  Rows logged before a column was added leave it empty. Interrupting a
+  run loses only the scorings in progress.
+- **`failures.csv`.** Encodes, scorings and runs that failed, with the
+  error, sample, flagset, setting, job and versions. Failures have no
+  row in `results.csv`.
 - **`best.csv`.** The answer for each pair, regenerated on every run.
   Changing `target_vmaf` re-ranks the results without re-encoding
   anything already measured.

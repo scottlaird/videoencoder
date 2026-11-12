@@ -48,6 +48,44 @@ type Row struct {
 	CPU            string
 	EncoderVersion string
 	Time           time.Time
+	// RowID is unique to this row, across machines: Key repeats for a
+	// timing re-run, and for the same encode on another machine. Older
+	// rows lack it, and the rest of the fields below.
+	RowID string
+	// Source is the file in the config's samples this sample is (a
+	// scaled copy of), and SampleID the sample's content identity (see
+	// fileid), which changes if the file does.
+	Source   string
+	SampleID string
+	// Width, Height, FPS and DurationS describe the sample as encoded;
+	// SourceWidth and SourceHeight the source before any scaling. Zero
+	// is unknown.
+	Width, Height                 int64
+	FPS, DurationS                float64
+	SourceWidth, SourceHeight     int64
+	ColorTransfer, ColorPrimaries string
+	// Output is what ffprobe says of the encode.
+	Output OutputInfo
+	// VMAFModel names the model that judged VMAF: a built-in model's
+	// name, or a model file's name and ID. TargetVMAF is the score a
+	// setting had to reach, and Pass whether it passed every threshold
+	// (nil if unknown).
+	VMAFModel  string
+	TargetVMAF float64
+	Pass       *bool
+	// ScoreS is how long scoring took, in wall-clock seconds: scorings
+	// run in parallel, so they overlap. Zero for timing re-runs, which
+	// aren't scored.
+	ScoreS float64
+	// BatchSize is how many encodes shared the ffmpeg run (see
+	// Flagset.Batch), and BatchID names the run when there were more
+	// than one.
+	BatchSize int64
+	BatchID   string
+	// EncbenchVersion is the build that ran it (see BuildVersion);
+	// Config is the bench config's path and Job the queue's work file,
+	// if it ran from a queue.
+	EncbenchVersion, Config, Job string
 	// Timed says WallS, UserS, SysS and MaxRSSKB are this encode's own.
 	// An encode made with others in one ffmpeg (Flagset.Batch) isn't:
 	// its times are the whole batch's. Such a search's answer is then
@@ -63,6 +101,11 @@ var resultColumns = []string{
 	"ffmpeg_version", "host", "time", "color_shift_p99", "color_shift_p999", "scorer",
 	"color_flicker_p99", "color_flicker_p999", "reference", "cpu", "encoder_version",
 	"cambi", "cambi_fr", "cambi_fr_max", "timed",
+	"row_id", "source", "sample_id", "width", "height", "fps", "duration_s",
+	"source_width", "source_height", "color_transfer", "color_primaries",
+	"out_codec", "out_profile", "out_level", "out_pix_fmt", "keyframes", "peak_kbps_1s",
+	"vmaf_model", "target_vmaf", "pass", "score_s", "batch_size", "batch_id",
+	"encbench_version", "config", "job",
 }
 
 // scorer is the current scoring method: v2 added CIEDE2000 on sampled
@@ -90,7 +133,22 @@ func (r *Row) record() []string {
 		ftoa(m.ColorShiftP99), ftoa(m.ColorShiftP999), r.Scorer,
 		ftoa(m.ColorFlickerP99), ftoa(m.ColorFlickerP999), r.Reference, r.CPU, r.EncoderVersion,
 		ftoa(m.CAMBI), ftoa(m.CAMBIFR), ftoa(m.CAMBIFRMax), strconv.FormatBool(r.Timed),
+		r.RowID, r.Source, r.SampleID, itoa(r.Width), itoa(r.Height), ftoa(r.FPS), ftoa(r.DurationS),
+		itoa(r.SourceWidth), itoa(r.SourceHeight), r.ColorTransfer, r.ColorPrimaries,
+		r.Output.Codec, r.Output.Profile, r.Output.Level, r.Output.PixFmt, itoa(r.Output.Keyframes), ftoa(r.Output.PeakKbps1s),
+		r.VMAFModel, ftoa(r.TargetVMAF), btoa(r.Pass), ftoa(r.ScoreS), itoa(r.BatchSize), r.BatchID,
+		r.EncbenchVersion, r.Config, r.Job,
 	}
+}
+
+func itoa(n int64) string { return strconv.FormatInt(n, 10) }
+
+// btoa writes a tri-state bool: "" for nil.
+func btoa(b *bool) string {
+	if b == nil {
+		return ""
+	}
+	return strconv.FormatBool(*b)
 }
 
 func parseRow(col map[string]int, rec []string) (Row, error) {
@@ -188,6 +246,56 @@ func parseRow(col map[string]int, rec []string) (Row, error) {
 		}
 		r.Timed = t
 	}
+	// Columns added with RowID: empty (and so zero, or nil for Pass) in
+	// older rows. A bad number is an error, as above.
+	opt := func(name string) string {
+		if i, ok := col[name]; ok && i < len(rec) {
+			return rec[i]
+		}
+		return ""
+	}
+	optFloat := func(name string) float64 {
+		v := opt(name)
+		if v == "" {
+			return 0
+		}
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", name, err))
+		}
+		return f
+	}
+	optInt := func(name string) int64 {
+		v := opt(name)
+		if v == "" {
+			return 0
+		}
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", name, err))
+		}
+		return n
+	}
+	r.RowID, r.Source, r.SampleID = opt("row_id"), opt("source"), opt("sample_id")
+	r.Width, r.Height = optInt("width"), optInt("height")
+	r.FPS, r.DurationS = optFloat("fps"), optFloat("duration_s")
+	r.SourceWidth, r.SourceHeight = optInt("source_width"), optInt("source_height")
+	r.ColorTransfer, r.ColorPrimaries = opt("color_transfer"), opt("color_primaries")
+	r.Output = OutputInfo{
+		Codec: opt("out_codec"), Profile: opt("out_profile"), Level: opt("out_level"), PixFmt: opt("out_pix_fmt"),
+		Keyframes: optInt("keyframes"), PeakKbps1s: optFloat("peak_kbps_1s"),
+	}
+	r.VMAFModel, r.TargetVMAF = opt("vmaf_model"), optFloat("target_vmaf")
+	if v := opt("pass"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("pass: %w", err))
+		}
+		r.Pass = &b
+	}
+	r.ScoreS = optFloat("score_s")
+	r.BatchSize, r.BatchID = optInt("batch_size"), opt("batch_id")
+	r.EncbenchVersion, r.Config, r.Job = opt("encbench_version"), opt("config"), opt("job")
 	return r, errors.Join(errs...)
 }
 

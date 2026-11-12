@@ -52,6 +52,7 @@ func (l *Local) bench(cfg *bench.Config) *bench.Bench {
 		Cfg:           cfg,
 		Exec:          bench.ExecExecutor{Stderr: l.Stderr},
 		Prober:        &l.prober,
+		OutputProber:  bench.FFProbeOutput{},
 		Host:          l.Host,
 		FFmpegVersion: l.FFmpegVersion,
 		CPU:           l.CPU,

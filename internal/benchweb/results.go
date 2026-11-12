@@ -25,7 +25,9 @@ type Results struct {
 
 // ResultRow is one encode and its scores: a line of results.csv, with
 // the same names. Metrics a row lacks (columns added after it was
-// logged, or VMAFNeg for models without it) are null.
+// logged, or VMAFNeg for models without it) are null, and so are the
+// numbers added with row_id in rows logged before them (and score_s
+// for a timing re-run, which isn't scored).
 type ResultRow struct {
 	Log              int       `json:"log"` // index into Results.Logs
 	Sample           string    `json:"sample"`
@@ -59,12 +61,47 @@ type ResultRow struct {
 	CAMBI            *float64  `json:"cambi"`
 	CAMBIFR          *float64  `json:"cambi_fr"`
 	CAMBIFRMax       *float64  `json:"cambi_fr_max"`
+	RowID            string    `json:"row_id"`
+	Source           string    `json:"source"`
+	SampleID         string    `json:"sample_id"`
+	Width            *int64    `json:"width"`
+	Height           *int64    `json:"height"`
+	FPS              *float64  `json:"fps"`
+	DurationS        *float64  `json:"duration_s"`
+	SourceWidth      *int64    `json:"source_width"`
+	SourceHeight     *int64    `json:"source_height"`
+	ColorTransfer    string    `json:"color_transfer"`
+	ColorPrimaries   string    `json:"color_primaries"`
+	OutCodec         string    `json:"out_codec"`
+	OutProfile       string    `json:"out_profile"`
+	OutLevel         string    `json:"out_level"`
+	OutPixFmt        string    `json:"out_pix_fmt"`
+	Keyframes        *int64    `json:"keyframes"`
+	PeakKbps1s       *float64  `json:"peak_kbps_1s"`
+	VMAFModel        string    `json:"vmaf_model"`
+	TargetVMAF       *float64  `json:"target_vmaf"`
+	Pass             *bool     `json:"pass"`
+	ScoreS           *float64  `json:"score_s"`
+	BatchSize        *int64    `json:"batch_size"`
+	BatchID          string    `json:"batch_id"`
+	EncbenchVer      string    `json:"encbench_version"`
+	Config           string    `json:"config"`
+	Job              string    `json:"job"`
 	Scorer           string    `json:"scorer"`
 	FFmpegVersion    string    `json:"ffmpeg_version"`
 	EncoderVersion   string    `json:"encoder_version"`
 	Host             string    `json:"host"`
 	CPU              string    `json:"cpu"`
 	Time             time.Time `json:"time"`
+}
+
+// known is n, or nil (JSON null) if it's zero: unknown, in rows logged
+// before the field was.
+func known[T int64 | float64](n T) *T {
+	if n == 0 {
+		return nil
+	}
+	return &n
 }
 
 // metric is f, or nil (JSON null) if it's NaN or infinite, which JSON
@@ -91,6 +128,15 @@ func resultRow(log int, r *bench.Row) ResultRow {
 		CAMBI: metric(m.CAMBI), CAMBIFR: metric(m.CAMBIFR), CAMBIFRMax: metric(m.CAMBIFRMax),
 		Scorer: r.Scorer, FFmpegVersion: r.FFmpegVersion, EncoderVersion: r.EncoderVersion,
 		Host: r.Host, CPU: r.CPU, Time: r.Time,
+		RowID: r.RowID, Source: r.Source, SampleID: r.SampleID,
+		Width: known(r.Width), Height: known(r.Height), FPS: known(r.FPS), DurationS: known(r.DurationS),
+		SourceWidth: known(r.SourceWidth), SourceHeight: known(r.SourceHeight),
+		ColorTransfer: r.ColorTransfer, ColorPrimaries: r.ColorPrimaries,
+		OutCodec: r.Output.Codec, OutProfile: r.Output.Profile, OutLevel: r.Output.Level, OutPixFmt: r.Output.PixFmt,
+		Keyframes: known(r.Output.Keyframes), PeakKbps1s: known(r.Output.PeakKbps1s),
+		VMAFModel: r.VMAFModel, TargetVMAF: known(r.TargetVMAF), Pass: r.Pass, ScoreS: known(r.ScoreS),
+		BatchSize: known(r.BatchSize), BatchID: r.BatchID,
+		EncbenchVer: r.EncbenchVersion, Config: r.Config, Job: r.Job,
 	}
 }
 

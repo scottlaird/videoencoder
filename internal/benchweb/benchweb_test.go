@@ -335,7 +335,8 @@ func TestResults(t *testing.T) {
 			ColorFlickerP99: math.NaN(), ColorFlickerP999: math.NaN(), CAMBI: 1.5, CAMBIFR: math.NaN(), CAMBIFRMax: math.NaN()}
 		if err := log.Append(bench.Row{Sample: "a.mov", Reference: "a.mov", Encoder: "libx265", Flagset: "x",
 			Args: "-c:v libx265 -preset fast", QualityFlag: "-crf", Quality: q, Key: fmt.Sprint("k", q),
-			Bytes: 1000, Kbps: 800, WallS: 2.5, Metrics: m, Scorer: "v6", Host: "h", Time: when, Timed: true}); err != nil {
+			Bytes: 1000, Kbps: 800, WallS: 2.5, Metrics: m, Scorer: "v6", Host: "h", Time: when, Timed: true,
+			Width: int64(q * 80), Job: "10-test.yaml"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -358,6 +359,9 @@ func TestResults(t *testing.T) {
 	}
 	if r.VMAF == nil || *r.VMAF != 95.5 || r.CAMBI == nil || *r.CAMBI != 1.5 {
 		t.Errorf("vmaf %v, cambi %v; want 95.5 and 1.5", r.VMAF, r.CAMBI)
+	}
+	if r.Width == nil || *r.Width != 2120 || r.Height != nil || r.Pass != nil || r.Job != "10-test.yaml" {
+		t.Errorf("width %v height %v pass %v job %q; want 2120, null, null, 10-test.yaml", r.Width, r.Height, r.Pass, r.Job)
 	}
 	if r.VMAFNeg != nil || r.CAMBIFR != nil {
 		t.Errorf("vmaf_neg %v, cambi_fr %v; want null for NaN", r.VMAFNeg, r.CAMBIFR)

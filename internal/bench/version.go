@@ -73,6 +73,20 @@ func EncoderVersion(ctx context.Context, codec string) string {
 		}
 		return "macOS " + strings.TrimSpace(string(out))
 	}
+	// Hardware encoders: the GPU and its driver, which is what changes
+	// their output.
+	if strings.HasSuffix(codec, "_nvenc") {
+		out, err := exec.CommandContext(ctx, "nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader").Output()
+		if err != nil {
+			return ""
+		}
+		return nvidiaVersion(string(out))
+	}
+	if strings.HasSuffix(codec, "_qsv") || strings.HasSuffix(codec, "_vaapi") {
+		// vainfo writes its driver line to stdout or stderr, by version.
+		out, _ := exec.CommandContext(ctx, "vainfo").CombinedOutput()
+		return vaDriverVersion(string(out))
+	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "ffmpeg", "-hide_banner", "-nostdin", "-v", "info",
@@ -125,4 +139,28 @@ func parseEncoderVersion(codec, stdout, stderr string) string {
 		s += " (" + strings.TrimSpace(c[1]) + ")"
 	}
 	return s
+}
+
+// nvidiaVersion reads nvidia-smi's "name, driver_version" lines (one
+// per GPU) as "NVIDIA GeForce RTX 4090, driver 615.71.09", the first
+// GPU's.
+func nvidiaVersion(out string) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(out), "\n")
+	name, driver, ok := strings.Cut(line, ",")
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(name) + ", driver " + strings.TrimSpace(driver)
+}
+
+var vaDriver = regexp.MustCompile(`(?m)Driver version:\s*(.+?)\s*$`)
+
+// vaDriverVersion reads vainfo's driver line, such as "Intel iHD
+// driver for Intel(R) Gen Graphics - 26.1.2 ()".
+func vaDriverVersion(out string) string {
+	m := vaDriver.FindStringSubmatch(out)
+	if m == nil {
+		return ""
+	}
+	return strings.TrimSuffix(strings.TrimSpace(m[1]), " ()")
 }

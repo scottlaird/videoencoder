@@ -777,7 +777,7 @@ func TestBenchColorShiftLimit(t *testing.T) {
 
 func TestResultsUpgrade(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "results.csv")
-	oldCols := resultColumns[:len(resultColumns)-5]
+	oldCols := preRowID[:len(preRowID)-5]
 	oldRow := "a.mov,libx265,x,-c:v libx265,-crf,20,k1,f1,100,26.6,1,1,0,0,96,96,95,95,45,48,48,50,8.1,h,2026-10-24T00:00:00Z"
 	// An old header, an old row, then a row appended by the new code.
 	newRow := oldRow[:strings.Index(oldRow, ",k1,")] + ",k2," + oldRow[strings.Index(oldRow, ",k1,")+4:] + ",1.5,3.2,v3"
@@ -815,7 +815,7 @@ func TestReadResults(t *testing.T) {
 	}
 	// An old header (which LoadResults would rewrite), a row, and a row
 	// partway through being appended.
-	oldCols := resultColumns[:len(resultColumns)-5]
+	oldCols := preRowID[:len(preRowID)-5]
 	row := "a.mov,libx265,x,-c:v libx265,-crf,20,k1,f1,100,26.6,1,1,0,0,96,96,95,95,45,48,48,50,8.1,h,2026-10-24T00:00:00Z"
 	content := strings.Join(oldCols, ",") + "\n" + row + "\n" + "b.mov,libx265,x,-c:v"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -867,7 +867,7 @@ func TestOldSpellings(t *testing.T) {
 func TestOldScorerRowsIgnored(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "results.csv")
 	// A row as written before color_shift_p99 and scorer existed.
-	old := strings.Join(resultColumns[:len(resultColumns)-5], ",") + "\n" +
+	old := strings.Join(preRowID[:len(preRowID)-5], ",") + "\n" +
 		"a.mov,libx265,x,-c:v libx265,-crf,20,k1,f1,100,26.6,1,1,0,0,96,96,95,95,45,48,48,50,8.1,h,2026-10-24T00:00:00Z\n"
 	if err := os.WriteFile(path, []byte(old), 0o644); err != nil {
 		t.Fatal(err)
@@ -1195,11 +1195,15 @@ func countKeys(results *Results, b Best) int {
 	return len(keys)
 }
 
+// preRowID is the log's columns before row_id and the columns after it
+// were added, for tests of older logs.
+var preRowID = resultColumns[:slices.Index(resultColumns, "row_id")]
+
 func TestTimedColumn(t *testing.T) {
 	// Rows from before the column are timed; rows with it say.
-	col := columnIndex(resultColumns[:len(resultColumns)-1])
+	col := columnIndex(preRowID[:len(preRowID)-1])
 	rec := (&Row{Time: time.Unix(0, 0)}).record()
-	r, err := parseRow(col, rec[:len(rec)-1])
+	r, err := parseRow(col, rec[:len(preRowID)-1])
 	if err != nil || !r.Timed {
 		t.Errorf("old row: timed %v, %v; want true", r.Timed, err)
 	}
