@@ -87,6 +87,26 @@ func blockSize(width, height uint64) (uint64, uint64) {
 	return max(1, width/colorBlock), max(1, height/colorBlock)
 }
 
+// cambiMaxWidth and cambiMaxHeight are the largest size libvmaf's
+// CAMBI scores at. Its windows grow with the frame, and past 4K they
+// outgrow a lookup table: at 8K it logs "window_size … too large for
+// reciprocal LUT" and ffmpeg can segfault.
+const cambiMaxWidth, cambiMaxHeight = 3840, 2160
+
+// cambiSize is the size CAMBI scores a width x height frame at: the
+// frame's own size, or for a larger frame, that size shrunk to fit
+// 3840x2160 with its shape kept and both sides even. CAMBI was built
+// for at most 4K, and it scales the frame down itself.
+func cambiSize(width, height uint64) (uint64, uint64) {
+	if width <= cambiMaxWidth && height <= cambiMaxHeight {
+		return width, height
+	}
+	if width*cambiMaxHeight > height*cambiMaxWidth {
+		return cambiMaxWidth, max(2, (height*cambiMaxWidth/width)&^1)
+	}
+	return max(2, (width*cambiMaxHeight/height)&^1), cambiMaxHeight
+}
+
 // scoreArgv returns the ffmpeg command that scores distorted against
 // reference. It writes two libvmaf JSON logs: logPath with VMAF and
 // PSNR on every frame, and colorLogPath with CIEDE2000 on sampled
@@ -134,6 +154,9 @@ func scoreArgv(distorted, reference string, width, height uint64, threads int, l
 	cambi := "name=cambi\\:full_ref=true"
 	if model.HDR {
 		cambi += "\\:eotf=pq"
+	}
+	if w, h := cambiSize(width, height); w != width || h != height {
+		cambi += fmt.Sprintf("\\:enc_width=%d\\:enc_height=%d\\:src_width=%d\\:src_height=%d", w, h, w, h)
 	}
 	// The VMAF and CIEDE2000 inputs are prepared exactly as scorer v3
 	// did: prefilter on the decoded frames, then scale and convert. A
@@ -273,8 +296,12 @@ func parseVMAFLog(data []byte) (Metrics, error) {
 	m.VMAFHMean = orInf(l.Pooled["vmaf"].HarmonicMean)
 	// Logs from before scoring asked for CAMBI lack it.
 	m.CAMBI, m.CAMBIFR, m.CAMBIFRMax = math.NaN(), math.NaN(), math.NaN()
-	if p := l.Pooled["cambi"]; p.Mean != nil {
-		m.CAMBI = *p.Mean
+	for name, p := range l.Pooled {
+		// Scored below its input size (see cambiSize), libvmaf names the
+		// no-reference score for the size: cambi_ench_2160_encw_3840_….
+		if (name == "cambi" || strings.HasPrefix(name, "cambi_ench_")) && p.Mean != nil {
+			m.CAMBI = *p.Mean
+		}
 	}
 	if p := l.Pooled["cambi_full_reference"]; p.Mean != nil && p.Max != nil {
 		m.CAMBIFR, m.CAMBIFRMax = *p.Mean, *p.Max

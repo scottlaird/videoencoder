@@ -1305,3 +1305,47 @@ func TestEncodeArgvBatch(t *testing.T) {
 		t.Errorf("encodeArgv =\n  %s\nwant\n  %s", got, want)
 	}
 }
+
+func TestCAMBISize(t *testing.T) {
+	for _, tt := range []struct{ w, h, wantW, wantH uint64 }{
+		{1920, 1080, 1920, 1080},
+		{3840, 2160, 3840, 2160},
+		{7680, 4320, 3840, 2160},
+		{8192, 4608, 3840, 2160},
+		{8192, 4320, 3840, 2024}, // wider than 16:9: width-bound
+		{4096, 4096, 2160, 2160}, // taller: height-bound
+	} {
+		if w, h := cambiSize(tt.w, tt.h); w != tt.wantW || h != tt.wantH {
+			t.Errorf("cambiSize(%d, %d) = %d, %d; want %d, %d", tt.w, tt.h, w, h, tt.wantW, tt.wantH)
+		}
+	}
+}
+
+func TestScoreArgv8KCAMBI(t *testing.T) {
+	argv := scoreArgv("d.mp4", "r.mov", 7680, 4320, 8, "/l.json", "/c.json", "/d.blocks", "/r.blocks", "", "", VMAFModel{}, "")
+	graph := argv[slices.Index(argv, "-filter_complex")+1]
+	want := "name=cambi\\:full_ref=true\\:enc_width=3840\\:enc_height=2160\\:src_width=3840\\:src_height=2160'[quality]"
+	if !strings.Contains(graph, want) {
+		t.Errorf("filtergraph %q lacks %q", graph, want)
+	}
+}
+
+func TestParseVMAFLogScaledCAMBI(t *testing.T) {
+	log := `{
+	  "frames": [{"frameNum": 0, "metrics": {"vmaf": 95.0}}],
+	  "pooled_metrics": {
+	    "vmaf": {"mean": 95.0, "harmonic_mean": 95.0},
+	    "psnr_y": {"mean": 44.5}, "psnr_cb": {"mean": 47.25}, "psnr_cr": {"mean": 46.5},
+	    "cambi_ench_2160_encw_3840_srch_2160_srcw_3840": {"mean": 0.007},
+	    "cambi_source": {"mean": 0.0},
+	    "cambi_full_reference": {"max": 0.01, "mean": 0.006}
+	  }
+	}`
+	got, err := parseVMAFLog([]byte(log))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CAMBI != 0.007 || got.CAMBIFR != 0.006 || got.CAMBIFRMax != 0.01 {
+		t.Errorf("CAMBI %v, CAMBIFR %v, CAMBIFRMax %v; want 0.007, 0.006, 0.01", got.CAMBI, got.CAMBIFR, got.CAMBIFRMax)
+	}
+}
