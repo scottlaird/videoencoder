@@ -863,7 +863,9 @@ These are all in `workdir`:
   - the encode as ffprobe sees it: `out_codec`, `out_profile`,
     `out_level` (as ffprobe reports it: H.264's level times 10, HEVC's
     times 30, AV1's level index), `out_pix_fmt`, `keyframes`, and
-    `peak_kbps_1s`, the most bits in any one second
+    `peak_kbps_1s`, the most bits in any one second; and `out_sha256`,
+    the file's SHA-256, which shows whether two encodes really are the
+    same
   - `vmaf_model`, `target_vmaf`, `pass` (whether it met every
     threshold) and `score_s`, how long scoring took
   - `row_id`, unique to the row; `encbench_version`, the build; and

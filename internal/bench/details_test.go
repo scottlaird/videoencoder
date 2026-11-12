@@ -36,6 +36,7 @@ func TestRowDetails(t *testing.T) {
 	ids := map[string]bool{}
 	batches := map[string]int{}
 	timing := 0
+	hashes := map[float64][]string{}
 	for _, r := range results.Rows {
 		if r.RowID == "" || ids[r.RowID] {
 			t.Errorf("row %v: RowID %q, want a new one", r.Quality, r.RowID)
@@ -54,6 +55,12 @@ func TestRowDetails(t *testing.T) {
 		if r.Output != out {
 			t.Errorf("row %v: output %+v, want %+v", r.Quality, r.Output, out)
 		}
+		// The fake writes q-dependent sizes, so each setting's file (and
+		// hash) differs; a timing re-run repeats its answer's.
+		if len(r.OutSHA256) != 64 {
+			t.Errorf("row %v: out_sha256 %q, want a SHA-256", r.Quality, r.OutSHA256)
+		}
+		hashes[r.Quality] = append(hashes[r.Quality], r.OutSHA256)
 		if r.Config != cfg.Path || r.Job != "10-test.yaml" {
 			t.Errorf("row %v: config %q job %q", r.Quality, r.Config, r.Job)
 		}
@@ -79,6 +86,13 @@ func TestRowDetails(t *testing.T) {
 	}
 	if timing != 1 {
 		t.Errorf("%d timing rows, want 1 (the answer, re-timed)", timing)
+	}
+	for q, hs := range hashes {
+		for _, h := range hs[1:] {
+			if h != hs[0] {
+				t.Errorf("quality %v: hashes %q; the fake's encodes of a setting are identical", q, hs)
+			}
+		}
 	}
 
 	// The broken flagset's encode failed: in failures.csv, not results.
@@ -139,7 +153,7 @@ func TestDetailsRoundTrip(t *testing.T) {
 		SourceWidth: 7680, SourceHeight: 4320, ColorTransfer: "bt709", ColorPrimaries: "bt709",
 		Output:    OutputInfo{Codec: "av1", Profile: "Main", Level: "13", PixFmt: "yuv420p10le", Keyframes: 4, PeakKbps1s: 40123.5},
 		VMAFModel: "vmaf_4k_v0.6.1", TargetVMAF: 95, Pass: &pass, ScoreS: 12.5, BatchSize: 2, BatchID: "b1",
-		EncbenchVersion: "v0.0.0-x", Config: "bench.yaml", Job: "30-x.yaml"}
+		EncbenchVersion: "v0.0.0-x", Config: "bench.yaml", Job: "30-x.yaml", OutSHA256: "abc123"}
 	for _, p := range []*float64{&in.Metrics.VMAFNeg, &in.Metrics.ColorShiftP99, &in.Metrics.ColorShiftP999,
 		&in.Metrics.ColorFlickerP99, &in.Metrics.ColorFlickerP999, &in.Metrics.CAMBI, &in.Metrics.CAMBIFR, &in.Metrics.CAMBIFRMax} {
 		*p = 1 // not NaN, which never compares equal

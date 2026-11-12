@@ -64,8 +64,12 @@ type Row struct {
 	FPS, DurationS                float64
 	SourceWidth, SourceHeight     int64
 	ColorTransfer, ColorPrimaries string
-	// Output is what ffprobe says of the encode.
-	Output OutputInfo
+	// Output is what ffprobe says of the encode, and OutSHA256 the
+	// encoded file's SHA-256, in hex. For a timing re-run, OutSHA256 is
+	// the re-run's own file, while Bytes and Output stand for the scored
+	// encode: they differ only if the encoder isn't deterministic.
+	Output    OutputInfo
+	OutSHA256 string
 	// VMAFModel names the model that judged VMAF: a built-in model's
 	// name, or a model file's name and ID. TargetVMAF is the score a
 	// setting had to reach, and Pass whether it passed every threshold
@@ -105,7 +109,7 @@ var resultColumns = []string{
 	"source_width", "source_height", "color_transfer", "color_primaries",
 	"out_codec", "out_profile", "out_level", "out_pix_fmt", "keyframes", "peak_kbps_1s",
 	"vmaf_model", "target_vmaf", "pass", "score_s", "batch_size", "batch_id",
-	"encbench_version", "config", "job",
+	"encbench_version", "config", "job", "out_sha256",
 }
 
 // scorer is the current scoring method: v2 added CIEDE2000 on sampled
@@ -137,7 +141,7 @@ func (r *Row) record() []string {
 		itoa(r.SourceWidth), itoa(r.SourceHeight), r.ColorTransfer, r.ColorPrimaries,
 		r.Output.Codec, r.Output.Profile, r.Output.Level, r.Output.PixFmt, itoa(r.Output.Keyframes), ftoa(r.Output.PeakKbps1s),
 		r.VMAFModel, ftoa(r.TargetVMAF), btoa(r.Pass), ftoa(r.ScoreS), itoa(r.BatchSize), r.BatchID,
-		r.EncbenchVersion, r.Config, r.Job,
+		r.EncbenchVersion, r.Config, r.Job, r.OutSHA256,
 	}
 }
 
@@ -296,6 +300,7 @@ func parseRow(col map[string]int, rec []string) (Row, error) {
 	r.ScoreS = optFloat("score_s")
 	r.BatchSize, r.BatchID = optInt("batch_size"), opt("batch_id")
 	r.EncbenchVersion, r.Config, r.Job = opt("encbench_version"), opt("config"), opt("job")
+	r.OutSHA256 = opt("out_sha256")
 	return r, errors.Join(errs...)
 }
 

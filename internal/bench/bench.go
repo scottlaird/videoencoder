@@ -3,9 +3,11 @@ package bench
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"os"
@@ -107,6 +109,8 @@ type pending struct {
 	// stream details.
 	scoreTime time.Duration
 	output    OutputInfo
+	// sha256 is the encoded file's, in hex.
+	sha256 string
 	// retime is the logged row of an answer encoded with others, which
 	// this encode repeats alone for its time; it isn't scored.
 	retime *Row
@@ -660,6 +664,9 @@ func (b *Bench) encodeAll(ctx context.Context, round int, batch []*pending) erro
 				continue
 			}
 			p.bytes = st.Size()
+			if p.sha256, err = fileSHA256(p.out); err != nil {
+				p.err, p.stage = err, "encode"
+			}
 		}
 	}
 	return nil
@@ -768,7 +775,7 @@ func (b *Bench) record(results *Results, round int, p *pending) error {
 	margin := b.Cfg.margin(m, t.sample.scoring.Target)
 	pass := margin >= 0
 	b.describe(&row, t.sample)
-	row.Output = p.output
+	row.Output, row.OutSHA256 = p.output, p.sha256
 	row.Pass = &pass
 	row.ScoreS = p.scoreTime.Seconds()
 	row.BatchSize, row.BatchID = int64(p.batchSize), p.batchID
@@ -808,6 +815,10 @@ func (b *Bench) recordTiming(results *Results, p *pending) error {
 	// this run's.
 	b.describe(&row, t.sample)
 	row.ScoreS, row.BatchSize, row.BatchID = 0, 1, ""
+	if p.sha256 != row.OutSHA256 && row.OutSHA256 != "" && p.bytes == row.Bytes {
+		slog.Warn("Timing re-run has the same size but different contents", "sample", t.sample.name, "flagset", t.name, "quality", p.quality)
+	}
+	row.OutSHA256 = p.sha256
 	if err := results.Append(row); err != nil {
 		return err
 	}
@@ -838,6 +849,20 @@ func (b *Bench) logFailure(sampleName, flagset string, quality float64, stage st
 	if err := AppendFailure(b.Cfg.Workdir, f); err != nil {
 		slog.Warn("Couldn't log failure", "err", err)
 	}
+}
+
+// fileSHA256 returns the SHA-256 of the file at path, in hex.
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // newID returns a random 16-hex-digit ID.

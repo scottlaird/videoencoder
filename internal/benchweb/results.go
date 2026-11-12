@@ -87,6 +87,7 @@ type ResultRow struct {
 	EncbenchVer      string    `json:"encbench_version"`
 	Config           string    `json:"config"`
 	Job              string    `json:"job"`
+	OutSHA256        string    `json:"out_sha256"`
 	Scorer           string    `json:"scorer"`
 	FFmpegVersion    string    `json:"ffmpeg_version"`
 	EncoderVersion   string    `json:"encoder_version"`
@@ -136,7 +137,7 @@ func resultRow(log int, r *bench.Row) ResultRow {
 		Keyframes: known(r.Output.Keyframes), PeakKbps1s: known(r.Output.PeakKbps1s),
 		VMAFModel: r.VMAFModel, TargetVMAF: known(r.TargetVMAF), Pass: r.Pass, ScoreS: known(r.ScoreS),
 		BatchSize: known(r.BatchSize), BatchID: r.BatchID,
-		EncbenchVer: r.EncbenchVersion, Config: r.Config, Job: r.Job,
+		EncbenchVer: r.EncbenchVersion, Config: r.Config, Job: r.Job, OutSHA256: r.OutSHA256,
 	}
 }
 
