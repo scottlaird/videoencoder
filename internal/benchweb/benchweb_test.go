@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -290,5 +292,74 @@ func TestPageAndMethods(t *testing.T) {
 	}
 	if resp, _ := http.Get(hs.URL + "/nope"); resp.StatusCode != http.StatusNotFound {
 		t.Errorf("GET /nope: %s, want 404", resp.Status)
+	}
+}
+
+func getResults(t *testing.T, url string) Results {
+	t.Helper()
+	resp, err := http.Get(url + "/api/results")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/results: %s", resp.Status)
+	}
+	var res Results
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
+
+func TestResults(t *testing.T) {
+	srv, hs, _, _ := start(t)
+	logPath := filepath.Join(filepath.Dir(srv.Runner.Dir), "bench", "results.csv")
+
+	got := getResults(t, hs.URL)
+	if got.Format != ResultsFormat || len(got.Rows) != 0 || !slices.Equal(got.Logs, []string{logPath}) {
+		t.Errorf("before any encode: format %d, %d rows, logs %q; want format %d, no rows, logs [%q]",
+			got.Format, len(got.Rows), got.Logs, ResultsFormat, logPath)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	log, err := bench.LoadResults(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	when := time.Date(2026, 11, 12, 1, 2, 3, 0, time.UTC)
+	for _, q := range []float64{24, 26.5} {
+		m := bench.Metrics{VMAF: 95.5, VMAFNeg: math.NaN(), ColorShiftP99: math.NaN(), ColorShiftP999: math.NaN(),
+			ColorFlickerP99: math.NaN(), ColorFlickerP999: math.NaN(), CAMBI: 1.5, CAMBIFR: math.NaN(), CAMBIFRMax: math.NaN()}
+		if err := log.Append(bench.Row{Sample: "a.mov", Reference: "a.mov", Encoder: "libx265", Flagset: "x",
+			Args: "-c:v libx265 -preset fast", QualityFlag: "-crf", Quality: q, Key: fmt.Sprint("k", q),
+			Bytes: 1000, Kbps: 800, WallS: 2.5, Metrics: m, Scorer: "v6", Host: "h", Time: when, Timed: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A row partway through being appended.
+	f, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString("b.mov,libx265,y,")
+	f.Close()
+
+	got = getResults(t, hs.URL)
+	if len(got.Rows) != 2 {
+		t.Fatalf("got %d rows, want 2 (the partial row left out)", len(got.Rows))
+	}
+	r := got.Rows[1]
+	if r.Log != 0 || r.Sample != "a.mov" || r.Flagset != "x" || r.Quality != 26.5 || r.Bytes != 1000 ||
+		r.WallS != 2.5 || !r.Timed || !r.Time.Equal(when) {
+		t.Errorf("row = %+v, want a.mov/x at 26.5 as appended", r)
+	}
+	if r.VMAF == nil || *r.VMAF != 95.5 || r.CAMBI == nil || *r.CAMBI != 1.5 {
+		t.Errorf("vmaf %v, cambi %v; want 95.5 and 1.5", r.VMAF, r.CAMBI)
+	}
+	if r.VMAFNeg != nil || r.CAMBIFR != nil {
+		t.Errorf("vmaf_neg %v, cambi_fr %v; want null for NaN", r.VMAFNeg, r.CAMBIFR)
 	}
 }

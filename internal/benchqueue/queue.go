@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -201,6 +202,23 @@ func (r *Runner) Snapshot() State {
 	s.Files = append([]FileState(nil), s.Files...)
 	s.Recent = append([]Result(nil), s.Recent...)
 	return s
+}
+
+// ResultsLogs returns the results logs (each config's
+// workdir/results.csv) that the work files loaded so far write to,
+// sorted and without repeats. Files that failed to parse don't count.
+func (r *Runner) ResultsLogs() []string {
+	r.init()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var logs []string
+	for _, e := range r.files {
+		if e.wf != nil && e.parseErr == nil {
+			logs = append(logs, filepath.Join(e.wf.cfg.Workdir, "results.csv"))
+		}
+	}
+	slices.Sort(logs)
+	return slices.Compact(logs)
 }
 
 // SetPaused pauses the runner once the current unit ends, or resumes

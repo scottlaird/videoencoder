@@ -808,6 +808,31 @@ func TestResultsUpgrade(t *testing.T) {
 	}
 }
 
+func TestReadResults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "results.csv")
+	if r, err := ReadResults(path); err != nil || len(r.Rows) != 0 {
+		t.Fatalf("missing log: %v, %v; want an empty log", r, err)
+	}
+	// An old header (which LoadResults would rewrite), a row, and a row
+	// partway through being appended.
+	oldCols := resultColumns[:len(resultColumns)-5]
+	row := "a.mov,libx265,x,-c:v libx265,-crf,20,k1,f1,100,26.6,1,1,0,0,96,96,95,95,45,48,48,50,8.1,h,2026-10-24T00:00:00Z"
+	content := strings.Join(oldCols, ",") + "\n" + row + "\n" + "b.mov,libx265,x,-c:v"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := ReadResults(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Rows) != 1 || r.Rows[0].Key != "k1" {
+		t.Errorf("rows = %+v, want just k1 (the partial row left out)", r.Rows)
+	}
+	if data, _ := os.ReadFile(path); string(data) != content {
+		t.Errorf("log rewritten to:\n%s", data)
+	}
+}
+
 func TestOldSpellings(t *testing.T) {
 	dir := t.TempDir()
 	// A log whose header has the first spelling of the color columns.

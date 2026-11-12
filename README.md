@@ -818,11 +818,18 @@ works like `p`. The same is available as JSON:
 
 - `GET /api/state` is the queue's state.
 - `GET /api/events` streams it as server-sent events, on every change.
+- `GET /api/results` is every row of the results logs the queue's work
+  files write to (usually one, `workdir/results.csv`), so another
+  machine can collect them without ssh. Fields have the CSV's column
+  names, metrics a row lacks are `null`, and a row still being appended
+  is left out. `format` changes only if a field is renamed, removed or
+  changes meaning; new fields may appear without a change. Each row's
+  `log` indexes `logs`, the logs' paths.
 - `POST /api/pause` and `POST /api/resume` pause after the current unit,
   and resume.
 
 The web view has no login. Anyone who can reach the address can watch
-the queue and pause it, so `-http localhost:8090` keeps it to this
+the queue, read its results and pause it, so `-http localhost:8090` keeps it to this
 machine.
 
 ### encbench output

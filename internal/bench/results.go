@@ -1,6 +1,7 @@
 package bench
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/csv"
 	"encoding/hex"
@@ -216,18 +217,42 @@ func readResults(path string) (*Results, error) {
 	return loadResults(path, false)
 }
 
+// ReadResults reads the log at path like LoadResults, but never
+// rewrites it, and ignores a last line that's still being written: for
+// reading a log that a running queue may be appending to. A missing
+// file is an empty log.
+func ReadResults(path string) (*Results, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return &Results{path: path, byKey: map[string]int{}}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	// Append writes a row as one line ending in a newline, and no field
+	// holds a newline, so anything after the last one is a row partway
+	// through being appended.
+	data = data[:bytes.LastIndexByte(data, '\n')+1]
+	return decodeResults(path, bytes.NewReader(data), false)
+}
+
 func loadResults(path string, upgrade bool) (*Results, error) {
-	r := &Results{path: path, byKey: map[string]int{}}
 	f, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return r, nil
+		return &Results{path: path, byKey: map[string]int{}}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
+	return decodeResults(path, f, upgrade)
+}
 
-	cr := csv.NewReader(f)
+// decodeResults parses the log at path, read from rd, upgrading it on
+// disk (see LoadResults) if upgrade is set.
+func decodeResults(path string, rd io.Reader, upgrade bool) (*Results, error) {
+	r := &Results{path: path, byKey: map[string]int{}}
+	cr := csv.NewReader(rd)
 	cr.FieldsPerRecord = -1
 	header, err := cr.Read()
 	if err == io.EOF {
