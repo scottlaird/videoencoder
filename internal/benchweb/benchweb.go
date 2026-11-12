@@ -5,6 +5,8 @@
 //	GET  /             the page
 //	GET  /api/state    the queue's state, as JSON (see State)
 //	GET  /api/events   server-sent events: the state, on every change
+//	GET  /api/results  every row of the queue's results logs, as JSON
+//	                   (see Results)
 //	POST /api/pause    pause after the current unit
 //	POST /api/resume   resume
 //
@@ -96,6 +98,7 @@ func (s *Server) Handler() http.Handler {
 		json.NewEncoder(w).Encode(s.State())
 	})
 	mux.HandleFunc("GET /api/events", s.events)
+	mux.HandleFunc("GET /api/results", s.results)
 	mux.HandleFunc("POST /api/pause", func(w http.ResponseWriter, r *http.Request) { s.setPaused(w, true) })
 	mux.HandleFunc("POST /api/resume", func(w http.ResponseWriter, r *http.Request) { s.setPaused(w, false) })
 	return mux
