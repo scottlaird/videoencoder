@@ -68,6 +68,10 @@ func TestStatus(t *testing.T) {
 	if kinds[Encoding] == 0 || kinds[Scored] != kinds[Encoding] {
 		t.Errorf("%d Encoding and %d Scored events, want the same nonzero count", kinds[Encoding], kinds[Scored])
 	}
+	// One encode at a time here, so each is scored by itself.
+	if kinds[ScoringStarted] != kinds[Encoding] {
+		t.Errorf("%d ScoringStarted events for %d encodes, want one each", kinds[ScoringStarted], kinds[Encoding])
+	}
 	for _, s := range []string{"big@1080p.mov", "big@2160p.mov"} {
 		e, ok := finished[s]
 		if !ok {

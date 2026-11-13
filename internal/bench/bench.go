@@ -182,7 +182,7 @@ func (b *Bench) run(ctx context.Context) error {
 		if err := b.encodeAll(ctx, round, batch); err != nil {
 			return err
 		}
-		err := b.scoreAll(ctx, batch, func(p *pending) error { return b.record(results, round, p) })
+		err := b.scoreAll(ctx, round, batch, func(p *pending) error { return b.record(results, round, p) })
 		if err != nil {
 			return err
 		}
@@ -704,7 +704,7 @@ func (b *Bench) encode(ctx context.Context, ev Event, total time.Duration, argv 
 // encode as soon as its score (or failure) is known, so an interrupted
 // round loses only the scorings still in flight. record runs on the
 // calling goroutine.
-func (b *Bench) scoreAll(ctx context.Context, batch []*pending, record func(*pending) error) error {
+func (b *Bench) scoreAll(ctx context.Context, round int, batch []*pending, record func(*pending) error) error {
 	var toScore []*pending
 	for _, p := range batch {
 		// A timing re-run repeats an encode already scored.
@@ -715,6 +715,21 @@ func (b *Bench) scoreAll(ctx context.Context, batch []*pending, record func(*pen
 			continue
 		}
 		toScore = append(toScore, p)
+	}
+	// Say what's being scored, a task at a time, since scoring 4K can
+	// take longer than encoding it.
+	for i, p := range toScore {
+		if i > 0 && toScore[i-1].t == p.t {
+			continue
+		}
+		var qs []float64
+		for _, q := range toScore[i:] {
+			if q.t == p.t {
+				qs = append(qs, q.quality)
+			}
+		}
+		b.observe(Event{Kind: ScoringStarted, Round: round, Source: p.t.sample.source, Sample: p.t.sample.name, Flagset: p.t.name,
+			QualityFlag: p.t.fs.Quality.Flag, Quality: p.quality, Qualities: qs})
 	}
 
 	sem := make(chan struct{}, b.Cfg.VMAFJobs)

@@ -18,10 +18,11 @@ func TestReadFFmpegProgress(t *testing.T) {
 		"frame=60", "out_time_us=2500000", "progress=end",
 	}, "\n")
 	var got []time.Duration
-	readFFmpegProgress(strings.NewReader(in), func(d time.Duration) { got = append(got, d) })
+	var ends []bool
+	readFFmpegProgress(strings.NewReader(in), func(d time.Duration, end bool) { got, ends = append(got, d), append(ends, end) })
 	want := []time.Duration{0, time.Second, 2500 * time.Millisecond}
-	if !slices.Equal(got, want) {
-		t.Errorf("readFFmpegProgress reported %v, want %v", got, want)
+	if !slices.Equal(got, want) || !slices.Equal(ends, []bool{false, false, true}) {
+		t.Errorf("readFFmpegProgress reported %v, ends %v; want %v, ends [false false true]", got, ends, want)
 	}
 }
 
@@ -53,7 +54,7 @@ func TestEncodeProgress(t *testing.T) {
 		t.Skip("needs a shell")
 	}
 	dir := t.TempDir()
-	script := "#!/bin/sh\nprintf 'out_time_us=5000000\\nprogress=continue\\nout_time_us=10000000\\nprogress=end\\n' >&3\n"
+	script := "#!/bin/sh\nprintf 'out_time_us=5000000\\nprogress=continue\\nout_time_us=9966667\\nprogress=end\\n' >&3\n"
 	ff := filepath.Join(dir, "ffmpeg")
 	if err := os.WriteFile(ff, []byte(script), 0o755); err != nil {
 		t.Fatal(err)

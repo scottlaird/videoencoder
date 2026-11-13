@@ -101,7 +101,12 @@ func (e ExecExecutor) Encode(ctx context.Context, argv []string, total time.Dura
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		readFFmpegProgress(pr, func(encoded time.Duration) {
+		readFFmpegProgress(pr, func(encoded time.Duration, end bool) {
+			// The last report's out_time stops a frame short of the
+			// end; it's done.
+			if end && total > 0 {
+				encoded = total
+			}
 			progress(Progress{Encoded: encoded, Total: total, Elapsed: time.Since(start)})
 		})
 	}()
