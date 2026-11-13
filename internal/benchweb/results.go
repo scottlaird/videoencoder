@@ -94,6 +94,14 @@ type ResultRow struct {
 	Host             string    `json:"host"`
 	CPU              string    `json:"cpu"`
 	Time             time.Time `json:"time"`
+	// What turbostat measured over the encode; null without it.
+	CPUBusyPct  *float64 `json:"cpu_busy_pct"`
+	CPUMHz      *float64 `json:"cpu_mhz"`
+	CPUIPC      *float64 `json:"cpu_ipc"`
+	CPUPkgW     *float64 `json:"cpu_pkg_w"`
+	CPUCoreW    *float64 `json:"cpu_core_w"`
+	CPUPkgTempC *float64 `json:"cpu_pkg_temp_c"`
+	CPULLCHit   *float64 `json:"cpu_llc_hit_pct"`
 }
 
 // known is n, or nil (JSON null) if it's zero: unknown, in rows logged
@@ -116,7 +124,7 @@ func metric(f float64) *float64 {
 
 func resultRow(log int, r *bench.Row) ResultRow {
 	m := r.Metrics
-	return ResultRow{
+	row := ResultRow{
 		Log: log, Sample: r.Sample, Reference: r.Reference, Encoder: r.Encoder,
 		Flagset: r.Flagset, Args: r.Args, QualityFlag: r.QualityFlag, Quality: r.Quality,
 		Key: r.Key, FlagsetKey: r.FlagsetKey, Bytes: r.Bytes, Kbps: r.Kbps,
@@ -139,6 +147,12 @@ func resultRow(log int, r *bench.Row) ResultRow {
 		BatchSize: known(r.BatchSize), BatchID: r.BatchID,
 		EncbenchVer: r.EncbenchVersion, Config: r.Config, Job: r.Job, OutSHA256: r.OutSHA256,
 	}
+	if c := r.CPUStats; c != nil {
+		row.CPUBusyPct, row.CPUMHz, row.CPUIPC = metric(c.BusyPct), metric(c.BusyMHz), metric(c.IPC)
+		row.CPUPkgW, row.CPUCoreW = metric(c.PkgWatts), metric(c.CoreWatts)
+		row.CPUPkgTempC, row.CPULLCHit = metric(c.PkgTempC), metric(c.LLCHitPct)
+	}
+	return row
 }
 
 // Results reads the queue's results logs now.
