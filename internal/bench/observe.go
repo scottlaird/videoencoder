@@ -29,6 +29,9 @@ const (
 	// Encoded: the encode that the last Encoding or Timing event began
 	// has got as far as Progress says.
 	Encoded
+	// ScoringStarted: the round's encodes are done, and Qualities (all of the
+	// task's in this round) are being scored.
+	ScoringStarted
 )
 
 // Event is a step of a run, for showing its progress.

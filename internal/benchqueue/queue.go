@@ -591,6 +591,13 @@ func (r *Runner) runUnit(ctx context.Context, u Unit) {
 			cur.Detail = step
 		case bench.Encoded:
 			cur.Detail = step + " · " + progressText(ev.Progress)
+		case bench.ScoringStarted:
+			cur.Sample = ev.Sample
+			qs := make([]string, len(ev.Qualities))
+			for i, q := range ev.Qualities {
+				qs[i] = ftoa(q)
+			}
+			cur.Detail = fmt.Sprintf("scoring %s %s", flagName(ev.QualityFlag), strings.Join(qs, ", "))
 		case bench.Scored:
 			verdict := "fail"
 			if ev.Pass {
