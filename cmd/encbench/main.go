@@ -23,6 +23,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -129,9 +130,15 @@ func runCmd(ctx context.Context, cfg *bench.Config, args []string, stderr io.Wri
 			}
 		}
 	}
+	turbostat := ""
+	if !*dryRun {
+		if turbostat = bench.FindTurbostat(ctx); turbostat != "" {
+			slog.Info("Measuring encodes with turbostat", "path", turbostat)
+		}
+	}
 	b := &bench.Bench{
 		Cfg:             cfg,
-		Exec:            bench.ExecExecutor{Stderr: stderr},
+		Exec:            bench.ExecExecutor{Stderr: stderr, Turbostat: turbostat},
 		Prober:          probe.FFProbe{},
 		OutputProber:    bench.FFProbeOutput{},
 		Host:            host,

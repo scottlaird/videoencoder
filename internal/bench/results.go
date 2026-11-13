@@ -90,6 +90,11 @@ type Row struct {
 	// Config is the bench config's path and Job the queue's work file,
 	// if it ran from a queue.
 	EncbenchVersion, Config, Job string
+	// CPUStats is what turbostat measured of the machine over the
+	// encode, when encbench ran it under turbostat (Linux only); nil
+	// otherwise, and in older rows. Like WallS, it's the whole batch's
+	// for an encode that isn't Timed.
+	CPUStats *CPUStats
 	// Timed says WallS, UserS, SysS and MaxRSSKB are this encode's own.
 	// An encode made with others in one ffmpeg (Flagset.Batch) isn't:
 	// its times are the whole batch's. Such a search's answer is then
@@ -110,6 +115,7 @@ var resultColumns = []string{
 	"out_codec", "out_profile", "out_level", "out_pix_fmt", "keyframes", "peak_kbps_1s",
 	"vmaf_model", "target_vmaf", "pass", "score_s", "batch_size", "batch_id",
 	"encbench_version", "config", "job", "out_sha256",
+	"cpu_busy_pct", "cpu_mhz", "cpu_ipc", "cpu_pkg_w", "cpu_core_w", "cpu_pkg_temp_c", "cpu_llc_hit_pct",
 }
 
 // scorer is the current scoring method: v2 added CIEDE2000 on sampled
@@ -127,7 +133,7 @@ func ftoa(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }
 
 func (r *Row) record() []string {
 	m := r.Metrics
-	return []string{
+	rec := []string{
 		r.Sample, r.Encoder, r.Flagset, r.Args, r.QualityFlag, ftoa(r.Quality),
 		r.Key, r.FlagsetKey, strconv.FormatInt(r.Bytes, 10), ftoa(r.Kbps),
 		ftoa(r.WallS), ftoa(r.UserS), ftoa(r.SysS), strconv.FormatInt(r.MaxRSSKB, 10),
@@ -143,6 +149,19 @@ func (r *Row) record() []string {
 		r.VMAFModel, ftoa(r.TargetVMAF), btoa(r.Pass), ftoa(r.ScoreS), itoa(r.BatchSize), r.BatchID,
 		r.EncbenchVersion, r.Config, r.Job, r.OutSHA256,
 	}
+	var cpu CPUStats
+	if r.CPUStats != nil {
+		cpu = *r.CPUStats
+	}
+	for _, f := range cpu.fields() {
+		// No stats, or one turbostat didn't report, is empty.
+		if r.CPUStats == nil || math.IsNaN(*f) {
+			rec = append(rec, "")
+		} else {
+			rec = append(rec, ftoa(*f))
+		}
+	}
+	return rec
 }
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
@@ -301,6 +320,18 @@ func parseRow(col map[string]int, rec []string) (Row, error) {
 	r.BatchSize, r.BatchID = optInt("batch_size"), opt("batch_id")
 	r.EncbenchVersion, r.Config, r.Job = opt("encbench_version"), opt("config"), opt("job")
 	r.OutSHA256 = opt("out_sha256")
+	var cpu CPUStats
+	gotCPU := false
+	for i, f := range cpu.fields() {
+		name := resultColumns[len(resultColumns)-len(turbostatColumns)+i]
+		*f = math.NaN()
+		if opt(name) != "" {
+			*f, gotCPU = optFloat(name), true
+		}
+	}
+	if gotCPU {
+		r.CPUStats = &cpu
+	}
 	return r, errors.Join(errs...)
 }
 

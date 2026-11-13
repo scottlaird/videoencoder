@@ -26,6 +26,9 @@ const (
 	// Timing: the answer at Quality, first encoded with others (see
 	// Flagset.Batch), is being encoded again by itself for its time.
 	Timing
+	// Encoded: the encode that the last Encoding or Timing event began
+	// has got as far as Progress says.
+	Encoded
 )
 
 // Event is a step of a run, for showing its progress.
@@ -45,8 +48,10 @@ type Event struct {
 	Qualities  []float64
 	Kbps, VMAF float64
 	Pass       bool
-	Outcome    Outcome
-	Err        error
+	// Progress is an Encoded event's.
+	Progress Progress
+	Outcome  Outcome
+	Err      error
 }
 
 func (b *Bench) observe(e Event) {

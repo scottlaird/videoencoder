@@ -732,6 +732,15 @@ flagsets:
   errors, which VMAF ignores entirely. All of them are off by default.
   The color measures are always recorded either way, and reports flag
   outliers.
+- **CPU measurements.** On Linux, if this user can run `turbostat`
+  without sudo, every encode runs under it, and its row records the
+  machine's average busy clock, IPC, package and core power, last-level
+  cache hit rate and package temperature at the end (`cpu_*` columns),
+  where the CPU reports them; AMD chips, for one, don't report the
+  temperature to turbostat. They're the whole machine's, which during
+  an encode is mostly ffmpeg. [`turbostat-setup.sh`](turbostat-setup.sh)
+  sets up the permissions on Ubuntu; without them, or on macOS, the
+  columns are empty.
 
 ### encbench commands
 
@@ -752,7 +761,9 @@ encbench queue [-watch] [-report=false] [-poll 5s] [-tui auto] [-http ADDR] DIR
   flagset (a *unit*) at a time, in a terminal UI. See below.
 
 Encodes run one at a time, so timings are comparable. Scoring runs in
-parallel between encodes. Don't run anything else CPU-heavy on the
+parallel between encodes. While an encode runs, the queue shows how
+much of the sample it has encoded and an estimate of the time left,
+and both commands log that every minute. Don't run anything else CPU-heavy on the
 machine while encbench is running, or the timings will be meaningless.
 
 ### encbench queue
