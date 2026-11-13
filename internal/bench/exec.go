@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +19,9 @@ import (
 type Measurement struct {
 	Wall, User, Sys time.Duration
 	MaxRSSKB        int64
+	// CPU is what turbostat measured over an encode; nil without it
+	// (see ExecExecutor.Turbostat).
+	CPU *CPUStats
 }
 
 // Executor runs a command and measures it. It exists so the bench can
@@ -38,6 +42,11 @@ type Encoder interface {
 // ExecExecutor runs commands as subprocesses.
 type ExecExecutor struct {
 	Stderr io.Writer
+	// Turbostat, if set, is the turbostat that encodes run under (see
+	// FindTurbostat), to measure the machine's CPUs while they run.
+	// Wall time then includes turbostat's start and finish, a few
+	// milliseconds, and user and system time its own small share.
+	Turbostat string
 }
 
 func (e ExecExecutor) Exec(ctx context.Context, argv []string) (Measurement, error) {
@@ -63,8 +72,24 @@ func (e ExecExecutor) Encode(ctx context.Context, argv []string, total time.Dura
 	defer pr.Close()
 	// The child's fd 3 is ExtraFiles[0].
 	argv = slices.Insert(ffmpeg.Quiet(argv), 1, "-progress", "pipe:3", "-stats_period", "1")
+	var stats string
+	if e.Turbostat != "" {
+		f, err := os.CreateTemp("", "turbostat-*.txt")
+		if err != nil {
+			pw.Close()
+			return Measurement{}, err
+		}
+		f.Close()
+		stats = f.Name()
+		defer os.Remove(stats)
+		argv = turbostatArgv(e.Turbostat, stats, argv)
+	}
 	cmd := e.command(ctx, argv)
 	cmd.ExtraFiles = []*os.File{pw}
+	if stats != "" {
+		// Canceling kills turbostat's ffmpeg too, not just turbostat.
+		killGroup(cmd)
+	}
 	start := time.Now()
 	err = cmd.Start()
 	// The child has its own copy now; closing ours lets the reader see
@@ -82,7 +107,14 @@ func (e ExecExecutor) Encode(ctx context.Context, argv []string, total time.Dura
 	}()
 	err = cmd.Wait()
 	<-done
-	return measure(cmd, start, err)
+	m, err := measure(cmd, start, err)
+	if stats != "" && err == nil {
+		if m.CPU, err = readTurbostat(stats); err != nil {
+			slog.Warn("Couldn't read turbostat's measurements", "err", err)
+			err = nil
+		}
+	}
+	return m, err
 }
 
 func (e ExecExecutor) command(ctx context.Context, argv []string) *exec.Cmd {

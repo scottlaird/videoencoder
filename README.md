@@ -732,6 +732,15 @@ flagsets:
   errors, which VMAF ignores entirely. All of them are off by default.
   The color measures are always recorded either way, and reports flag
   outliers.
+- **CPU measurements.** On Linux, if this user can run `turbostat`
+  without sudo, every encode runs under it, and its row records the
+  machine's average busy clock, IPC, package and core power, last-level
+  cache hit rate and package temperature at the end (`cpu_*` columns),
+  where the CPU reports them; AMD chips, for one, don't report the
+  temperature to turbostat. They're the whole machine's, which during
+  an encode is mostly ffmpeg. [`turbostat-setup.sh`](turbostat-setup.sh)
+  sets up the permissions on Ubuntu; without them, or on macOS, the
+  columns are empty.
 
 ### encbench commands
 

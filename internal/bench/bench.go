@@ -791,6 +791,7 @@ func (b *Bench) record(results *Results, round int, p *pending) error {
 		UserS:          p.m.User.Seconds(),
 		SysS:           p.m.Sys.Seconds(),
 		MaxRSSKB:       p.m.MaxRSSKB,
+		CPUStats:       p.m.CPU,
 		Metrics:        m,
 		Scorer:         t.sample.scoring.Scorer,
 		FFmpegVersion:  b.FFmpegVersion,
@@ -835,6 +836,7 @@ func (b *Bench) recordTiming(results *Results, p *pending) error {
 			"sample", t.sample.name, "flagset", t.name, "quality", p.quality, "scored_bytes", row.Bytes, "timing_bytes", p.bytes)
 	}
 	row.WallS, row.UserS, row.SysS, row.MaxRSSKB = p.m.Wall.Seconds(), p.m.User.Seconds(), p.m.Sys.Seconds(), p.m.MaxRSSKB
+	row.CPUStats = p.m.CPU
 	row.FFmpegVersion, row.Host, row.CPU = b.FFmpegVersion, b.Host, b.CPU
 	row.EncoderVersion = b.EncoderVersions[t.fs.Encoder()]
 	row.Time = b.now()

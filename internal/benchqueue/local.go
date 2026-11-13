@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,6 +25,9 @@ type Local struct {
 	Host, FFmpegVersion, CPU string
 	// Stderr gets the encoders' error output.
 	Stderr io.Writer
+	// Turbostat, if set, measures each encode's CPUs (see
+	// bench.FindTurbostat).
+	Turbostat string
 
 	prober   cachingProber
 	mu       sync.Mutex
@@ -37,7 +41,12 @@ func NewLocal(ctx context.Context, stderr io.Writer) (*Local, error) {
 		return nil, err
 	}
 	host, _ := os.Hostname()
+	turbostat := bench.FindTurbostat(ctx)
+	if turbostat != "" {
+		slog.Info("Measuring encodes with turbostat", "path", turbostat)
+	}
 	return &Local{
+		Turbostat:     turbostat,
 		Host:          host,
 		FFmpegVersion: version,
 		CPU:           bench.CPUModel(ctx),
@@ -50,7 +59,7 @@ func NewLocal(ctx context.Context, stderr io.Writer) (*Local, error) {
 func (l *Local) bench(cfg *bench.Config) *bench.Bench {
 	return &bench.Bench{
 		Cfg:           cfg,
-		Exec:          bench.ExecExecutor{Stderr: l.Stderr},
+		Exec:          bench.ExecExecutor{Stderr: l.Stderr, Turbostat: l.Turbostat},
 		Prober:        &l.prober,
 		OutputProber:  bench.FFProbeOutput{},
 		Host:          l.Host,
