@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/scottlaird/videoencoder/internal/ffmpeg"
@@ -23,6 +26,15 @@ type Executor interface {
 	Exec(ctx context.Context, argv []string) (Measurement, error)
 }
 
+// An Encoder is an Executor that can also run an encode, an ffmpeg
+// command, reporting how far it has got. total is the sample's
+// duration; progress is called every second or so while the encode
+// runs, and never after Encode returns.
+type Encoder interface {
+	Executor
+	Encode(ctx context.Context, argv []string, total time.Duration, progress func(Progress)) (Measurement, error)
+}
+
 // ExecExecutor runs commands as subprocesses.
 type ExecExecutor struct {
 	Stderr io.Writer
@@ -33,11 +45,55 @@ func (e ExecExecutor) Exec(ctx context.Context, argv []string) (Measurement, err
 		return Measurement{}, errors.New("empty command")
 	}
 	argv = ffmpeg.Quiet(argv)
+	cmd := e.command(ctx, argv)
+	start := time.Now()
+	return measure(cmd, start, cmd.Run())
+}
+
+// Encode runs the ffmpeg command argv with -progress writing to a
+// pipe, which it reads to report progress.
+func (e ExecExecutor) Encode(ctx context.Context, argv []string, total time.Duration, progress func(Progress)) (Measurement, error) {
+	if len(argv) == 0 || filepath.Base(argv[0]) != "ffmpeg" {
+		return e.Exec(ctx, argv)
+	}
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		return Measurement{}, err
+	}
+	defer pr.Close()
+	// The child's fd 3 is ExtraFiles[0].
+	argv = slices.Insert(ffmpeg.Quiet(argv), 1, "-progress", "pipe:3", "-stats_period", "1")
+	cmd := e.command(ctx, argv)
+	cmd.ExtraFiles = []*os.File{pw}
+	start := time.Now()
+	err = cmd.Start()
+	// The child has its own copy now; closing ours lets the reader see
+	// EOF when ffmpeg exits.
+	pw.Close()
+	if err != nil {
+		return measure(cmd, start, err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		readFFmpegProgress(pr, func(encoded time.Duration) {
+			progress(Progress{Encoded: encoded, Total: total, Elapsed: time.Since(start)})
+		})
+	}()
+	err = cmd.Wait()
+	<-done
+	return measure(cmd, start, err)
+}
+
+func (e ExecExecutor) command(ctx context.Context, argv []string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Env = ffmpeg.QuietEnv()
 	cmd.Stderr = e.Stderr
-	start := time.Now()
-	err := cmd.Run()
+	return cmd
+}
+
+// measure is cmd's resource use, once it has exited with err.
+func measure(cmd *exec.Cmd, start time.Time, err error) (Measurement, error) {
 	m := Measurement{Wall: time.Since(start)}
 	if ps := cmd.ProcessState; ps != nil {
 		m.User = ps.UserTime()
@@ -45,7 +101,7 @@ func (e ExecExecutor) Exec(ctx context.Context, argv []string) (Measurement, err
 		m.MaxRSSKB = maxRSSKB(ps)
 	}
 	if err != nil {
-		return m, fmt.Errorf("running %s: %w", argv[0], err)
+		return m, fmt.Errorf("running %s: %w", cmd.Args[0], err)
 	}
 	return m, nil
 }

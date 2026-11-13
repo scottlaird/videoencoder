@@ -569,6 +569,8 @@ func (r *Runner) runUnit(ctx context.Context, u Unit) {
 	})
 
 	var failures []string
+	// step is the running encode's Detail, before its progress.
+	var step string
 	err := r.Backend.Run(ctx, wf.cfg, u.Sample, u.Flagset, func(ev bench.Event) {
 		r.mu.Lock()
 		switch ev.Kind {
@@ -581,10 +583,14 @@ func (r *Runner) runUnit(ctx context.Context, u Unit) {
 					qs = append(qs, ftoa(q))
 				}
 			}
-			cur.Detail = fmt.Sprintf("encoding %s %s", flagName(ev.QualityFlag), strings.Join(qs, ", "))
+			step = fmt.Sprintf("encoding %s %s", flagName(ev.QualityFlag), strings.Join(qs, ", "))
+			cur.Detail = step
 		case bench.Timing:
 			cur.Round, cur.Sample = ev.Round, ev.Sample
-			cur.Detail = fmt.Sprintf("timing %s %s by itself", flagName(ev.QualityFlag), ftoa(ev.Quality))
+			step = fmt.Sprintf("timing %s %s by itself", flagName(ev.QualityFlag), ftoa(ev.Quality))
+			cur.Detail = step
+		case bench.Encoded:
+			cur.Detail = step + " · " + progressText(ev.Progress)
 		case bench.Scored:
 			verdict := "fail"
 			if ev.Pass {
@@ -668,6 +674,25 @@ func (r *Runner) writeReports(ctx context.Context) {
 }
 
 // flagName is a quality flag without its dash: "crf", "q:v".
+// progressText says how far an encode has got: "15% · 2:00, about
+// 12:30 left".
+func progressText(p bench.Progress) string {
+	s := fmt.Sprintf("%d%% · %s", int(p.Fraction()*100), clock(p.Elapsed))
+	if left, ok := p.Remaining(); ok {
+		s += ", about " + clock(left) + " left"
+	}
+	return s
+}
+
+// clock writes d as m:ss, or h:mm:ss from an hour.
+func clock(d time.Duration) string {
+	s := int(d.Round(time.Second) / time.Second)
+	if s >= 3600 {
+		return fmt.Sprintf("%d:%02d:%02d", s/3600, s/60%60, s%60)
+	}
+	return fmt.Sprintf("%d:%02d", s/60, s%60)
+}
+
 func flagName(f string) string { return strings.TrimLeft(f, "-") }
 
 func ftoa(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }

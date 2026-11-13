@@ -642,8 +642,9 @@ func (b *Bench) encodeAll(ctx context.Context, round int, batch []*pending) erro
 		} else {
 			slog.Info("Encoding", "sample", p0.t.sample.name, "flagset", p0.t.name, "quality", qs)
 		}
-		b.observe(Event{Kind: kind, Round: round, Source: p0.t.sample.source, Sample: p0.t.sample.name, Flagset: p0.t.name, QualityFlag: p0.t.fs.Quality.Flag, Quality: p0.quality, Qualities: qs})
-		m, err := b.Exec.Exec(ctx, b.encodeArgv(group...))
+		ev := Event{Kind: kind, Round: round, Source: p0.t.sample.source, Sample: p0.t.sample.name, Flagset: p0.t.name, QualityFlag: p0.t.fs.Quality.Flag, Quality: p0.quality, Qualities: qs}
+		b.observe(ev)
+		m, err := b.encode(ctx, ev, p0.t.sample.vd.Duration, b.encodeArgv(group...))
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -670,6 +671,33 @@ func (b *Bench) encodeAll(ctx context.Context, round int, batch []*pending) erro
 		}
 	}
 	return nil
+}
+
+// progressLogEvery is how often encode logs a long encode's progress.
+const progressLogEvery = time.Minute
+
+// encode runs argv, an encode of a sample lasting total that ev
+// announced, reporting its progress as Encoded events and, every
+// progressLogEvery, in the log.
+func (b *Bench) encode(ctx context.Context, ev Event, total time.Duration, argv []string) (Measurement, error) {
+	enc, ok := b.Exec.(Encoder)
+	if !ok {
+		return b.Exec.Exec(ctx, argv)
+	}
+	ev.Kind = Encoded
+	var logged time.Duration
+	return enc.Encode(ctx, argv, total, func(p Progress) {
+		ev.Progress = p
+		b.observe(ev)
+		if p.Elapsed-logged >= progressLogEvery {
+			logged = p.Elapsed
+			attrs := []any{"sample", ev.Sample, "flagset", ev.Flagset, "percent", int(p.Fraction() * 100), "elapsed", p.Elapsed.Round(time.Second)}
+			if left, ok := p.Remaining(); ok {
+				attrs = append(attrs, "remaining", left.Round(time.Second))
+			}
+			slog.Info("Encode progress", attrs...)
+		}
+	})
 }
 
 // scoreAll scores the batch in parallel and calls record for each
