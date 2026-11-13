@@ -331,12 +331,17 @@ func TestResults(t *testing.T) {
 	}
 	when := time.Date(2026, 11, 12, 1, 2, 3, 0, time.UTC)
 	for _, q := range []float64{24, 26.5} {
+		var cpu *bench.CPUStats
+		if q == 26.5 {
+			cpu = &bench.CPUStats{BusyPct: 95, BusyMHz: 2950, IPC: 2.27, PkgWatts: 56, CoreWatts: 37,
+				PkgTempC: math.NaN(), LLCHitPct: 95.6}
+		}
 		m := bench.Metrics{VMAF: 95.5, VMAFNeg: math.NaN(), ColorShiftP99: math.NaN(), ColorShiftP999: math.NaN(),
 			ColorFlickerP99: math.NaN(), ColorFlickerP999: math.NaN(), CAMBI: 1.5, CAMBIFR: math.NaN(), CAMBIFRMax: math.NaN()}
 		if err := log.Append(bench.Row{Sample: "a.mov", Reference: "a.mov", Encoder: "libx265", Flagset: "x",
 			Args: "-c:v libx265 -preset fast", QualityFlag: "-crf", Quality: q, Key: fmt.Sprint("k", q),
 			Bytes: 1000, Kbps: 800, WallS: 2.5, Metrics: m, Scorer: "v6", Host: "h", Time: when, Timed: true,
-			Width: int64(q * 80), Job: "10-test.yaml"}); err != nil {
+			Width: int64(q * 80), Job: "10-test.yaml", CPUStats: cpu}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -365,5 +370,11 @@ func TestResults(t *testing.T) {
 	}
 	if r.VMAFNeg != nil || r.CAMBIFR != nil {
 		t.Errorf("vmaf_neg %v, cambi_fr %v; want null for NaN", r.VMAFNeg, r.CAMBIFR)
+	}
+	if r.CPUMHz == nil || *r.CPUMHz != 2950 || r.CPUIPC == nil || *r.CPUIPC != 2.27 || r.CPUPkgTempC != nil {
+		t.Errorf("cpu_mhz %v, cpu_ipc %v, cpu_pkg_temp_c %v; want 2950, 2.27, null", r.CPUMHz, r.CPUIPC, r.CPUPkgTempC)
+	}
+	if r0 := got.Rows[0]; r0.CPUMHz != nil || r0.CPUBusyPct != nil {
+		t.Errorf("row without turbostat: cpu_mhz %v, cpu_busy_pct %v; want null", r0.CPUMHz, r0.CPUBusyPct)
 	}
 }
