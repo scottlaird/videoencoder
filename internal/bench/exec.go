@@ -10,6 +10,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/scottlaird/videoencoder/internal/ffmpeg"
@@ -66,9 +69,9 @@ func (e ExecExecutor) Exec(ctx context.Context, argv []string) (Measurement, err
 		return Measurement{}, errors.New("empty command")
 	}
 	argv = ffmpeg.Quiet(argv)
-	cmd := e.command(ctx, argv)
+	cmd, tail := e.command(ctx, argv)
 	start := time.Now()
-	return measure(cmd, start, cmd.Run())
+	return measure(cmd, argv[0], tail, start, cmd.Run())
 }
 
 // Encode runs the ffmpeg command argv with -progress writing to a
@@ -95,6 +98,8 @@ func (e ExecExecutor) runProgress(ctx context.Context, argv []string, total time
 	defer pr.Close()
 	// The child's fd 3 is ExtraFiles[0].
 	argv = slices.Insert(ffmpeg.Quiet(argv), 1, "-progress", "pipe:3", "-stats_period", "1")
+	// What failed, if it does, is argv[0], not the turbostat around it.
+	name := argv[0]
 	var stats string
 	if turbostat != "" {
 		f, err := os.CreateTemp("", "turbostat-*.txt")
@@ -107,7 +112,7 @@ func (e ExecExecutor) runProgress(ctx context.Context, argv []string, total time
 		defer os.Remove(stats)
 		argv = turbostatArgv(turbostat, stats, argv)
 	}
-	cmd := e.command(ctx, argv)
+	cmd, tail := e.command(ctx, argv)
 	cmd.ExtraFiles = []*os.File{pw}
 	if stats != "" {
 		// Canceling kills turbostat's ffmpeg too, not just turbostat.
@@ -119,7 +124,7 @@ func (e ExecExecutor) runProgress(ctx context.Context, argv []string, total time
 	// EOF when ffmpeg exits.
 	pw.Close()
 	if err != nil {
-		return measure(cmd, start, err)
+		return measure(cmd, name, tail, start, err)
 	}
 	done := make(chan struct{})
 	go func() {
@@ -138,7 +143,7 @@ func (e ExecExecutor) runProgress(ctx context.Context, argv []string, total time
 	}()
 	err = cmd.Wait()
 	<-done
-	m, err := measure(cmd, start, err)
+	m, err := measure(cmd, name, tail, start, err)
 	if stats != "" && err == nil {
 		if m.CPU, err = readTurbostat(stats); err != nil {
 			slog.Warn("Couldn't read turbostat's measurements", "err", err)
@@ -148,23 +153,86 @@ func (e ExecExecutor) runProgress(ctx context.Context, argv []string, total time
 	return m, err
 }
 
-func (e ExecExecutor) command(ctx context.Context, argv []string) *exec.Cmd {
+// command makes the exec.Cmd for argv, its stderr going to e.Stderr
+// and to the tail it returns, for errors to quote.
+func (e ExecExecutor) command(ctx context.Context, argv []string) (*exec.Cmd, *tailWriter) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Env = ffmpeg.QuietEnv()
-	cmd.Stderr = e.Stderr
-	return cmd
+	tail := &tailWriter{max: stderrTail}
+	cmd.Stderr = tail
+	if e.Stderr != nil {
+		cmd.Stderr = io.MultiWriter(e.Stderr, tail)
+	}
+	return cmd, tail
 }
 
 // measure is cmd's resource use, once it has exited with err.
-func measure(cmd *exec.Cmd, start time.Time, err error) (Measurement, error) {
+// measure is cmd's resource use, and err said in terms of name, the
+// command cmd runs (perhaps under turbostat), quoting the end of its
+// stderr from tail.
+func measure(cmd *exec.Cmd, name string, tail *tailWriter, start time.Time, err error) (Measurement, error) {
 	m := Measurement{Wall: time.Since(start)}
 	if ps := cmd.ProcessState; ps != nil {
 		m.User = ps.UserTime()
 		m.Sys = ps.SystemTime()
 		m.MaxRSSKB = maxRSSKB(ps)
 	}
-	if err != nil {
-		return m, fmt.Errorf("running %s: %w", cmd.Args[0], err)
+	if err == nil {
+		return m, nil
 	}
-	return m, nil
+	msg := fmt.Sprintf("running %s", filepath.Base(name))
+	if wrapped := name != cmd.Args[0]; wrapped {
+		msg += " under " + filepath.Base(cmd.Args[0])
+		// turbostat exits with its command's status, 128 plus the
+		// signal for one that was killed.
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			if c := ee.ExitCode(); c > 128 && c < 128+32 {
+				err = fmt.Errorf("%w (killed by %v)", err, syscall.Signal(c-128))
+			}
+		}
+	}
+	if last := tail.lastLines(stderrLines); last != "" {
+		return m, fmt.Errorf("%s: %w: %s", msg, err, last)
+	}
+	return m, fmt.Errorf("%s: %w", msg, err)
+}
+
+// stderrTail is how much of a command's stderr is kept to quote, and
+// stderrLines how many of its last lines are quoted.
+const (
+	stderrTail  = 4096
+	stderrLines = 3
+)
+
+// tailWriter keeps the last max bytes written to it.
+type tailWriter struct {
+	mu  sync.Mutex
+	max int
+	buf []byte
+}
+
+func (t *tailWriter) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.buf = append(t.buf, p...)
+	if over := len(t.buf) - t.max; over > 0 {
+		t.buf = append(t.buf[:0], t.buf[over:]...)
+	}
+	return len(p), nil
+}
+
+// lastLines is the last n non-blank lines kept, joined with " / ".
+func (t *tailWriter) lastLines(n int) string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var out []string
+	lines := strings.Split(string(t.buf), "\n")
+	for i := len(lines) - 1; i >= 0 && len(out) < n; i-- {
+		if l := strings.TrimSpace(lines[i]); l != "" {
+			out = append(out, l)
+		}
+	}
+	slices.Reverse(out)
+	return strings.Join(out, " / ")
 }
