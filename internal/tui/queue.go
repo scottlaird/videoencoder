@@ -383,6 +383,12 @@ func queueLines(s queueScreen, st styles, room int) []string {
 			next = append(next, f.Remaining...)
 		}
 	}
+	// Failed units due their retry run after everything else.
+	for _, f := range files {
+		if f.Err == nil {
+			next = append(next, f.Retry...)
+		}
+	}
 	if c := s.state.Current; c != nil && len(next) > 0 && next[0] == c.Unit {
 		next = next[1:]
 	}

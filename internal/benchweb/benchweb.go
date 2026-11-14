@@ -290,6 +290,12 @@ func (s *Server) State() State {
 			next = append(next, f.Remaining...)
 		}
 	}
+	// Failed units due their retry run after everything else.
+	for _, f := range q.Files {
+		if f.Err == nil {
+			next = append(next, f.Retry...)
+		}
+	}
 	if q.Current != nil && len(next) > 0 && next[0] == q.Current.Unit {
 		next = next[1:]
 	}

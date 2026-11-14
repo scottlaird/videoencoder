@@ -796,7 +796,8 @@ rescans `DIR`:
   answers are skipped, as `run` skips them.
 - A file that doesn't parse, or names a flagset or sample that doesn't
   exist, is shown with its error and skipped until it changes.
-- A unit that fails isn't retried until its file changes.
+- A unit that fails is retried once, after everything else has run,
+  and after that only when its file changes.
 
 Edits never affect the unit that is already running.
 

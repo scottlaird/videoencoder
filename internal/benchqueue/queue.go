@@ -87,10 +87,14 @@ type FileState struct {
 	// counts wait until the unit ends.
 	Pending bool
 	// Done units are answered by the log; Failed ones ran without an
-	// answer and won't run again until the file changes.
+	// answer. A failed unit runs once more when nothing else is left
+	// (Retry), and after that only when its file changes.
 	Done, Failed int
 	// Remaining are the units still to run, in order.
 	Remaining []Unit
+	// Retry are the failed units still due their one retry, in order;
+	// they're counted in Failed.
+	Retry []Unit
 }
 
 // Total is the number of units in the file.
@@ -150,6 +154,7 @@ type Runner struct {
 	state     State
 	files     map[string]*entry
 	attempted map[Unit]string // unit -> hash of the file it ran under
+	retried   map[Unit]bool   // units that have had their one retry
 	dirty     map[string]bool // files with a unit run since their report
 	pausing   bool
 	stopping  bool
@@ -172,6 +177,7 @@ func (r *Runner) init() {
 	r.once.Do(func() {
 		r.files = map[string]*entry{}
 		r.attempted = map[Unit]string{}
+		r.retried = map[Unit]bool{}
 		r.dirty = map[string]bool{}
 		r.wake = make(chan struct{}, 1)
 		if r.Poll == 0 {
@@ -518,6 +524,9 @@ func (r *Runner) rebuild(names []string) {
 					fs.Done++
 				case r.attempted[u] == e.wf.hash:
 					fs.Failed++
+					if !r.retried[u] {
+						fs.Retry = append(fs.Retry, u)
+					}
 				default:
 					fs.Remaining = append(fs.Remaining, u)
 				}
@@ -528,13 +537,29 @@ func (r *Runner) rebuild(names []string) {
 	r.state.Files = files
 }
 
-// next returns the first unit still to run.
+// next returns the first unit still to run or, with none left, the
+// first failed unit due its retry, which it marks as having had it.
 func (r *Runner) next() (Unit, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, f := range r.state.Files {
 		if f.Err == nil && !f.Pending && len(f.Remaining) > 0 {
 			return f.Remaining[0], true
+		}
+	}
+	// A unit still running in another file waits for counts; retries
+	// wait for those too.
+	for _, f := range r.state.Files {
+		if f.Pending {
+			return Unit{}, false
+		}
+	}
+	for _, f := range r.state.Files {
+		if f.Err == nil && len(f.Retry) > 0 {
+			u := f.Retry[0]
+			r.retried[u] = true
+			slog.Info("Retrying a failed unit, as nothing else is left", "file", u.File, "flagset", u.Flagset, "sample", u.Sample)
+			return u, true
 		}
 	}
 	return Unit{}, false
@@ -544,6 +569,8 @@ func (r *Runner) runUnit(ctx context.Context, u Unit) {
 	r.mu.Lock()
 	e := r.files[u.File]
 	wf := e.wf
+	// A unit that already failed under this file is having its retry.
+	retry := r.attempted[u] == wf.hash
 	cur := &Current{Unit: u, Started: r.now()}
 	r.state.Current = cur
 	r.state.Phase, r.state.Waiting = Running, ""
@@ -648,8 +675,10 @@ func (r *Runner) runUnit(ctx context.Context, u Unit) {
 	case ctx.Err() != nil:
 		err = context.Canceled
 		slog.Warn("Abandoned", "file", u.File, "flagset", u.Flagset, "sample", u.Sample)
-	case err != nil:
+	case err != nil && r.retried[u]:
 		slog.Error("Failed; skipped until its file changes", "file", u.File, "flagset", u.Flagset, "sample", u.Sample, "err", err)
+	case err != nil:
+		slog.Error("Failed; retried once when nothing else is left", "file", u.File, "flagset", u.Flagset, "sample", u.Sample, "err", err)
 	default:
 		slog.Info("Done", "file", u.File, "flagset", u.Flagset, "sample", u.Sample, "elapsed", elapsed.Round(time.Second))
 	}
@@ -658,6 +687,9 @@ func (r *Runner) runUnit(ctx context.Context, u Unit) {
 	if ctx.Err() == nil {
 		r.attempted[u] = wf.hash
 		r.dirty[u.File] = true
+	} else if retry {
+		// Abandoned, it keeps its retry.
+		delete(r.retried, u)
 	}
 	// The log has moved on: every file's counts are stale.
 	for _, e := range r.files {
