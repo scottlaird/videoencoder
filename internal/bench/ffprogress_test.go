@@ -18,11 +18,14 @@ func TestReadFFmpegProgress(t *testing.T) {
 		"frame=60", "out_time_us=2500000", "progress=end",
 	}, "\n")
 	var got []time.Duration
+	var frames []int64
 	var ends []bool
-	readFFmpegProgress(strings.NewReader(in), func(d time.Duration, end bool) { got, ends = append(got, d), append(ends, end) })
+	readFFmpegProgress(strings.NewReader(in), func(d time.Duration, n int64, end bool) {
+		got, frames, ends = append(got, d), append(frames, n), append(ends, end)
+	})
 	want := []time.Duration{0, time.Second, 2500 * time.Millisecond}
-	if !slices.Equal(got, want) || !slices.Equal(ends, []bool{false, false, true}) {
-		t.Errorf("readFFmpegProgress reported %v, ends %v; want %v, ends [false false true]", got, ends, want)
+	if !slices.Equal(got, want) || !slices.Equal(frames, []int64{0, 30, 60}) || !slices.Equal(ends, []bool{false, false, true}) {
+		t.Errorf("readFFmpegProgress reported %v, frames %v, ends %v; want %v, frames [0 30 60], ends [false false true]", got, frames, ends, want)
 	}
 }
 
@@ -73,5 +76,30 @@ func TestEncodeProgress(t *testing.T) {
 	want := []time.Duration{5 * time.Second, 10 * time.Second}
 	if !slices.Equal(got, want) {
 		t.Errorf("Encode reported %v, want %v", got, want)
+	}
+}
+
+// TestExecProgressCountsFrames runs a fake ffmpeg whose output times
+// are frame numbers in microseconds, as scoring's are, so only its
+// frame counts say how far it has got.
+func TestExecProgressCountsFrames(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a shell")
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\nprintf 'frame=150\\nout_time_us=150\\nprogress=continue\\nframe=299\\nout_time_us=299\\nprogress=end\\n' >&3\n"
+	ff := filepath.Join(dir, "ffmpeg")
+	if err := os.WriteFile(ff, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var got []time.Duration
+	_, err := ExecExecutor{}.ExecProgress(context.Background(), []string{ff, "-i", "a.mp4", "-i", "b.mp4", "-f", "null", "-"}, 10*time.Second, 30,
+		func(p Progress) { got = append(got, p.Encoded) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []time.Duration{5 * time.Second, 10 * time.Second}
+	if !slices.Equal(got, want) {
+		t.Errorf("ExecProgress reported %v, want %v", got, want)
 	}
 }

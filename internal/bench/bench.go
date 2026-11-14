@@ -42,8 +42,10 @@ type Bench struct {
 	// DryRun reports what would be encoded without encoding anything.
 	DryRun bool
 	Now    func() time.Time
-	// Observe, if set, hears about the run's encodes as they happen,
-	// on the goroutine that called Run.
+	// Observe, if set, hears about the run's encodes as they happen.
+	// Progress reports come from goroutines other than Run's, and
+	// several scorings report at once, so it must be safe to call
+	// concurrently.
 	Observe func(Event)
 
 	scorings Scorings
@@ -738,7 +740,10 @@ func (b *Bench) scoreAll(ctx context.Context, round int, batch []*pending, recor
 		go func() {
 			sem <- struct{}{}
 			start := time.Now()
-			p.metrics, p.err = b.score(ctx, p)
+			p.metrics, p.err = b.score(ctx, p, func(pr Progress) {
+				b.observe(Event{Kind: ScoringProgress, Round: round, Source: p.t.sample.source, Sample: p.t.sample.name, Flagset: p.t.name,
+					QualityFlag: p.t.fs.Quality.Flag, Quality: p.quality, Progress: pr})
+			})
 			p.scoreTime = time.Since(start)
 			if p.err != nil {
 				p.stage = "score"
@@ -762,10 +767,12 @@ func (b *Bench) scoreAll(ctx context.Context, round int, batch []*pending, recor
 	return first
 }
 
-func (b *Bench) score(ctx context.Context, p *pending) (Metrics, error) {
+// score scores p, reporting its progress.
+func (b *Bench) score(ctx context.Context, p *pending, progress func(Progress)) (Metrics, error) {
 	ref := p.t.sample.reference()
 	vd := ref.vd
-	return Score(ctx, b.Exec, p.out, ref.path, vd.Width, vd.Height, b.Cfg.VMAFThreads, b.scratchDir(), p.key, ref.prefilter, vd.ColorTransfer, p.t.sample.scoring.Model)
+	return ScoreProgress(ctx, b.Exec, p.out, ref.path, vd.Width, vd.Height, b.Cfg.VMAFThreads, b.scratchDir(), p.key, ref.prefilter, vd.ColorTransfer, p.t.sample.scoring.Model,
+		vd.Duration, vd.FPS, progress)
 }
 
 func (b *Bench) record(results *Results, round int, p *pending) error {

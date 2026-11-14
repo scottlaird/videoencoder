@@ -538,3 +538,24 @@ func TestProgressText(t *testing.T) {
 		}
 	}
 }
+
+func TestScoringTotal(t *testing.T) {
+	half := bench.Progress{Encoded: 15 * time.Second, Total: 30 * time.Second}
+	done := bench.Progress{Encoded: 30 * time.Second, Total: 30 * time.Second}
+	for _, tc := range []struct {
+		name   string
+		scored map[string]bench.Progress
+		n      int
+		want   float64
+	}{
+		{"one halfway", map[string]bench.Progress{"a": half}, 1, 0.5},
+		// The third is waiting for a slot.
+		{"one done, one halfway, one waiting", map[string]bench.Progress{"a": done, "b": half}, 3, 0.5},
+		{"more reporting than announced", map[string]bench.Progress{"a": done, "b": done}, 1, 1},
+	} {
+		p := scoringTotal(tc.scored, tc.n, time.Minute)
+		if got := p.Fraction(); got != tc.want || p.Elapsed != time.Minute {
+			t.Errorf("%s: scoringTotal = %+v, fraction %v; want fraction %v over 1m", tc.name, p, got, tc.want)
+		}
+	}
+}
