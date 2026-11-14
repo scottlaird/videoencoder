@@ -32,6 +32,10 @@ const (
 	// ScoringStarted: the round's encodes are done, and Qualities (all of the
 	// task's in this round) are being scored.
 	ScoringStarted
+	// ScoringProgress: the scoring of the encode at Quality, one of those a
+	// ScoringStarted event announced, has got as far as Progress says.
+	// Several of a round's scorings may run at once.
+	ScoringProgress
 )
 
 // Event is a step of a run, for showing its progress.

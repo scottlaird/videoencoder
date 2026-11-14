@@ -39,11 +39,12 @@ func (p Progress) Remaining() (d time.Duration, ok bool) {
 
 // readFFmpegProgress reads ffmpeg's -progress output, blocks of
 // key=value lines each ending with a "progress" key, and calls report
-// with each block's out_time_us, and end true for the last
-// ("progress=end"). It returns at EOF.
-func readFFmpegProgress(r io.Reader, report func(encoded time.Duration, end bool)) {
+// with each block's out_time_us and frame count, and end true for the
+// last ("progress=end"). It returns at EOF.
+func readFFmpegProgress(r io.Reader, report func(encoded time.Duration, frames int64, end bool)) {
 	sc := bufio.NewScanner(r)
 	var encoded time.Duration
+	var frames int64
 	for sc.Scan() {
 		k, v, ok := strings.Cut(sc.Text(), "=")
 		if !ok {
@@ -55,8 +56,12 @@ func readFFmpegProgress(r io.Reader, report func(encoded time.Duration, end bool
 			if us, err := strconv.ParseInt(v, 10, 64); err == nil {
 				encoded = time.Duration(us) * time.Microsecond
 			}
+		case "frame":
+			if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+				frames = n
+			}
 		case "progress":
-			report(encoded, v == "end")
+			report(encoded, frames, v == "end")
 		}
 	}
 }

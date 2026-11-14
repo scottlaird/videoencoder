@@ -571,6 +571,15 @@ func (r *Runner) runUnit(ctx context.Context, u Unit) {
 	var failures []string
 	// step is the running encode's Detail, before its progress.
 	var step string
+	// The round's scorings, which run in parallel: how many the
+	// ScoringStarted events announced, each one's progress so far
+	// (by sample and quality), and when they began.
+	var scoringStep string
+	var scorings int
+	var scored map[string]bench.Progress
+	var scoringFrom time.Time
+	// last is the previous event's kind.
+	last := bench.EventKind(-1)
 	err := r.Backend.Run(ctx, wf.cfg, u.Sample, u.Flagset, func(ev bench.Event) {
 		r.mu.Lock()
 		switch ev.Kind {
@@ -598,6 +607,19 @@ func (r *Runner) runUnit(ctx context.Context, u Unit) {
 				qs[i] = ftoa(q)
 			}
 			cur.Detail = fmt.Sprintf("scoring %s %s", flagName(ev.QualityFlag), strings.Join(qs, ", "))
+			// A round announces each task's scorings in a row, then
+			// starts them all.
+			if last != bench.ScoringStarted {
+				scorings, scored, scoringFrom = 0, map[string]bench.Progress{}, r.now()
+			}
+			scorings += len(ev.Qualities)
+			scoringStep = cur.Detail
+		case bench.ScoringProgress:
+			if scored == nil {
+				break
+			}
+			scored[ev.Sample+"\x00"+ftoa(ev.Quality)] = ev.Progress
+			cur.Detail = scoringStep + " · " + progressText(scoringTotal(scored, scorings, r.now().Sub(scoringFrom)))
 		case bench.Scored:
 			verdict := "fail"
 			if ev.Pass {
@@ -611,6 +633,7 @@ func (r *Runner) runUnit(ctx context.Context, u Unit) {
 		case bench.Finished:
 			cur.Answers = append(cur.Answers, answer(ev))
 		}
+		last = ev.Kind
 		r.mu.Unlock()
 		r.changed()
 	})
@@ -681,6 +704,19 @@ func (r *Runner) writeReports(ctx context.Context) {
 }
 
 // flagName is a quality flag without its dash: "crf", "q:v".
+// scoringTotal is how far n scorings of one sample (each of the same
+// length) have got together, as one Progress over the time since they
+// began. A scoring missing from scored, waiting for a free slot, has
+// done none of its share.
+func scoringTotal(scored map[string]bench.Progress, n int, elapsed time.Duration) bench.Progress {
+	var done, each time.Duration
+	for _, p := range scored {
+		done += p.Encoded
+		each = max(each, p.Total)
+	}
+	return bench.Progress{Encoded: done, Total: each * time.Duration(max(n, len(scored))), Elapsed: elapsed}
+}
+
 // progressText says how far an encode has got: "15% · 2:00, about
 // 12:30 left".
 func progressText(p bench.Progress) string {

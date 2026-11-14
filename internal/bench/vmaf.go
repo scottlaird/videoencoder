@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 )
 
 // Metrics are the quality scores of one encode against its reference.
@@ -198,6 +199,14 @@ func scoreArgv(distorted, reference string, width, height uint64, threads int, l
 // scored with model; an HDR model needs an HDR reference, and no tone
 // map in prefilter.
 func Score(ctx context.Context, e Executor, distorted, reference string, width, height uint64, threads int, tmpDir, name, prefilter, transfer string, model VMAFModel) (Metrics, error) {
+	return ScoreProgress(ctx, e, distorted, reference, width, height, threads, tmpDir, name, prefilter, transfer, model, 0, 0, nil)
+}
+
+// ScoreProgress is Score, reporting how far it has got through the
+// reference, which lasts total at fps frames a second, if progress is
+// set and e is a ProgressExecutor.
+func ScoreProgress(ctx context.Context, e Executor, distorted, reference string, width, height uint64, threads int, tmpDir, name, prefilter, transfer string, model VMAFModel,
+	total time.Duration, fps float64, progress func(Progress)) (Metrics, error) {
 	vmafConv := ""
 	if model.HDR {
 		var err error
@@ -225,7 +234,13 @@ func Score(ctx context.Context, e Executor, distorted, reference string, width, 
 	}
 	space, blockFilter := colorSpaceFor(transfer)
 	argv := scoreArgv(distorted, reference, width, height, threads, logPath, colorLogPath, distBlocks, refBlocks, prefilter, blockFilter, model, vmafConv)
-	if _, err := e.Exec(ctx, argv); err != nil {
+	run := e.Exec
+	if pe, ok := e.(ProgressExecutor); ok && progress != nil && fps > 0 {
+		run = func(ctx context.Context, argv []string) (Measurement, error) {
+			return pe.ExecProgress(ctx, argv, total, fps, progress)
+		}
+	}
+	if _, err := run(ctx, argv); err != nil {
 		return Metrics{}, fmt.Errorf("scoring: %w", err)
 	}
 	m, err := readLogs(logPath, colorLogPath)

@@ -39,6 +39,18 @@ type Encoder interface {
 	Encode(ctx context.Context, argv []string, total time.Duration, progress func(Progress)) (Measurement, error)
 }
 
+// A ProgressExecutor is an Executor that can also run an ffmpeg
+// command reporting how far it has got through its input, which lasts
+// total at fps frames a second. Unlike Encode it counts frames read
+// out, not output time, so it suits commands whose output timestamps
+// aren't the input's (scoring renumbers frames), and it never measures
+// the machine. progress is called every second or so while the command
+// runs, and never after ExecProgress returns.
+type ProgressExecutor interface {
+	Executor
+	ExecProgress(ctx context.Context, argv []string, total time.Duration, fps float64, progress func(Progress)) (Measurement, error)
+}
+
 // ExecExecutor runs commands as subprocesses.
 type ExecExecutor struct {
 	Stderr io.Writer
@@ -62,6 +74,17 @@ func (e ExecExecutor) Exec(ctx context.Context, argv []string) (Measurement, err
 // Encode runs the ffmpeg command argv with -progress writing to a
 // pipe, which it reads to report progress.
 func (e ExecExecutor) Encode(ctx context.Context, argv []string, total time.Duration, progress func(Progress)) (Measurement, error) {
+	return e.runProgress(ctx, argv, total, 0, e.Turbostat, progress)
+}
+
+// ExecProgress is Encode, counting frames, and without turbostat.
+func (e ExecExecutor) ExecProgress(ctx context.Context, argv []string, total time.Duration, fps float64, progress func(Progress)) (Measurement, error) {
+	return e.runProgress(ctx, argv, total, fps, "", progress)
+}
+
+// runProgress runs argv under turbostat (if set) and reports progress
+// by output time, or with fps set by frames.
+func (e ExecExecutor) runProgress(ctx context.Context, argv []string, total time.Duration, fps float64, turbostat string, progress func(Progress)) (Measurement, error) {
 	if len(argv) == 0 || filepath.Base(argv[0]) != "ffmpeg" {
 		return e.Exec(ctx, argv)
 	}
@@ -73,7 +96,7 @@ func (e ExecExecutor) Encode(ctx context.Context, argv []string, total time.Dura
 	// The child's fd 3 is ExtraFiles[0].
 	argv = slices.Insert(ffmpeg.Quiet(argv), 1, "-progress", "pipe:3", "-stats_period", "1")
 	var stats string
-	if e.Turbostat != "" {
+	if turbostat != "" {
 		f, err := os.CreateTemp("", "turbostat-*.txt")
 		if err != nil {
 			pw.Close()
@@ -82,7 +105,7 @@ func (e ExecExecutor) Encode(ctx context.Context, argv []string, total time.Dura
 		f.Close()
 		stats = f.Name()
 		defer os.Remove(stats)
-		argv = turbostatArgv(e.Turbostat, stats, argv)
+		argv = turbostatArgv(turbostat, stats, argv)
 	}
 	cmd := e.command(ctx, argv)
 	cmd.ExtraFiles = []*os.File{pw}
@@ -101,7 +124,10 @@ func (e ExecExecutor) Encode(ctx context.Context, argv []string, total time.Dura
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		readFFmpegProgress(pr, func(encoded time.Duration, end bool) {
+		readFFmpegProgress(pr, func(encoded time.Duration, frames int64, end bool) {
+			if fps > 0 {
+				encoded = time.Duration(float64(frames) / fps * float64(time.Second))
+			}
 			// The last report's out_time stops a frame short of the
 			// end; it's done.
 			if end && total > 0 {
