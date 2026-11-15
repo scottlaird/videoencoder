@@ -202,7 +202,9 @@ type Current struct {
 	Round   int       `json:"round"`
 	Version string    `json:"version,omitempty"` // the sample version (a scaled copy, say) being encoded
 	Detail  string    `json:"detail,omitempty"`
-	Answers []string  `json:"answers"`
+	// Searching is how far the search has narrowed (Current.Searching).
+	Searching string   `json:"searching,omitempty"`
+	Answers   []string `json:"answers"`
 }
 
 // File is a work file's progress.
@@ -264,12 +266,13 @@ func (s *Server) State() State {
 	}
 	if c := q.Current; c != nil {
 		out.Current = &Current{
-			Unit:    unit(c.Unit),
-			Started: c.Started,
-			Round:   c.Round,
-			Version: c.Sample,
-			Detail:  c.Detail,
-			Answers: append([]string{}, c.Answers...),
+			Unit:      unit(c.Unit),
+			Started:   c.Started,
+			Round:     c.Round,
+			Version:   c.Sample,
+			Detail:    c.Detail,
+			Searching: c.Searching,
+			Answers:   append([]string{}, c.Answers...),
 		}
 	}
 	var next []benchqueue.Unit

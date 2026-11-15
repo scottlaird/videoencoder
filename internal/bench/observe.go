@@ -58,7 +58,19 @@ type Event struct {
 	// Progress is an Encoded event's.
 	Progress Progress
 	Outcome  Outcome
-	Err      error
+	// Bracket is how far the search has narrowed, as of an Encoding,
+	// ScoringStarted or Scored event (a Scored event's includes its own
+	// score).
+	Bracket Bracket
+	Err     error
+}
+
+// Bracket is a search's range so far: the worst setting known to pass
+// (the answer, unless a better one turns up) and the best known to
+// fail. The answer lies between them.
+type Bracket struct {
+	Pass, Fail         float64
+	HavePass, HaveFail bool
 }
 
 func (b *Bench) observe(e Event) {

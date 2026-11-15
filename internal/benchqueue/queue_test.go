@@ -554,6 +554,25 @@ func TestGlobEscape(t *testing.T) {
 	}
 }
 
+func TestSearching(t *testing.T) {
+	for _, tt := range []struct {
+		flag string
+		b    bench.Bracket
+		want string
+	}{
+		{"-crf", bench.Bracket{}, ""},
+		{"-crf", bench.Bracket{Pass: 26.5, HavePass: true}, "searching: crf 26.5 passes"},
+		{"-crf", bench.Bracket{Fail: 29, HaveFail: true}, "searching: crf 29 fails"},
+		{"-crf", bench.Bracket{Pass: 26.5, Fail: 29, HavePass: true, HaveFail: true}, "searching between crf 26.5 and 29"},
+		// VideoToolbox's -q:v passes high and fails low: still low to high.
+		{"-q:v", bench.Bracket{Pass: 60, Fail: 55, HavePass: true, HaveFail: true}, "searching between q:v 55 and 60"},
+	} {
+		if got := searching(tt.flag, tt.b); got != tt.want {
+			t.Errorf("searching(%q, %+v) = %q, want %q", tt.flag, tt.b, got, tt.want)
+		}
+	}
+}
+
 func TestProgressText(t *testing.T) {
 	for _, tc := range []struct {
 		p    bench.Progress

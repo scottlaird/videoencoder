@@ -291,7 +291,11 @@ func nowLines(s queueScreen, st styles) []string {
 		}
 		return []string{st.dim.Render(why)}
 	}
-	out := []string{st.running.Render(fmt.Sprintf("▶ %s %8s  %s", c.Unit, duration(s.now.Sub(c.Started)), c.File))}
+	top := fmt.Sprintf("▶ %s %8s  %s", c.Unit, duration(s.now.Sub(c.Started)), c.File)
+	if c.Searching != "" {
+		top += " · " + c.Searching
+	}
+	out := []string{st.running.Render(top)}
 	detail := c.Detail
 	if c.Round > 0 {
 		detail = fmt.Sprintf("round %d · %s · %s", c.Round, c.Sample, c.Detail)

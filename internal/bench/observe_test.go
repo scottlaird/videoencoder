@@ -56,8 +56,16 @@ func TestStatus(t *testing.T) {
 
 	kinds := map[EventKind]int{}
 	finished := map[string]Event{}
+	lastScored := map[string]Event{}
 	for _, e := range events {
 		kinds[e.Kind]++
+		if e.Kind == Scored {
+			// A Scored event's bracket includes its own score.
+			if br := e.Bracket; (e.Pass && !br.HavePass) || (!e.Pass && !br.HaveFail) {
+				t.Errorf("Scored %s at %v (pass %v) has bracket %+v", e.Sample, e.Quality, e.Pass, br)
+			}
+			lastScored[e.Sample] = e
+		}
 		if e.Source != "big.mov" || e.Flagset != "x" {
 			t.Errorf("event for %s/%s %s, want only big.mov x", e.Source, e.Sample, e.Flagset)
 		}
@@ -80,6 +88,10 @@ func TestStatus(t *testing.T) {
 		}
 		if e.Quality != 18.7 || e.Outcome != Found || !e.Pass || e.VMAF < 95 {
 			t.Errorf("Finished %s = %+v, want 18.7 found with its VMAF", s, e)
+		}
+		// By the end the bracket has closed on the answer.
+		if br := lastScored[s].Bracket; !br.HavePass || br.Pass != 18.7 || (br.HaveFail && br.Fail <= 18.7) {
+			t.Errorf("%s's last bracket = %+v, want a pass at 18.7 and any fail above it", s, br)
 		}
 	}
 }
