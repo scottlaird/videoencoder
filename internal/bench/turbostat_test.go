@@ -45,7 +45,7 @@ func TestCPUStatsRoundTrip(t *testing.T) {
 	stats := CPUStats{BusyPct: 50, BusyMHz: 3790, IPC: 1.88, PkgWatts: 56.1, CoreWatts: 31.87, PkgTempC: math.NaN(), LLCHitPct: 92.64}
 	in := Row{Time: time.Unix(0, 0).UTC(), Scorer: "v6", Timed: true, CPUStats: &stats}
 	rec := in.record()
-	if got := rec[len(rec)-len(turbostatColumns):]; strings.Join(got, ",") != "50,3790,1.88,56.1,31.87,,92.64" {
+	if got := rec[cpuColumn : cpuColumn+len(turbostatColumns)]; strings.Join(got, ",") != "50,3790,1.88,56.1,31.87,,92.64" {
 		t.Errorf("CPU columns = %q", got)
 	}
 	got, err := parseRow(columnIndex(resultColumns), rec)

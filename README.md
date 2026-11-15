@@ -671,6 +671,9 @@ flagsets:
   nvenc-hevc:
     args: [-c:v, hevc_nvenc, -preset, p7]
     quality: {flag: -cq:v, min: 20, max: 45, step: 0.5}
+  qsv-hevc-hwdecode:
+    input_args: [-hwaccel, qsv, -hwaccel_output_format, qsv]  # before -i
+    args: [-vf, "vpp_qsv=format=p010", -c:v, hevc_qsv, -preset, medium]
 ```
 
 - **Quality ranges.** Each flagset's quality flag, range and step
@@ -693,6 +696,13 @@ flagsets:
   tone-mapped. Each row's `scorer` names the model, and only rows
   scored the way the config says count. Changing a model searches
   again, and changing it back reuses the earlier encodes.
+- **Input arguments.** `input_args` go before `-i`, for decoder
+  options: decoding on the GPU that encodes (`-hwaccel qsv` or
+  `-hwaccel cuda`, with `-hwaccel_output_format` to keep the frames
+  there) times the whole pipeline in hardware. They're part of the
+  flagset's key, and logged in `input_args`. Samples are still scaled
+  in software beforehand (see Scales), so hardware decoding only helps
+  at a sample's native size.
 - **References.** A sample is normally scored against itself. To
   measure what a lossy master costs, use `references` to score an
   export against the original it was made from.

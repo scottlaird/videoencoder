@@ -596,8 +596,9 @@ func (b *Bench) retime(t *task, results *Results) *pending {
 // one decode of the sample, and an output for each setting, so a batch
 // shares the decode. One setting is the usual single encode.
 func (b *Bench) encodeArgv(ps ...*pending) []string {
-	argv := []string{"ffmpeg", "-hide_banner", "-loglevel", "error", "-nostats", "-y",
-		"-i", ps[0].t.sample.path}
+	argv := []string{"ffmpeg", "-hide_banner", "-loglevel", "error", "-nostats", "-y"}
+	argv = append(argv, ps[0].t.fs.InputArgs...)
+	argv = append(argv, "-i", ps[0].t.sample.path)
 	for _, p := range ps {
 		argv = append(argv, "-map", "0:v:0")
 		argv = append(argv, p.t.fs.Args...)
@@ -803,6 +804,7 @@ func (b *Bench) record(results *Results, round int, p *pending) error {
 		Encoder:        t.fs.Encoder(),
 		Flagset:        t.name,
 		Args:           joinArgs(t.fs.Args),
+		InputArgs:      joinArgs(t.fs.InputArgs),
 		QualityFlag:    t.fs.Quality.Flag,
 		Quality:        p.quality,
 		Key:            p.key,

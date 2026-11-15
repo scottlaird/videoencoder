@@ -181,8 +181,13 @@ func (sc Scorings) of(c *Config, sample string) Scoring {
 // Flagset is one candidate set of encoder options, minus the quality
 // setting, which the search supplies.
 type Flagset struct {
-	Args    []string `yaml:"args"`
-	Quality Quality  `yaml:"quality"`
+	Args []string `yaml:"args"`
+	// InputArgs go before -i: decoder options, such as
+	// "-hwaccel qsv -hwaccel_output_format qsv" to decode the sample on
+	// the GPU that encodes it. They're part of the flagset's key, since
+	// a hardware decode can hand the encoder different frames.
+	InputArgs []string `yaml:"input_args"`
+	Quality   Quality  `yaml:"quality"`
 	// SDROnly skips HDR samples, for encoders that shouldn't be used
 	// for HDR: 8-bit H.264 in PQ, say.
 	SDROnly bool `yaml:"sdr_only"`
