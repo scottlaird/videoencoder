@@ -31,6 +31,8 @@ type fake struct {
 	during func(n int, sample, flagset string)
 	// fail makes Run fail for these flagsets.
 	fail map[string]bool
+	// failTimes makes Run fail this many more times for a flagset.
+	failTimes map[string]int
 	// busy is returned by Busy, popping one per call.
 	busy []string
 	// sdrOnly flagsets skip samples named hdr*.
@@ -38,7 +40,7 @@ type fake struct {
 }
 
 func newFakeBackend() *fake {
-	return &fake{done: map[[2]string]bool{}, fail: map[string]bool{}, sdrOnly: map[string]bool{}}
+	return &fake{done: map[[2]string]bool{}, fail: map[string]bool{}, failTimes: map[string]int{}, sdrOnly: map[string]bool{}}
 }
 
 func (f *fake) Status(_ context.Context, cfg *bench.Config) ([]bench.PairStatus, error) {
@@ -74,7 +76,13 @@ func (f *fake) Run(ctx context.Context, _ *bench.Config, sample, flagset string,
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if f.fail[flagset] {
+	f.mu.Lock()
+	flaky := f.failTimes[flagset] > 0
+	if flaky {
+		f.failTimes[flagset]--
+	}
+	f.mu.Unlock()
+	if f.fail[flagset] || flaky {
 		return errors.New("encoder exploded")
 	}
 	observe(bench.Event{Kind: bench.Scored, Round: 1, Source: sample, Sample: sample, Flagset: flagset, QualityFlag: "-crf", Quality: 25, VMAF: 95.5, Pass: true})
@@ -318,23 +326,45 @@ func TestFailedUnits(t *testing.T) {
 	b.fail["broken"] = true
 	r := newRunner(work, b)
 	run(t, r)
-	// Failures aren't retried in a loop, and don't stop the rest.
-	checkRan(t, b, "broken a.mov", "broken b.mov", "ok a.mov", "ok b.mov")
+	// Failures don't stop the rest, and are retried once, after it,
+	// not in a loop.
+	checkRan(t, b, "broken a.mov", "broken b.mov", "ok a.mov", "ok b.mov", "broken a.mov", "broken b.mov")
 	s := r.Snapshot()
-	if f := s.Files[0]; f.Failed != 2 || f.Done != 2 || len(f.Remaining) != 0 {
-		t.Errorf("counts = %d done, %d failed, %d remaining; want 2, 2, 0", f.Done, f.Failed, len(f.Remaining))
+	if f := s.Files[0]; f.Failed != 2 || f.Done != 2 || len(f.Remaining) != 0 || len(f.Retry) != 0 {
+		t.Errorf("counts = %d done, %d failed, %d remaining, %d to retry; want 2, 2, 0, 0", f.Done, f.Failed, len(f.Remaining), len(f.Retry))
 	}
 	if s.Recent[0].Err == nil {
 		t.Errorf("failed unit's result has no error")
 	}
 
-	// Run again unchanged: nothing to do. Edited: the failures retry.
+	// Run again unchanged: nothing to do. Edited: the failures run
+	// again, once.
 	run(t, r)
-	checkRan(t, b, "broken a.mov", "broken b.mov", "ok a.mov", "ok b.mov")
+	checkRan(t, b, "broken a.mov", "broken b.mov", "ok a.mov", "ok b.mov", "broken a.mov", "broken b.mov")
+	write(t, path, "# tried something\n"+config("broken", "ok"))
+	run(t, r)
+	checkRan(t, b, "broken a.mov", "broken b.mov", "ok a.mov", "ok b.mov", "broken a.mov", "broken b.mov", "broken a.mov", "broken b.mov")
 	b.fail["broken"] = false
 	write(t, path, "# fixed the encoder\n"+config("broken", "ok"))
 	run(t, r)
-	checkRan(t, b, "broken a.mov", "broken b.mov", "ok a.mov", "ok b.mov", "broken a.mov", "broken b.mov")
+	checkRan(t, b, "broken a.mov", "broken b.mov", "ok a.mov", "ok b.mov", "broken a.mov", "broken b.mov", "broken a.mov", "broken b.mov",
+		"broken a.mov", "broken b.mov")
+}
+
+// TestRetryAfterEverything: a unit that fails once is retried after
+// every other file's units, and its success counts.
+func TestRetryAfterEverything(t *testing.T) {
+	work := setup(t)
+	write(t, filepath.Join(work, "1.yaml"), config("flaky"))
+	write(t, filepath.Join(work, "2.yaml"), config("ok"))
+	b := newFakeBackend()
+	b.failTimes["flaky"] = 1
+	r := newRunner(work, b)
+	run(t, r)
+	checkRan(t, b, "flaky a.mov", "flaky b.mov", "ok a.mov", "ok b.mov", "flaky a.mov")
+	if f := r.Snapshot().Files[0]; f.Done != 2 || f.Failed != 0 {
+		t.Errorf("flaky file: %d done, %d failed; want 2, 0", f.Done, f.Failed)
+	}
 }
 
 func TestWaitsWhileBusy(t *testing.T) {

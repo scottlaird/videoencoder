@@ -722,8 +722,12 @@ in the middle of an encode.
 
 A unit that ends without an answer, because of a failed encode, a
 missing sample, or similar, is remembered against the hash of its
-file. It is retried only after that file changes, not on every
-rescan. An abandoned unit isn't remembered.
+file. When nothing else is left to run, each failed unit gets one
+retry, since some failures are passing (a seed file fixed, a flaky
+driver) and nothing else would bring the unit back. After that it runs
+again only when its file changes, once per change, not on every
+rescan. An abandoned unit isn't remembered, and an abandoned retry
+keeps its turn.
 
 Searches run in-process through `Bench.Run`, with filters that match
 exactly one sample and one flagset. `Bench.Observe` reports each
