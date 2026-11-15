@@ -103,3 +103,55 @@ func TestExecProgressCountsFrames(t *testing.T) {
 		t.Errorf("ExecProgress reported %v, want %v", got, want)
 	}
 }
+
+// TestEncodeErrorUnderTurbostat runs a fake ffmpeg that fails, under a
+// fake turbostat that exits with its status as turbostat does: the
+// error should name ffmpeg and quote its last words, not turbostat's
+// exit status alone.
+func TestEncodeErrorUnderTurbostat(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a shell")
+	}
+	dir := t.TempDir()
+	write := func(name, script string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	ts := write("turbostat", "#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done; shift\n\"$@\"\nexit $?\n")
+	for _, tc := range []struct {
+		name, ffmpeg string
+		want         []string
+	}{
+		{"error", "#!/bin/sh\necho 'noise' >&2\necho 'Temporal filtering needs at least 4 B-Frames (-bf 4).' >&2\nexit 234\n",
+			[]string{"running ffmpeg under turbostat", "exit status 234", "Temporal filtering needs at least 4 B-Frames"}},
+		{"crash", "#!/bin/sh\nexit 139\n",
+			[]string{"running ffmpeg under turbostat", "exit status 139", "killed by segmentation fault"}},
+	} {
+		ff := write("ffmpeg", tc.ffmpeg)
+		_, err := ExecExecutor{Turbostat: ts}.Encode(context.Background(), []string{ff, "-i", "in.mov", "out.mp4"}, 10*time.Second, func(Progress) {})
+		if err == nil {
+			t.Fatalf("%s: Encode succeeded, want an error", tc.name)
+		}
+		for _, w := range tc.want {
+			if !strings.Contains(err.Error(), w) {
+				t.Errorf("%s: Encode error %q doesn't say %q", tc.name, err, w)
+			}
+		}
+	}
+}
+
+func TestTailWriterLastLines(t *testing.T) {
+	tw := &tailWriter{max: 32}
+	for _, s := range []string{"first line that scrolls away\n", "a\n\n", "b\nc\n"} {
+		tw.Write([]byte(s))
+	}
+	if got, want := tw.lastLines(2), "b / c"; got != want {
+		t.Errorf("lastLines(2) = %q, want %q", got, want)
+	}
+	if got := len(tw.buf); got > 32 {
+		t.Errorf("kept %d bytes, want at most 32", got)
+	}
+}
