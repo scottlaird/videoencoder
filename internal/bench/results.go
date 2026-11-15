@@ -95,6 +95,9 @@ type Row struct {
 	// otherwise, and in older rows. Like WallS, it's the whole batch's
 	// for an encode that isn't Timed.
 	CPUStats *CPUStats
+	// InputArgs is the flagset's Flagset.InputArgs, joined like Args;
+	// empty for most flagsets, and in older rows.
+	InputArgs string
 	// Timed says WallS, UserS, SysS and MaxRSSKB are this encode's own.
 	// An encode made with others in one ffmpeg (Flagset.Batch) isn't:
 	// its times are the whole batch's. Such a search's answer is then
@@ -116,7 +119,11 @@ var resultColumns = []string{
 	"vmaf_model", "target_vmaf", "pass", "score_s", "batch_size", "batch_id",
 	"encbench_version", "config", "job", "out_sha256",
 	"cpu_busy_pct", "cpu_mhz", "cpu_ipc", "cpu_pkg_w", "cpu_core_w", "cpu_pkg_temp_c", "cpu_llc_hit_pct",
+	"input_args",
 }
+
+// cpuColumn is the first of turbostatColumns' columns in resultColumns.
+var cpuColumn = slices.Index(resultColumns, "cpu_busy_pct")
 
 // scorer is the current scoring method: v2 added CIEDE2000 on sampled
 // frames; v3 the block color shift; v4 measured it as ΔE_ITP before any
@@ -161,7 +168,7 @@ func (r *Row) record() []string {
 			rec = append(rec, ftoa(*f))
 		}
 	}
-	return rec
+	return append(rec, r.InputArgs)
 }
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
@@ -323,7 +330,7 @@ func parseRow(col map[string]int, rec []string) (Row, error) {
 	var cpu CPUStats
 	gotCPU := false
 	for i, f := range cpu.fields() {
-		name := resultColumns[len(resultColumns)-len(turbostatColumns)+i]
+		name := resultColumns[cpuColumn+i]
 		*f = math.NaN()
 		if opt(name) != "" {
 			*f, gotCPU = optFloat(name), true
@@ -332,6 +339,7 @@ func parseRow(col map[string]int, rec []string) (Row, error) {
 	if gotCPU {
 		r.CPUStats = &cpu
 	}
+	r.InputArgs = opt("input_args")
 	return r, errors.Join(errs...)
 }
 
@@ -527,10 +535,15 @@ func hashKey(parts ...string) string {
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
-// flagsetKey identifies a flagset by what it does (its arguments and
-// quality flag), so renaming it doesn't invalidate its results.
+// flagsetKey identifies a flagset by what it does (its arguments, input
+// arguments and quality flag), so renaming it doesn't invalidate its results.
 func flagsetKey(f *Flagset) string {
-	return hashKey(append([]string{"flagset/v1", f.Quality.Flag}, f.Args...)...)
+	parts := append([]string{"flagset/v1", f.Quality.Flag}, f.Args...)
+	// Without input arguments, keys are as they were before them.
+	if len(f.InputArgs) > 0 {
+		parts = append(append(parts, "input"), f.InputArgs...)
+	}
+	return hashKey(parts...)
 }
 
 // encodeKey identifies one encode and how it was scored (see

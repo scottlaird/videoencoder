@@ -1306,6 +1306,43 @@ func TestEncodeArgvBatch(t *testing.T) {
 	}
 }
 
+func TestEncodeArgvInputArgs(t *testing.T) {
+	fs := &Flagset{InputArgs: []string{"-hwaccel", "qsv", "-hwaccel_output_format", "qsv"},
+		Args: []string{"-c:v", "hevc_qsv", "-preset", "medium"}, Quality: Quality{Flag: "-global_quality"}}
+	task := &task{sample: &sample{path: "in.mov"}, fs: fs}
+	got := strings.Join((&Bench{}).encodeArgv(&pending{t: task, quality: 25, out: "a.mp4"}), " ")
+	want := "ffmpeg -hide_banner -loglevel error -nostats -y -hwaccel qsv -hwaccel_output_format qsv -i in.mov" +
+		" -map 0:v:0 -c:v hevc_qsv -preset medium -global_quality 25 -an -tag:v hvc1 a.mp4"
+	if got != want {
+		t.Errorf("encodeArgv =\n  %s\nwant\n  %s", got, want)
+	}
+}
+
+func TestFlagsetKeyInputArgs(t *testing.T) {
+	plain := &Flagset{Args: []string{"-c:v", "hevc_qsv"}, Quality: Quality{Flag: "-global_quality"}}
+	// A flagset without input arguments keeps the key it had before
+	// they existed, so its logged results still count.
+	if got, want := flagsetKey(plain), hashKey("flagset/v1", "-global_quality", "-c:v", "hevc_qsv"); got != want {
+		t.Errorf("flagsetKey(plain) = %s, want %s", got, want)
+	}
+	hw := *plain
+	hw.InputArgs = []string{"-hwaccel", "qsv"}
+	if flagsetKey(&hw) == flagsetKey(plain) {
+		t.Error("input arguments don't change the flagset key")
+	}
+}
+
+func TestInputArgsRoundTrip(t *testing.T) {
+	in := Row{Time: time.Unix(0, 0).UTC(), Scorer: "v6", Timed: true, InputArgs: "-hwaccel cuda -hwaccel_output_format cuda"}
+	got, err := parseRow(columnIndex(resultColumns), in.record())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.InputArgs != in.InputArgs {
+		t.Errorf("InputArgs = %q, want %q", got.InputArgs, in.InputArgs)
+	}
+}
+
 func TestCAMBISize(t *testing.T) {
 	for _, tt := range []struct{ w, h, wantW, wantH uint64 }{
 		{1920, 1080, 1920, 1080},
