@@ -645,7 +645,7 @@ func (b *Bench) encodeAll(ctx context.Context, round int, batch []*pending) erro
 		} else {
 			slog.Info("Encoding", "sample", p0.t.sample.name, "flagset", p0.t.name, "quality", qs)
 		}
-		ev := Event{Kind: kind, Round: round, Source: p0.t.sample.source, Sample: p0.t.sample.name, Flagset: p0.t.name, QualityFlag: p0.t.fs.Quality.Flag, Quality: p0.quality, Qualities: qs}
+		ev := Event{Kind: kind, Round: round, Source: p0.t.sample.source, Sample: p0.t.sample.name, Flagset: p0.t.name, QualityFlag: p0.t.fs.Quality.Flag, Quality: p0.quality, Qualities: qs, Bracket: p0.t.bracket()}
 		b.observe(ev)
 		m, err := b.encode(ctx, ev, p0.t.sample.vd.Duration, b.encodeArgv(group...))
 		if ctx.Err() != nil {
@@ -674,6 +674,23 @@ func (b *Bench) encodeAll(ctx context.Context, round int, batch []*pending) erro
 		}
 	}
 	return nil
+}
+
+// bracket is t's search's range so far, in settings; empty when it has
+// no search (a timing re-run's answer is already known).
+func (t *task) bracket() Bracket {
+	if t.search == nil {
+		return Bracket{}
+	}
+	pass, fail := t.search.Bracket()
+	var br Bracket
+	if pass >= 0 {
+		br.Pass, br.HavePass = t.fs.Quality.indexToQuality(pass), true
+	}
+	if fail >= 0 {
+		br.Fail, br.HaveFail = t.fs.Quality.indexToQuality(fail), true
+	}
+	return br
 }
 
 // progressLogEvery is how often encode logs a long encode's progress.
@@ -732,7 +749,7 @@ func (b *Bench) scoreAll(ctx context.Context, round int, batch []*pending, recor
 			}
 		}
 		b.observe(Event{Kind: ScoringStarted, Round: round, Source: p.t.sample.source, Sample: p.t.sample.name, Flagset: p.t.name,
-			QualityFlag: p.t.fs.Quality.Flag, Quality: p.quality, Qualities: qs})
+			QualityFlag: p.t.fs.Quality.Flag, Quality: p.quality, Qualities: qs, Bracket: p.t.bracket()})
 	}
 
 	sem := make(chan struct{}, b.Cfg.VMAFJobs)
@@ -839,6 +856,7 @@ func (b *Bench) record(results *Results, round int, p *pending) error {
 		"kbps", int(row.Kbps), "vmaf", m.VMAF, "ciede2000", m.CIEDE2000, "color_shift", m.ColorShiftP99, "pass", margin >= 0)
 	t.search.Observe(p.i, margin >= 0, margin)
 	ev.Kind, ev.Kbps, ev.VMAF, ev.Pass = Scored, row.Kbps, m.VMAF, margin >= 0
+	ev.Bracket = t.bracket()
 	b.observe(ev)
 	return nil
 }

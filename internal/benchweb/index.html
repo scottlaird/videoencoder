@@ -141,7 +141,8 @@ function render(s) {
   if (c) {
     const detail = c.round > 0 ? `round ${c.round} · ${esc(c.version)} · ${esc(c.detail)}` : esc(c.detail);
     $("now").innerHTML =
-      `<div class="now-unit run">▶ <code>${esc(c.flagset)}</code> on <code>${esc(c.sample)}</code> <span class="muted mono" id="now-elapsed"></span></div>` +
+      `<div class="now-unit run">▶ <code>${esc(c.flagset)}</code> on <code>${esc(c.sample)}</code> <span class="muted mono" id="now-elapsed"></span>` +
+      (c.searching ? ` <span class="mono">· ${esc(c.searching)}</span>` : "") + `</div>` +
       `<div class="muted">${esc(c.file)}</div>` +
       (detail ? `<div class="mono">${detail}</div>` : "") +
       (c.answers.length ? `<ul class="answers">${c.answers.map(a => `<li class="ok mono">✓ ${esc(a)}</li>`).join("")}</ul>` : "");

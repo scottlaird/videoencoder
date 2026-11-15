@@ -110,6 +110,10 @@ type Current struct {
 	Sample string
 	// Detail is the latest step, such as "crf 23.4 → VMAF 95.31 pass".
 	Detail string
+	// Searching is how far the search has narrowed, such as "searching
+	// between crf 26.5 and 29"; empty before its first score, and while
+	// re-timing an answer.
+	Searching string
 	// Answers are the versions finished so far, as in Result.
 	Answers []string
 }
@@ -621,10 +625,12 @@ func (r *Runner) runUnit(ctx context.Context, u Unit) {
 			}
 			step = fmt.Sprintf("encoding %s %s", flagName(ev.QualityFlag), strings.Join(qs, ", "))
 			cur.Detail = step
+			cur.Searching = searching(ev.QualityFlag, ev.Bracket)
 		case bench.Timing:
 			cur.Round, cur.Sample = ev.Round, ev.Sample
 			step = fmt.Sprintf("timing %s %s by itself", flagName(ev.QualityFlag), ftoa(ev.Quality))
 			cur.Detail = step
+			cur.Searching = ""
 		case bench.Encoded:
 			cur.Detail = step + " · " + progressText(ev.Progress)
 		case bench.ScoringStarted:
@@ -634,6 +640,7 @@ func (r *Runner) runUnit(ctx context.Context, u Unit) {
 				qs[i] = ftoa(q)
 			}
 			cur.Detail = fmt.Sprintf("scoring %s %s", flagName(ev.QualityFlag), strings.Join(qs, ", "))
+			cur.Searching = searching(ev.QualityFlag, ev.Bracket)
 			// A round announces each task's scorings in a row, then
 			// starts them all.
 			if last != bench.ScoringStarted {
@@ -654,6 +661,7 @@ func (r *Runner) runUnit(ctx context.Context, u Unit) {
 			}
 			cur.Sample = ev.Sample
 			cur.Detail = fmt.Sprintf("%s %s → VMAF %.2f %s", flagName(ev.QualityFlag), ftoa(ev.Quality), ev.VMAF, verdict)
+			cur.Searching = searching(ev.QualityFlag, ev.Bracket)
 		case bench.Failed:
 			failures = append(failures, fmt.Sprintf("%s: %v", ev.Sample, ev.Err))
 			cur.Answers = append(cur.Answers, fmt.Sprintf("%s failed: %v", ev.Sample, ev.Err))
@@ -769,6 +777,22 @@ func clock(d time.Duration) string {
 }
 
 func flagName(f string) string { return strings.TrimLeft(f, "-") }
+
+// searching describes a search's bracket for the unit's line: the range
+// its answer lies in, or the one end known so far.
+func searching(flag string, b bench.Bracket) string {
+	name := flagName(flag)
+	switch {
+	case b.HavePass && b.HaveFail:
+		lo, hi := min(b.Pass, b.Fail), max(b.Pass, b.Fail)
+		return fmt.Sprintf("searching between %s %s and %s", name, ftoa(lo), ftoa(hi))
+	case b.HavePass:
+		return fmt.Sprintf("searching: %s %s passes", name, ftoa(b.Pass))
+	case b.HaveFail:
+		return fmt.Sprintf("searching: %s %s fails", name, ftoa(b.Fail))
+	}
+	return ""
+}
 
 func ftoa(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }
 

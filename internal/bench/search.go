@@ -389,6 +389,10 @@ func (s *Search) Observe(i int, pass bool, margin float64) {
 // Answer is the worst passing index found so far, or -1 if none.
 func (s *Search) Answer() int { return s.lo }
 
+// Bracket is where the answer lies so far: Answer, and the best index
+// known to fail; -1 for either not found yet.
+func (s *Search) Bracket() (pass, fail int) { return s.lo, s.hi }
+
 // indexToQuality converts a step index to the encoder's quality value.
 func (q Quality) indexToQuality(i int) float64 {
 	v := float64(i) * q.Step
