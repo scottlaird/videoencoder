@@ -122,7 +122,9 @@ func metric(f float64) *float64 {
 	return &f
 }
 
-func resultRow(log int, r *bench.Row) ResultRow {
+// ResultRowOf is r as /api/results sends it, from the log at index log of
+// Results.Logs.
+func ResultRowOf(log int, r *bench.Row) ResultRow {
 	m := r.Metrics
 	row := ResultRow{
 		Log: log, Sample: r.Sample, Reference: r.Reference, Encoder: r.Encoder,
@@ -167,7 +169,7 @@ func (s *Server) Results() (Results, error) {
 			return Results{}, err
 		}
 		for j := range res.Rows {
-			out.Rows = append(out.Rows, resultRow(i, &res.Rows[j]))
+			out.Rows = append(out.Rows, ResultRowOf(i, &res.Rows[j]))
 		}
 	}
 	return out, nil

@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Encode Explorer</title>
+<style>
+:root { --bg: #ffffff; --ink: #1f1e1c; --muted: #6b6862; --line: #e3e0da; --surface: #f7f6f3; --err: #a8322a;
+  --accent: #2f5fa7; --mono: ui-monospace, "SF Mono", Menlo, monospace; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --bg: #293441; --ink: #e6e9ee; --muted: #a3acb8; --line: #3d4a5a; --surface: #222b36;
+    --err: #f08a80; --accent: #8db3ec; }
+}
+:root[data-theme="dark"] { --bg: #293441; --ink: #e6e9ee; --muted: #a3acb8; --line: #3d4a5a; --surface: #222b36;
+  --err: #f08a80; --accent: #8db3ec; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.4 -apple-system, system-ui, sans-serif; }
+header { padding: 12px 16px 0; }
+h1 { font-size: 16px; margin: 0; }
+a { color: inherit; }
+#status { color: var(--muted); font-size: 13px; }
+.layout { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 16px; padding: 12px 16px; }
+@media (max-width: 700px) { .layout { grid-template-columns: 1fr; } }
+aside { font-size: 13px; }
+fieldset { border: 0; border-top: 1px solid var(--line); margin: 0; padding: 8px 0 10px; }
+legend { font-weight: 600; padding: 0; display: flex; justify-content: space-between; width: 100%; }
+legend button { font: inherit; font-weight: 400; font-size: 12px; color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; }
+label.opt { display: flex; gap: 6px; align-items: baseline; padding: 1px 0; cursor: pointer; }
+label.opt span.v { flex: 1; overflow-wrap: anywhere; }
+label.opt span.n { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
+label.opt.zero { color: var(--muted); }
+button.more { font: inherit; font-size: 12px; color: var(--accent); background: none; border: 0; padding: 2px 0; cursor: pointer; }
+#c { width: 100%; height: 34rem; }
+#info { color: var(--muted); font-size: 13px; }
+#missing { color: var(--muted); font-size: 12px; }
+#mismatch { font-size: 13px; margin: 6px 0; }
+/* The chart's own settings, boxed off from the filters below them. */
+.controls { border: 1px solid var(--line); border-radius: 6px; padding: 0 10px; margin-bottom: 12px; }
+.controls fieldset + fieldset { border-top: 1px solid var(--line); }
+.controls fieldset:first-child { border-top: 0; }
+#costbox select { width: 100%; font: inherit; font-size: 12px; margin: 2px 0 6px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 4px; }
+#costbox label.num { display: flex; justify-content: space-between; align-items: center; gap: 6px; padding: 2px 0; }
+#costbox input { width: 80px; font: inherit; font-size: 12px; text-align: right; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; }
+#ftable { overflow-x: auto; }
+#ftable sup { color: var(--muted); }
+#ftable table { border-collapse: collapse; font-size: 13px; margin: 10px 0; }
+#ftable caption { text-align: left; font-weight: 600; padding-bottom: 4px; }
+#ftable th, #ftable td { padding: 3px 10px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+#ftable td.num, #ftable th.num { text-align: right; font-variant-numeric: tabular-nums; }
+#ftable td:first-child, #ftable th:first-child { padding-right: 0; text-align: center; }
+#ftable .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+#ftable .note { color: var(--muted); font-size: 12px; }
+#ftable tr.off td { font-style: italic; }
+#mismatch button { font: inherit; padding: 2px 10px; border-radius: 6px; border: 1px solid var(--accent); background: none; color: var(--accent); cursor: pointer; }
+#error { color: var(--err); font-family: var(--mono); white-space: pre-wrap; }
+details summary { color: var(--muted); cursor: pointer; font-size: 13px; }
+pre { font: 11px/1.4 var(--mono); white-space: pre-wrap; max-height: 300px; overflow: auto; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.3.2/dist/echarts.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
+</head>
+<body>
+<header>
+  <h1>Encode explorer <small><a href="index.html">query</a> · <a href="chart.html">canned chart</a></small></h1>
+  <div id="status">Loading…</div>
+</header>
+<div class="layout">
+  <aside>
+    <div class="controls">
+    <fieldset>
+      <legend>Software encoders</legend>
+      <label class="opt"><input type="radio" name="sw" value="mac" checked><span class="v">Mac Studio only</span></label>
+      <label class="opt"><input type="radio" name="sw" value="all"><span class="v">Every machine, one line each</span></label>
+    </fieldset>
+    <fieldset>
+      <legend>Time</legend>
+      <label class="opt"><input type="radio" name="time" value="wall" checked><span class="v">Elapsed (wall clock)</span></label>
+      <label class="opt"><input type="radio" name="time" value="cpu"><span class="v">CPU (user + system)</span></label>
+    </fieldset>
+    <fieldset>
+      <legend>Frontier</legend>
+      <label class="opt"><input type="checkbox" id="fbox"><span class="v">Highlight the size/speed frontier, with a table</span></label>
+    </fieldset>
+    <fieldset id="costbox">
+      <legend>Cost (frontier table)</legend>
+      <select id="cpreset" aria-label="Price set"></select>
+      <label class="num"><span>$ per vCPU-hour</span><input id="ccpu" type="number" min="0" step="0.001"></label>
+      <label class="num"><span>$ per GB delivered</span><input id="cgb" type="number" min="0" step="0.001"></label>
+      <label class="num"><span>$ per GB-month stored</span><input id="cstore" type="number" min="0" step="0.001"></label>
+      <label class="num"><span>Months stored</span><input id="cmonths" type="number" min="0" step="1"></label>
+    </fieldset>
+    </div>
+    <div id="facets"></div>
+  </aside>
+  <section>
+    <div id="error"></div>
+    <div id="c"></div>
+    <div id="info"></div>
+    <div id="ftable"></div>
+    <div id="mismatch"></div>
+    <div id="missing"></div>
+    <details><summary>SQL</summary><pre id="sql"></pre></details>
+  </section>
+</div>
+
+<script type="module">
+import { openDb, rowsOf } from './db.js';
+import { shape, frontier, points, CODEC } from './shape.js';
+import { PRESETS, VCPU_PER_CPU_S, costs, breakEven, cheapest, dollars, plays } from './cost.js';
+
+// Facets, top to bottom. Options in each are what's left under every
+// *other* facet's selection; ticks within one facet are ORed.
+const FACETS = [
+  { key: 'res', label: 'Resolution' },
+  { key: 'codec', label: 'Codec', show: v => CODEC[v] ?? v },
+  { key: 'family', label: 'Encoder' },
+  { key: 'device', label: 'Encoded on' },
+  { key: 'preset', label: 'Preset', show: v => v || '(none)' },
+  { key: 'out_bit_depth', label: 'Output bit depth', show: v => `${v}-bit` },
+  { key: 'keyframes', label: 'Keyframes' },
+  { key: 'variant', label: 'Variant' },
+  { key: 'clip', label: 'Clip' },
+];
+const FOLD = 8;
+const sel = Object.fromEntries(FACETS.map(f => [f.key, new Set()]));
+// Starting point: about Part 5's chart.
+sel.res.add('1080p'); sel.codec.add('av1'); sel.keyframes.add('kf10'); sel.variant.add('default');
+const open = new Set();  // facets unfolded past FOLD
+
+// Every chart draws each search's VMAF 95 answer on the standard clips,
+// scored the standard way, against their own source.
+const BASE = `CREATE VIEW base AS SELECT * FROM answers
+  WHERE std_clip AND std_scorer AND reference = sample`;
+
+const $ = id => document.getElementById(id);
+const lit = v => `'${String(v).replace(/'/g, "''")}'`;
+function where(except) {
+  const conds = [];
+  if (document.querySelector('input[name=sw]:checked').value === 'mac') conds.push(`(NOT software OR machine = 'mac')`);
+  for (const f of FACETS) {
+    if (f.key === except || sel[f.key].size === 0) continue;
+    conds.push(`${f.key} IN (${[...sel[f.key]].map(lit).join(', ')})`);
+  }
+  return conds.length ? 'WHERE ' + conds.join('\n  AND ') : '';
+}
+
+let conn, chart;
+
+async function renderFacets() {
+  const counts = await Promise.all(FACETS.map(f =>
+    conn.query(`SELECT ${f.key} AS v, count(*)::INT AS n FROM base ${where(f.key)} GROUP BY 1 ORDER BY n DESC, v`).then(rowsOf)));
+  const box = $('facets');
+  box.replaceChildren();
+  FACETS.forEach((f, i) => {
+    const rows = counts[i].filter(r => r.v !== null);
+    // A ticked value that's no longer available stays, at 0, so it can be unticked.
+    for (const v of sel[f.key]) if (!rows.some(r => r.v === v)) rows.push({ v, n: 0 });
+    const fs = document.createElement('fieldset');
+    const lg = document.createElement('legend');
+    lg.textContent = f.label;
+    if (sel[f.key].size) {
+      const clear = document.createElement('button');
+      clear.textContent = 'clear';
+      clear.onclick = () => { sel[f.key].clear(); update(); };
+      lg.append(clear);
+    }
+    fs.append(lg);
+    // Ticked values first, so folding never hides one.
+    rows.sort((a, b) => sel[f.key].has(b.v) - sel[f.key].has(a.v));
+    const shown = open.has(f.key) ? rows : rows.slice(0, FOLD);
+    for (const r of shown) {
+      const l = document.createElement('label');
+      l.className = 'opt' + (r.n ? '' : ' zero');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = sel[f.key].has(r.v);
+      cb.onchange = () => { cb.checked ? sel[f.key].add(r.v) : sel[f.key].delete(r.v); update(); };
+      const v = document.createElement('span'); v.className = 'v'; v.textContent = f.show ? f.show(r.v) : r.v;
+      const n = document.createElement('span'); n.className = 'n'; n.textContent = r.n.toLocaleString();
+      l.append(cb, v, n);
+      fs.append(l);
+    }
+    if (rows.length > FOLD) {
+      const b = document.createElement('button');
+      b.className = 'more';
+      b.textContent = open.has(f.key) ? 'show fewer' : `show all ${rows.length}`;
+      b.onclick = () => { open.has(f.key) ? open.delete(f.key) : open.add(f.key); renderFacets(); };
+      fs.append(b);
+    }
+    box.append(fs);
+  });
+}
+
+function niceLog(v, up) {
+  const p = 10 ** Math.floor(Math.log10(v));
+  for (const s of up ? [1, 2, 5, 10] : [10, 5, 2, 1]) if (up ? s * p >= v : s * p <= v) return s * p;
+  return p;
+}
+
+const TIME = {
+  wall: { expr: 'wall_s', axis: '← encode wall time, seconds (geometric mean)', units: 's' },
+  cpu: { expr: 'user_s + sys_s', axis: '← encode CPU time, seconds (geometric mean)', units: 'CPU-s' },
+};
+
+async function renderChart() {
+  const w = where();
+  // CPU-seconds to vCPU-seconds, by machine, for the cost model.
+  const vcpuFactor = 'CASE device ' + Object.entries(VCPU_PER_CPU_S).map(([d, f]) => `WHEN ${lit(d)} THEN ${f}`).join(' ') + ' ELSE 1 END';
+  const time = TIME[document.querySelector('input[name=time]:checked').value];
+  // files: a signature of each clip's output, to spot presets that give
+  // identical files (the oldest rows have no hash; their size stands in).
+  const sql = `SELECT res, codec, family, software, device, variant, bit_depth, keyframes, preset,
+       count(*)::INT AS n, geomean(${time.expr}) AS x, geomean(kbps) AS y,
+       geomean((user_s + sys_s) * ${vcpuFactor}) AS vcpu, geomean(bytes) AS bytes,
+       list(clip ORDER BY clip) AS clips,
+       string_agg(coalesce(out_sha256, 'bytes:' || bytes), ',' ORDER BY sample) AS files
+FROM base
+${w}
+GROUP BY ALL`;
+  $('sql').textContent = sql;
+  const rows = rowsOf(await conn.query(sql)).map(r => ({ ...r, clips: [...r.clips.toArray()] }));
+  const expected = Object.fromEntries(rowsOf(await conn.query(
+    `SELECT res, count(DISTINCT sample)::INT AS n FROM base ${w} GROUP BY res`)).map(r => [r.res, r.n]));
+  const { series, legend, missing, partial, shared } = shape(rows, expected, time.units);
+  const front = frontier(series);
+  const xs = series.flatMap(s => s.data.map(d => d.value[0]));
+  const res = Object.keys(expected).join(' and ') || 'nothing';
+  chart.setOption({
+    animation: false,
+    title: { text: `File size vs encode ${time === TIME.cpu ? 'CPU ' : ''}time at VMAF 95, ${res}`, left: 'center' },
+    tooltip: { trigger: 'item' },
+    xAxis: { type: 'log', logBase: 10, name: time.axis, nameLocation: 'middle', nameGap: 30,
+             ...(xs.length ? { min: niceLog(Math.min(...xs), false), max: niceLog(Math.max(...xs), true) } : {}) },
+    yAxis: { type: 'value', name: '← bitrate, kb/s (geometric mean)', nameRotate: 90, nameLocation: 'middle', nameGap: 55, scale: true },
+    grid: { bottom: 40 + 22 * Math.ceil(legend.length / 3), left: 70, right: 30 },
+    legend: { bottom: 5, data: legend },
+    series: showFrontier ? [...series, frontierSeries(front)] : series,
+  }, true);
+  renderFrontierTable(showFrontier ? front : null, time.units, points(series));
+  $('info').textContent = `${series.length} lines, ${xs.length} points; each point the geometric mean over ` +
+    Object.entries(expected).map(([r, n]) => `${n} ${r} clips`).join(' and ') + '.';
+
+  // Lines with no preset on every clip: offer the clips all lines share.
+  const box = $('mismatch');
+  box.replaceChildren();
+  if (partial.length) {
+    const total = Object.values(expected).reduce((a, b) => a + b, 0);
+    const t = document.createElement('span');
+    t.textContent = `${partial.length} line${partial.length > 1 ? 's' : ''} not drawn, with no preset on every clip: ` +
+      partial.map(l => `${l.name} (${l.clips.length}/${expected[l.first.res]})`).join(', ') + '. ';
+    box.append(t);
+    if (shared.length && shared.length < total) {
+      const b = document.createElement('button');
+      b.textContent = `Show only the ${shared.length} clips every line has`;
+      b.title = shared.join(', ');
+      b.onclick = () => { sel.clip = new Set(shared); update(); };
+      box.append(b);
+    } else if (!shared.length) {
+      box.append('No clip is common to every line.');
+    }
+  }
+  const miss = [...new Set(missing.filter(r => !partial.some(l => l.name === r.line))
+    .map(r => `${r.line} ${r.preset} (${r.n}/${expected[r.res]})`))];
+  $('missing').textContent = miss.length ? `Presets not drawn, clips missing: ${miss.slice(0, 30).join('; ')}${miss.length > 30 ? `; and ${miss.length - 30} more` : ''}.` : '';
+}
+
+// The frontier: a fat translucent highlighter along the best size reachable
+// at each time (a staircase: until the next frontier point, you're stuck
+// with the last one's size), and a ring on each frontier point.
+let showFrontier = false;
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+// The picked table row's point gets a bigger, thicker ring in the accent color.
+// frontierSeries(front, rows): the staircase through the frontier, with a
+// ring on the picked table row (which may be off the frontier).
+function frontierSeries(front, rows = front) {
+  const picked = rows.find(p => `${p.line}|${p.preset}` === frontierRef);
+  return {
+    id: 'frontier', name: 'Frontier', type: 'line', step: 'end', z: 1, silent: true,
+    data: front.map(p => ({ value: [p.x, p.y] })),
+    markPoint: {
+      silent: true, animation: false, label: { show: false },
+      data: picked ? [{ coord: [picked.x, picked.y], symbol: 'circle', symbolSize: 28,
+        itemStyle: { color: 'rgba(0,0,0,0)', borderColor: css('--accent'), borderWidth: 3.5 } }] : [],
+    },
+    symbol: 'circle', symbolSize: 20,
+    itemStyle: { color: 'rgba(0,0,0,0)', borderColor: css('--ink'), borderWidth: 1.5 },
+    lineStyle: { width: 16, color: '#f2c94c', opacity: 0.35, cap: 'round', join: 'round' },
+    label: { show: false }, tooltip: { show: false }, emphasis: { disabled: true },
+  };
+}
+
+// The frontier row the others are compared with ('line|preset'), or null
+// to compare each row with the next-faster one. Kept across redraws while
+// that point stays on the frontier.
+let frontierRef = null;
+let lastFront = null, lastUnits = '';
+
+// Prices for the cost columns: a preset, or the user's own (custom).
+const prices = { cpu: PRESETS[0].cpu, gb: PRESETS[0].gb, store: PRESETS[0].store, months: 36 };
+let lastAll = [];
+
+function renderFrontierTable(front, units, all = lastAll) {
+  lastFront = front; lastUnits = units; lastAll = all;
+  const box = $('ftable');
+  box.replaceChildren();
+  if (!front) return;
+  if (!front.length) { box.textContent = 'No points drawn.'; return; }
+  const key = p => `${p.line}|${p.preset}`;
+  // Which drawn point is cheapest over each range of plays. Costs use CPU
+  // time whatever the chart's time axis, so with wall time a point off the
+  // frontier can win somewhere: those get rows too, in time order, so the
+  // break-evens and cheapest ranges read down the table.
+  const ranges = cheapest(all, prices);
+  const rangeText = r => r.to === Infinity ? `${plays(r.from)}+` : `${plays(r.from)}–${plays(r.to)}`;
+  const offPts = [...new Map(ranges.filter(r => !front.some(p => key(p) === key(r.point)))
+    .map(r => [key(r.point), { ...r.point, off: true }])).values()];
+  const rows = [...front, ...offPts].sort((a, b) => a.x - b.x || a.y - b.y);
+  const ref = rows.find(p => key(p) === frontierRef) ?? null;
+  const fmt = (v, d = 1) => v.toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: d });
+  const vs = ref ? `vs ${ref.preset}` : 'vs previous';
+  // Software rows from more than one kind of CPU: their CPU times (and
+  // so encode costs) aren't measured on the same scale.
+  const cpuMix = new Set(rows.filter(p => p.software).map(p => p.device)).size > 1;
+  const cpuMark = cpuMix ? '<sup data-fn="cpu"></sup>' : '';
+  const t = document.createElement('table');
+  t.innerHTML = `<caption>Size/speed frontier: ${front.length} of the drawn points` +
+    (offPts.length ? `, plus ${offPts.length} off it that ${offPts.length > 1 ? 'are' : 'is'} cheapest for some plays<sup data-fn="off"></sup>` : '') + `</caption>
+    <thead><tr><th title="Compare with this row; click again to compare with the previous row">vs</th>
+    <th>Encoder</th><th>Preset</th><th class="num">Time (${units})${units === TIME.cpu.units ? cpuMark : ''}</th><th class="num">Bitrate (kb/s)</th>
+    <th class="num">Time ${esc(vs)}</th><th class="num">Bitrate ${esc(vs)}</th>
+    <th class="num" title="CPU time (user + system) at the vCPU price, for one clip">Encode${cpuMark}</th>
+    <th class="num" title="Storing the file for the months given">Storage</th>
+    <th class="num" title="Delivering the whole file once">Per play</th>
+    <th class="num" title="Plays after which the smaller file is the cheaper one, counting encode and delivery">Break-even ${esc(vs)}</th>
+    <th class="num" title="Plays over which this is the cheapest drawn point">Cheapest for (plays)</th></tr></thead>`;
+  const tb = document.createElement('tbody');
+  rows.forEach((p, i) => {
+    const base = ref ?? rows[i - 1];
+    const same = base === p || !base;
+    const c = costs(p, prices);
+    const be = same ? null : breakEven(p, base, prices);
+    const tr = document.createElement('tr');
+    const pick = document.createElement('td');
+    const rb = document.createElement('input');
+    rb.type = 'radio'; rb.name = 'fref'; rb.checked = p === ref;
+    rb.setAttribute('aria-label', `Compare with ${p.line} ${p.preset}`);
+    // A radio can't normally be unticked: clicking the ticked one clears it.
+    rb.onclick = () => {
+      frontierRef = frontierRef === key(p) ? null : key(p);
+      renderFrontierTable(lastFront, lastUnits);
+    };
+    pick.append(rb);
+    tr.append(pick);
+    const win = ranges.filter(r => r.point.line === p.line && r.point.preset === p.preset).map(rangeText).join(', ');
+    const hw = !p.software;
+    // Past the break-even, the smaller file wins. A row bigger than its
+    // base (faster than the picked row) names the base as the winner.
+    const beText = !be ? '' : be.always ? (be.always === p ? 'always' : 'never')
+      : (p.y < base.y ? '' : `${base.preset} after `) + plays(be.plays);
+    const cells = [
+      [`<span class="swatch" style="background:${p.color}"></span>`, p.line],
+      ['', p.preset, p.off ? 'off' : null],
+      ['num', fmt(p.x, p.x < 100 ? 1 : 0)],
+      ['num', fmt(p.y, 0)],
+      ['num', same ? '' : `×${fmt(p.x / base.x, 2)}`],
+      ['num', same ? '' : `${p.y > base.y ? '+' : ''}${fmt(100 * (p.y / base.y - 1), 1)}%`],
+      ['num', dollars(c.encode), hw ? 'hw' : null],
+      ['num', dollars(c.store)],
+      ['num', dollars(c.play)],
+      ['num', beText],
+      ['num', win || '—'],
+    ];
+    for (const [cls, text, mark] of cells) {
+      const td = document.createElement('td');
+      if (cls === 'num') { td.className = 'num'; td.textContent = text; }
+      else { td.innerHTML = cls; td.append(text); }
+      if (mark) td.insertAdjacentHTML('beforeend', `<sup data-fn="${mark}"></sup>`);
+      tr.append(td);
+    }
+    if (p.off) tr.className = 'off';
+    tb.append(tr);
+  });
+  t.append(tb);
+  const note = document.createElement('div');
+  note.className = 'note';
+  note.textContent = 'A point is on the frontier if no other drawn point is both faster and smaller. ' +
+    (ref ? `Each row is compared with ${ref.line} ${ref.preset}; click its button again to compare each row with the next-faster one. `
+         : 'Each row is compared with the next-faster frontier point; pick a row to compare everything with it. ') +
+    "Bitrate steps of 2–3% are within the CRF search's step size. " +
+    `Costs are for one clip (geometric means over the clips) at $${prices.cpu.toFixed(4)} per vCPU-hour, $${prices.gb.toFixed(4)} per GB delivered and $${prices.store.toFixed(4)} per GB-month stored for ${prices.months} months (GB = 10⁹ bytes); ` +
+    'encoding is priced by CPU time (user + system) whichever time the chart shows, with a Mac CPU-second as 1.1 vCPU-seconds. ' +
+    'Break-even is the number of plays after which the smaller file is cheaper overall, counting encoding and storage as paid once' +
+    (ref ? '; for rows faster than the picked one, it names the picked preset.' : '.');
+  box.append(t, note);
+  // Footnotes, numbered in the order their marks first appear.
+  const FOOTNOTES = {
+    hw: "Hardware video encoding needs machines with the right hardware, which isn't modeled yet: " +
+      'this counts only the CPU time ffmpeg used, mostly decoding the source.',
+    // Measured 2026-11-16 from encodes.parquet: per machine and software
+    // encoder, the geometric mean of CPU-seconds over the Mac's for the
+    // same sample, flagset and quality. Lowest: 285HX x265 0.94x; highest:
+    // plex1 (i5-12600H) x265 1.67x, 7945HX SVT-AV1 1.36x without plex1;
+    // most 1.05-1.25x. Rounded out on purpose: the ratio varies by clip.
+    // TODO: link to the blog's CPU-comparison part (7 or 8) once it exists.
+    cpu: 'These rows include software encodes on different kinds of CPU. A CPU-second does a different amount of work ' +
+      'on each: the same encode took roughly 0.9× to 1.7× the M3 Ultra\'s CPU-seconds on the other machines measured (most 1.05–1.25×, ' +
+      'by machine and encoder). One kind\'s vCPU-hour also costs a different amount from another\'s, varying by cloud provider, instance family and region; ' +
+      'here every CPU-second costs the same (a Mac one as 1.1 vCPU-seconds), so compare CPU times and encode costs across machines loosely.',
+    off: 'Off the size/speed frontier on this time axis, but the cheapest drawn point over some range of plays, ' +
+      'because costs use CPU time. The CPU-time frontier includes it.',
+  };
+  const order = [];
+  for (const sup of t.querySelectorAll('sup[data-fn]')) {
+    const k = sup.dataset.fn;
+    if (!order.includes(k)) order.push(k);
+    sup.textContent = order.indexOf(k) + 1;
+  }
+  order.forEach((k, i) => {
+    const fn = document.createElement('div');
+    fn.className = 'note';
+    fn.innerHTML = `<sup>${i + 1}</sup> `;
+    fn.append(FOOTNOTES[k]);
+    box.append(fn);
+  });
+  // Move the ring to the picked row (merged into the chart by id).
+  if (showFrontier) chart.setOption({ series: [frontierSeries(front, rows)] });
+}
+
+// The cost inputs: picking a preset fills them; typing a value switches
+// the preset menu to Custom. Changing prices only redraws the table.
+function setupCost() {
+  const sel = $('cpreset');
+  for (const p of PRESETS) sel.add(new Option(p.label, p.id));
+  sel.add(new Option('Custom', 'custom'));
+  const fill = () => {
+    for (const [id, k] of [['ccpu', 'cpu'], ['cgb', 'gb'], ['cstore', 'store']]) $(id).value = +prices[k].toFixed(4);
+    $('cmonths').value = prices.months;
+  };
+  sel.onchange = () => {
+    const p = PRESETS.find(p => p.id === sel.value);
+    if (!p) return;
+    prices.cpu = p.cpu; prices.gb = p.gb; prices.store = p.store;
+    fill();
+    renderFrontierTable(lastFront, lastUnits);
+  };
+  // Months stored isn't part of a price set, so it doesn't switch to Custom.
+  for (const [id, k] of [['ccpu', 'cpu'], ['cgb', 'gb'], ['cstore', 'store'], ['cmonths', 'months']]) {
+    $(id).oninput = () => {
+      const v = parseFloat($(id).value);
+      if (!(v >= 0)) return;
+      prices[k] = v;
+      if (k !== 'months') sel.value = 'custom';
+      renderFrontierTable(lastFront, lastUnits);
+    };
+  }
+  fill();
+}
+setupCost();
+const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+$('fbox').onchange = () => { showFrontier = $('fbox').checked; update(); };
+
+let pending = Promise.resolve();
+function update() {
+  pending = pending.then(async () => {
+    $('error').textContent = '';
+    try { await Promise.all([renderFacets(), renderChart()]); }
+    catch (e) { $('error').textContent = String(e?.message ?? e); }
+  });
+}
+document.querySelectorAll('input[name=sw], input[name=time]').forEach(r => r.onchange = update);
+
+try {
+  const theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  echarts.registerTheme(theme, jsyaml.load(await (await fetch(`theme-${theme}.yml`)).text()));
+  chart = echarts.init($('c'), theme);
+  addEventListener('resize', () => chart.resize());
+  const d = await openDb(t => { $('status').textContent = t; });
+  conn = d.conn;
+  await conn.query(BASE);
+  $('status').textContent = `${d.rows.toLocaleString()} encodes, newest ${d.newest.toISOString().slice(0, 16).replace('T', ' ')} UTC. Counts are VMAF 95 answers on the standard clips.`;
+  update();
+} catch (e) {
+  $('status').textContent = 'Failed to load.';
+  $('error').textContent = String(e?.message ?? e);
+}
+</script>
+</body>
+</html>

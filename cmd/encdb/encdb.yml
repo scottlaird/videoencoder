@@ -1,0 +1,92 @@
+# The blog's encode explorer: every encbench log from the Mac and the
+# machines it ran on, for "Video Encoding for the Web in 2026".
+bench: /Volumes/Cache/encoding-test/bench
+
+# Read in order; an encode in several logs is labeled with the first.
+logs:
+  - work/results.csv
+  - remote/u9-285hx/returned/results-2dimm.csv
+  - remote/u9-285hx/returned/results.csv
+  - remote/u9-285hx/returned/results.csv.2026-11-13b
+  - remote/u9-285hx/returned/results.csv.2026-11-13
+  - remote/u9-285hx/returned/results.csv.2026-11-12a
+  - remote/tr-4090/returned/results-live.csv
+  - remote/tr-4090/returned/results.csv
+  - remote/tr-4090/returned/results.csv.2026-11-13
+  - remote/tr-4090/returned/results.csv.2026-11-11
+  - remote/i5-12600h/returned/results-live.csv
+  - remote/i5-12600h/returned/results.csv
+  - remote/i5-12600h/returned/results.csv.2026-11-13
+  - remote/i5-12600h/returned/results.csv.2026-11-12a
+  - remote/i5-12600h/returned/results.csv.2026-11-11
+  - remote-seeds/static-render2-2026-11-13.csv
+
+hosts:
+  - http://localhost:8090
+  - http://scottdesk:8090
+  - http://plex1:8090
+  - http://render1:8090
+  - http://render2:8090
+  - http://render3:8090
+
+machines:
+  scottstudio.internal.sigkill.org: {machine: mac, hardware: M3 Ultra, cpu: M3 Ultra, gpu: M3 Ultra}
+  Scotts-Mac-Studio.local: {machine: mac, hardware: M3 Ultra, cpu: M3 Ultra, gpu: M3 Ultra}
+  scottdesk: {machine: scottdesk, hardware: TR 5975WX + RTX 4090, cpu: TR 5975WX, gpu: RTX 4090}
+  plex1: {machine: plex1, hardware: i5-12600H, cpu: i5-12600H, gpu: i5-12600H}
+  render1: {machine: render1, hardware: Core Ultra 9 285HX, cpu: Core Ultra 9 285HX, gpu: Core Ultra 9 285HX}
+  render2: {machine: render2, hardware: Ryzen 9 9955HX, cpu: Ryzen 9 9955HX}
+  render3: {machine: render3, hardware: Ryzen 9 7945HX, cpu: Ryzen 9 7945HX}
+
+# The sources, and encbench's scaled copies of them (all ProRes 422
+# 10-bit, even for 8-bit sources).
+probe: [samples, work/samples]
+
+# The clips the blog's charts average over (part4.py).
+standard:
+  1080p:
+    scorer: v6
+    samples:
+      - 20170121-birthday.mp4
+      - 20180529-band@1080p.mov
+      - 20190421-cnc@1080p.mov
+      - 20211022-naches@1080p.mov
+      - 20220716-jeep@1080p.mov
+      - 20240708-hartspass@1080p.mov
+      - 20240813-bighorn@1080p.mov
+      - 20251206-heron3 test 30s@1080p.mov
+      - 20260426-bigfour-sdr@1080p.mov
+      - 20260530-pyramid5-sdr@1080p.mov
+      - 20260701-spada1-sdr@1080p.mov
+      - 20260919-yuri-sdr@1080p.mov
+      - 20261003-grist1-sdr@1080p.mov
+      - 20261025-snow2@1080p.mov
+      - deception1-1080p-30s.mov
+  4k:
+    scorer: v6 model=5950d61fa1f861bd
+    samples:
+      - 20180529-band.mp4
+      - 20190421-cnc.mp4
+      - 20211022-naches.mp4
+      - 20220716-jeep.mp4
+      - 20240708-hartspass.mov
+      - 20240813-bighorn.mov
+      - 20251206-heron3 test 30s.mov
+      - 20260426-bigfour-sdr@2160p.mov
+      - 20260530-pyramid5-sdr@2160p.mov
+      - 20260701-spada1-sdr.mov
+      - 20260919-yuri-sdr.mov
+      - 20261003-grist1-sdr@2160p.mov
+      - 20261025-snow2.mov
+
+# 2026-11-14: render1's second DIMM made its Quick Sync encodes faster
+# (34-41% at 4K) with the same files; that run re-timed one preset of
+# each group of presets with identical files (-bpyr gives the plain
+# preset's files, at its speed).
+retime:
+  - host: render1
+    log: remote/u9-285hx/returned/results-2dimm.csv
+    same_time: [bpyr]
+    # The run re-ran some software encodes too; the blog's charts keep
+    # their single-DIMM times.
+    families: [Quick Sync]

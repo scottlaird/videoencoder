@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Encode Query</title>
+<style>
+:root {
+  --bg: #fbfaf8; --surface: #ffffff; --ink: #1f1e1c; --muted: #6b6862; --line: #e3e0da;
+  --accent: #2f5fa7; --err: #a8322a; --mono: ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1b1a18; --surface: #23221f; --ink: #ecebe7; --muted: #a09c94; --line: #3a3833;
+    --accent: #8db3ec; --err: #f08a80;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #1b1a18; --surface: #23221f; --ink: #ecebe7; --muted: #a09c94; --line: #3a3833;
+  --accent: #8db3ec; --err: #f08a80;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.4 -apple-system, system-ui, sans-serif; }
+main { padding: 16px; max-width: 100%; }
+h1 { font-size: 16px; margin: 0 0 4px; }
+#status { color: var(--muted); margin-bottom: 12px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+textarea { width: 100%; min-height: 160px; font: 13px/1.45 var(--mono); padding: 8px; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--line); border-radius: 6px; resize: vertical; }
+button, select { font: inherit; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--line);
+  background: var(--surface); color: var(--ink); }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
+button:disabled { opacity: .5; }
+#meta { color: var(--muted); }
+#error { color: var(--err); font-family: var(--mono); white-space: pre-wrap; }
+.wrap { overflow: auto; max-height: 70vh; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+table { border-collapse: collapse; font: 12px/1.35 var(--mono); }
+th, td { padding: 3px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; text-align: left; }
+th { position: sticky; top: 0; background: var(--surface); font-weight: 600; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.null { color: var(--muted); }
+details { margin-top: 12px; color: var(--muted); }
+details pre { font: 12px/1.4 var(--mono); white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<main>
+<h1>Encode query <small><a href="chart.html">chart demo</a></small></h1>
+<div id="status">Loading DuckDB…</div>
+<div class="row">
+  <label for="examples">Example:</label>
+  <select id="examples"></select>
+</div>
+<textarea id="sql" spellcheck="false"></textarea>
+<div class="row">
+  <button id="run" class="primary" disabled>Run</button>
+  <span id="meta">⌘↩ runs the query</span>
+</div>
+<div id="error"></div>
+<div class="wrap" id="out" hidden></div>
+<details>
+  <summary>Tables</summary>
+  <pre id="schema"></pre>
+</details>
+</main>
+
+<script type="module">
+import { openDb, SETUP } from './db.js';
+
+const MAX_ROWS = 2000;
+
+const EXAMPLES = {
+  'Rows per machine': `SELECT machine, hardware, count(*) AS rows,
+       round(sum(wall_s) / 3600, 1) AS wall_h,
+       round(sum(user_s + sys_s) / 3600, 1) AS cpu_h
+FROM encodes
+GROUP BY ALL
+ORDER BY rows DESC;`,
+  'AV1 presets at 1080p (like presets.md)': `-- Geometric means over the 15 standard 1080p clips, VMAF 95 answers.
+SELECT machine, encoder, flagset,
+       count(*) AS clips,
+       round(exp(avg(ln(wall_s))), 2) AS wall_s,
+       round(exp(avg(ln(kbps)))) AS kbps
+FROM answers
+WHERE std_clip AND std_scorer AND res = '1080p'
+  AND codec = 'av1' AND reference = sample
+GROUP BY ALL
+HAVING clips = 15
+ORDER BY machine, wall_s;`,
+  'One clip, every H.265 answer': `SELECT machine, flagset, quality, round(vmaf, 2) AS vmaf, kbps, round(wall_s, 1) AS wall_s,
+       round((user_s + sys_s) / wall_s, 1) AS cores
+FROM answers
+WHERE sample = '20240813-bighorn@1080p.mov' AND std_scorer AND codec = 'hevc'
+ORDER BY kbps;`,
+  'Search steps for one flagset': `SELECT time, machine, quality, round(vmaf, 3) AS vmaf, kbps, round(wall_s, 1) AS wall_s, timed, batch_size
+FROM encodes
+WHERE sample = 'deception1-1080p-30s.mov' AND flagset = 'aom-cpu2-10bit-kf10'
+ORDER BY time;`,
+  'Columns': `DESCRIBE encodes;`,
+};
+
+const $ = id => document.getElementById(id);
+const sel = $('examples');
+for (const k of Object.keys(EXAMPLES)) sel.add(new Option(k, k));
+sel.onchange = () => { $('sql').value = EXAMPLES[sel.value]; };
+$('sql').value = EXAMPLES[sel.value];
+
+let conn;
+try {
+  const d = await openDb(t => { $('status').textContent = t; });
+  conn = d.conn;
+  $('status').textContent = `${d.rows.toLocaleString()} encodes (${d.mb.toFixed(1)} MB), newest ${d.newest.toISOString().slice(0, 16).replace('T', ' ')} UTC. Tables: encodes, answers.`;
+  const cols = (await conn.query('DESCRIBE encodes')).toArray().map(r => `${r.column_name} ${r.column_type}`);
+  $('schema').textContent = 'encodes / answers:\n  ' + cols.join('\n  ') + '\n\nanswers:' + SETUP.split('CREATE VIEW answers AS')[1];
+  $('run').disabled = false;
+} catch (e) {
+  $('status').textContent = 'Failed to load.';
+  $('error').textContent = String(e?.message ?? e);
+}
+
+function fmt(v, type) {
+  if (v === null || v === undefined) return ['NULL', 'null'];
+  if (typeof v === 'bigint') return [v.toString(), 'num'];
+  if (typeof v === 'number') {
+    if (type?.typeId === 10 || type?.unit !== undefined && String(type).startsWith('Timestamp'))
+      return [new Date(v).toISOString().replace('T', ' ').slice(0, 19), ''];
+    return [Number.isInteger(v) ? String(v) : String(+v.toPrecision(8)), 'num'];
+  }
+  if (typeof v === 'boolean') return [String(v), ''];
+  if (v instanceof Date) return [v.toISOString().replace('T', ' ').slice(0, 19), ''];
+  return [String(v), ''];
+}
+
+async function run() {
+  if (!conn) return;
+  $('error').textContent = '';
+  $('run').disabled = true;
+  const t0 = performance.now();
+  try {
+    const res = await conn.query($('sql').value);
+    const ms = performance.now() - t0;
+    const fields = res.schema.fields;
+    const rows = res.toArray();
+    const shown = rows.slice(0, MAX_ROWS);
+    const isTime = fields.map(f => String(f.type).startsWith('Timestamp') || String(f.type).startsWith('Date'));
+    let html = '<table><thead><tr>' + fields.map(f => `<th>${esc(f.name)}</th>`).join('') + '</tr></thead><tbody>';
+    for (const r of shown) {
+      html += '<tr>' + fields.map((f, i) => {
+        let v = r[f.name];
+        if (isTime[i] && v !== null) v = new Date(Number(v));
+        const [s, cls] = fmt(v);
+        return `<td class="${cls}">${esc(s)}</td>`;
+      }).join('') + '</tr>';
+    }
+    $('out').innerHTML = html + '</tbody></table>';
+    $('out').hidden = false;
+    $('meta').textContent = `${rows.length.toLocaleString()} rows${rows.length > MAX_ROWS ? `, first ${MAX_ROWS} shown` : ''} in ${ms.toFixed(0)} ms`;
+  } catch (e) {
+    $('error').textContent = String(e?.message ?? e);
+  } finally {
+    $('run').disabled = false;
+  }
+}
+const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+$('run').onclick = run;
+$('sql').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); run(); } });
+</script>
+</body>
+</html>
