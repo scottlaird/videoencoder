@@ -556,3 +556,7 @@ func encodeKey(scorer, sampleID, fkey string, quality float64) string {
 // joinArgs renders arguments for the log; it is for reading, not for
 // pasting into a shell.
 func joinArgs(args []string) string { return strings.Join(args, " ") }
+
+// ResultColumns are results.csv's columns, in the order encbench writes
+// them.
+func ResultColumns() []string { return slices.Clone(resultColumns) }

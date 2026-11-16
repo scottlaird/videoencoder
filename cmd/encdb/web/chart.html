@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Preset Chart Demo</title>
+<style>
+:root { --bg: #ffffff; --ink: #1f1e1c; --muted: #6b6862; --line: #e3e0da; --surface: #ffffff; --err: #a8322a;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --bg: #293441; --ink: #e6e9ee; --muted: #a3acb8; --line: #3d4a5a; --surface: #222b36; --err: #f08a80; }
+}
+:root[data-theme="dark"] { --bg: #293441; --ink: #e6e9ee; --muted: #a3acb8; --line: #3d4a5a; --surface: #222b36; --err: #f08a80; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.4 -apple-system, system-ui, sans-serif; }
+main { padding: 16px; max-width: 900px; margin: 0 auto; }
+h1 { font-size: 16px; margin: 0 0 4px; }
+a { color: inherit; }
+#status { color: var(--muted); margin-bottom: 8px; }
+#c { width: 100%; max-width: 720px; height: 30rem; margin: 12px auto; }
+#error { color: var(--err); font-family: var(--mono); white-space: pre-wrap; }
+#note { color: var(--muted); font-style: italic; max-width: 720px; margin: 0 auto; }
+details { margin-top: 16px; }
+summary { color: var(--muted); cursor: pointer; }
+textarea { width: 100%; min-height: 360px; font: 12px/1.45 var(--mono); padding: 8px; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--line); border-radius: 6px; resize: vertical; }
+pre { font: 11px/1.4 var(--mono); white-space: pre-wrap; max-height: 400px; overflow: auto; }
+button { font: inherit; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.3.2/dist/echarts.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
+</head>
+<body>
+<main>
+<h1>Preset chart demo <small><a href="index.html">query</a></small></h1>
+<div id="status">Loading…</div>
+<div id="error"></div>
+<div id="c"></div>
+<div id="note"></div>
+<details>
+  <summary>Query</summary>
+  <p>Each row is one point. Required columns: <code>series</code>, <code>point</code>, <code>x</code>, <code>y</code>.
+  Optional, read from a series' first row: <code>color</code>, <code>symbol</code>, <code>dash</code>,
+  <code>label</code> (an ECharts formatter; <code>{b}</code> is the point), <code>shown</code>.
+  Optional per point: <code>tooltip</code>. Series keep the order they first appear in.</p>
+  <textarea id="sql" spellcheck="false"></textarea>
+  <button id="draw">Draw</button>
+</details>
+<details>
+  <summary>Rows</summary>
+  <pre id="rows"></pre>
+</details>
+<details>
+  <summary>ECharts options</summary>
+  <pre id="opts"></pre>
+</details>
+</main>
+
+<script type="module">
+import { openDb, rowsOf } from './db.js';
+
+const CHART = {
+  title: 'AV1 at 1080p: file size vs encode time at VMAF 95',
+  x: '← encode wall time, seconds (geometric mean)',
+  y: '← bitrate, kb/s (geometric mean)',
+};
+
+// The 15 standard 1080p clips' answers at VMAF 95, geometric means per
+// preset. A preset is drawn only if every clip has an answer, which is
+// what leaves Quick Sync out (bighorn and snow2 never reach 95).
+const SQL = `WITH styles(series, ord, color, symbol, dash, label, shown, cmd) AS (VALUES
+  ('x265 (M3 Ultra)',                 0, '#b5b5b5', 'circle',      'solid',  'x265',       false, 'libx265 -preset '),
+  ('SVT-AV1 (M3 Ultra)',              1, '#d5731f', 'circle',      'solid',  '{b}',        true,  'libsvtav1 -preset '),
+  ('libaom (M3 Ultra)',               2, '#d5731f', 'emptyCircle', 'dashed', 'libaom {b}', true,  'libaom-av1 -cpu-used '),
+  ('NVENC (RTX 4090)',                3, '#00a0d0', 'triangle',    'solid',  'NVENC {b}',  true,  'av1_nvenc -preset '),
+  ('Quick Sync (Core Ultra 9 285HX)', 4, '#9060e8', 'rect',        'solid',  'QSV {b}',    true,  'av1_qsv -preset ')
+),
+picked AS (
+  SELECT *,
+    CASE
+      WHEN machine = 'mac' AND regexp_matches(flagset, '^x265-[a-z]+-10bit-kf10$') THEN 'x265 (M3 Ultra)'
+      WHEN machine = 'mac' AND regexp_matches(flagset, '^svtav1-p[0-9]+-kf10$') THEN 'SVT-AV1 (M3 Ultra)'
+      WHEN machine = 'mac' AND regexp_matches(flagset, '^aom-cpu[0-9]-10bit-kf10$') THEN 'libaom (M3 Ultra)'
+      WHEN machine = 'scottdesk' AND regexp_matches(flagset, '^av1-nvenc-p[147]-nocap-10bit-kf10$') THEN 'NVENC (RTX 4090)'
+      WHEN machine = 'render1' AND regexp_matches(flagset, '^av1-qsv-[a-z]+-10bit-kf10$') THEN 'Quick Sync (Core Ultra 9 285HX)'
+    END AS series,
+    CASE
+      WHEN flagset LIKE 'x265-%' THEN regexp_extract(flagset, '^x265-([a-z]+)', 1)
+      WHEN flagset LIKE 'svtav1-%' THEN regexp_extract(flagset, '^svtav1-(p[0-9]+)', 1)
+      WHEN flagset LIKE 'aom-%' THEN regexp_extract(flagset, '^aom-(cpu[0-9])', 1)
+      WHEN flagset = 'av1-nvenc-p7-nocap-10bit-kf10' THEN 'p7 2-pass'
+      WHEN flagset LIKE 'av1-nvenc-%' THEN regexp_extract(flagset, '^av1-nvenc-(p[0-9])', 1)
+      WHEN flagset LIKE 'av1-qsv-%' THEN regexp_extract(flagset, '^av1-qsv-([a-z]+)', 1)
+    END AS point
+  FROM answers
+  WHERE std_clip AND std_scorer AND res = '1080p' AND reference = sample
+)
+SELECT p.series, p.point,
+       exp(avg(ln(wall_s))) AS x,
+       exp(avg(ln(kbps))) AS y,
+       any_value(s.color) AS color, any_value(s.symbol) AS symbol, any_value(s.dash) AS dash,
+       any_value(s.label) AS label, any_value(s.shown) AS shown,
+       any_value(s.cmd) || regexp_replace(p.point, '^(p|cpu)([0-9])', '\\2') ||
+         '<br/>' || printf('%.1f s, %,d kb/s', x, round(y)::INT) ||
+         '<br/>' || count(*) || ' clips on ' || any_value(machine) || ' (' || any_value(hardware) || ')' AS tooltip
+FROM picked p JOIN styles s USING (series)
+GROUP BY p.series, p.point
+HAVING count(*) = (SELECT count(DISTINCT sample) FROM encodes WHERE std_clip AND res = '1080p')
+ORDER BY any_value(s.ord), x;`;
+
+const $ = id => document.getElementById(id);
+$('sql').value = SQL;
+
+const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+const theme = dark ? 'dark' : 'light';
+echarts.registerTheme(theme, jsyaml.load(await (await fetch(`theme-${theme}.yml`)).text()));
+const chart = echarts.init($('c'), theme);
+addEventListener('resize', () => chart.resize());
+
+// niceLog rounds a log axis bound out to 1, 2 or 5 times a power of ten.
+function niceLog(v, up) {
+  const p = 10 ** Math.floor(Math.log10(v));
+  const steps = up ? [1, 2, 5, 10] : [10, 5, 2, 1];
+  for (const s of steps) if (up ? s * p >= v : s * p <= v) return s * p;
+  return p;
+}
+
+function options(rows) {
+  const bySeries = new Map();
+  for (const r of rows) {
+    if (!bySeries.has(r.series)) bySeries.set(r.series, []);
+    bySeries.get(r.series).push(r);
+  }
+  const xs = rows.map(r => r.x);
+  const series = [], selected = {};
+  for (const [name, pts] of bySeries) {
+    const first = pts[0];
+    if (first.shown === false) selected[name] = false;
+    series.push({
+      name, type: 'line', smooth: false,
+      color: first.color ?? undefined,
+      symbol: first.symbol ?? 'circle', symbolSize: 9,
+      lineStyle: { type: first.dash ?? 'solid' },
+      // A one-word label (like 'x265') goes on the series' first point only.
+      label: { show: true, formatter: first.label ?? '{b}', fontSize: 13, color: 'inherit', position: 'right' },
+      data: pts.map((p, i) => ({
+        name: p.point,
+        value: [+p.x.toFixed(2), Math.round(p.y)],
+        ...(first.label && !first.label.includes('{b}') && i > 0 ? { label: { show: false } } : {}),
+        ...(p.tooltip ? { tooltip: { formatter: p.tooltip } } : {}),
+      })),
+    });
+  }
+  return {
+    animation: false,
+    title: { text: CHART.title, left: 'center' },
+    tooltip: { trigger: 'item' },
+    xAxis: { type: 'log', logBase: 10, name: CHART.x, nameLocation: 'middle', nameGap: 30,
+             min: niceLog(Math.min(...xs), false), max: niceLog(Math.max(...xs), true) },
+    yAxis: { type: 'value', name: CHART.y, nameRotate: 90, nameLocation: 'middle', nameGap: 55, scale: true },
+    grid: { bottom: 120 },
+    legend: { bottom: 5, selected, data: [...bySeries.keys()] },
+    series,
+  };
+}
+
+let conn;
+async function draw() {
+  $('error').textContent = '';
+  try {
+    const t0 = performance.now();
+    const rows = rowsOf(await conn.query($('sql').value));
+    const ms = performance.now() - t0;
+    for (const c of ['series', 'point', 'x', 'y'])
+      if (rows.length && !(c in rows[0])) throw new Error(`query has no "${c}" column`);
+    const o = options(rows);
+    chart.setOption(o, true);
+    $('rows').textContent = rows.map(r => `${r.series}\t${r.point}\t${r.x.toFixed(2)}\t${Math.round(r.y)}`).join('\n');
+    $('opts').textContent = JSON.stringify(o, null, 1);
+    $('note').textContent = `${rows.length} points from ${new Set(rows.map(r => r.series)).size} series; query ${ms.toFixed(0)} ms.`;
+  } catch (e) {
+    $('error').textContent = String(e?.message ?? e);
+  }
+}
+$('draw').onclick = draw;
+$('sql').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); draw(); } });
+
+try {
+  const d = await openDb(t => { $('status').textContent = t; });
+  conn = d.conn;
+  $('status').textContent = `${d.rows.toLocaleString()} encodes, newest ${d.newest.toISOString().slice(0, 16).replace('T', ' ')} UTC.`;
+  await draw();
+} catch (e) {
+  $('status').textContent = 'Failed to load.';
+  $('error').textContent = String(e?.message ?? e);
+}
+</script>
+</body>
+</html>
