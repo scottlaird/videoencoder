@@ -11,45 +11,6 @@ import (
 	"time"
 )
 
-func TestReadFFmpegProgress(t *testing.T) {
-	in := strings.Join([]string{
-		"frame=0", "out_time_us=N/A", "progress=continue",
-		"frame=30", "out_time_us=1000000", "speed=2x", "progress=continue",
-		"frame=60", "out_time_us=2500000", "progress=end",
-	}, "\n")
-	var got []time.Duration
-	var frames []int64
-	var ends []bool
-	readFFmpegProgress(strings.NewReader(in), func(d time.Duration, n int64, end bool) {
-		got, frames, ends = append(got, d), append(frames, n), append(ends, end)
-	})
-	want := []time.Duration{0, time.Second, 2500 * time.Millisecond}
-	if !slices.Equal(got, want) || !slices.Equal(frames, []int64{0, 30, 60}) || !slices.Equal(ends, []bool{false, false, true}) {
-		t.Errorf("readFFmpegProgress reported %v, frames %v, ends %v; want %v, frames [0 30 60], ends [false false true]", got, frames, ends, want)
-	}
-}
-
-func TestProgressRemaining(t *testing.T) {
-	for _, tc := range []struct {
-		p      Progress
-		want   time.Duration
-		wantOK bool
-	}{
-		{Progress{Encoded: 3 * time.Second, Total: 20 * time.Second, Elapsed: 2 * time.Minute}, 680 * time.Second, true},
-		{Progress{Encoded: 20 * time.Second, Total: 20 * time.Second, Elapsed: time.Minute}, 0, true},
-		// Too early: nothing encoded, or only a second in.
-		{Progress{Encoded: 0, Total: 20 * time.Second, Elapsed: time.Minute}, 0, false},
-		{Progress{Encoded: 10 * time.Second, Total: 20 * time.Second, Elapsed: time.Second}, 0, false},
-		// Unknown duration.
-		{Progress{Encoded: 10 * time.Second, Elapsed: time.Minute}, 0, false},
-	} {
-		got, ok := tc.p.Remaining()
-		if got != tc.want || ok != tc.wantOK {
-			t.Errorf("%+v.Remaining() = %v, %v; want %v, %v", tc.p, got, ok, tc.want, tc.wantOK)
-		}
-	}
-}
-
 // TestEncodeProgress runs a fake ffmpeg that writes progress to the
 // pipe Encode gives it, as fd 3.
 func TestEncodeProgress(t *testing.T) {

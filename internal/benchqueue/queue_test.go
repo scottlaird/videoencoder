@@ -573,21 +573,6 @@ func TestSearching(t *testing.T) {
 	}
 }
 
-func TestProgressText(t *testing.T) {
-	for _, tc := range []struct {
-		p    bench.Progress
-		want string
-	}{
-		{bench.Progress{Encoded: 3 * time.Second, Total: 20 * time.Second, Elapsed: 2 * time.Minute}, "15% · 2:00, about 11:20 left"},
-		{bench.Progress{Encoded: 0, Total: 20 * time.Second, Elapsed: time.Second}, "0% · 0:01"},
-		{bench.Progress{Encoded: time.Second, Total: 30 * time.Second, Elapsed: 5 * time.Minute}, "3% · 5:00, about 2:25:00 left"},
-	} {
-		if got := progressText(tc.p); got != tc.want {
-			t.Errorf("progressText(%+v) = %q, want %q", tc.p, got, tc.want)
-		}
-	}
-}
-
 func TestScoringTotal(t *testing.T) {
 	half := bench.Progress{Encoded: 15 * time.Second, Total: 30 * time.Second}
 	done := bench.Progress{Encoded: 30 * time.Second, Total: 30 * time.Second}

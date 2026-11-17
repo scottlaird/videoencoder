@@ -37,6 +37,7 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+	"time"
 
 	"go.yaml.in/yaml/v4"
 
@@ -470,9 +471,13 @@ func render(ctx context.Context, r *config.Resolved, d deps, rebuild, only strin
 	}
 
 	for i, batch := range batches {
-		for _, j := range batch.Jobs {
-			progress.StartTask(ctx, r.Name, j.Slot, fmt.Sprintf("%s · with %d others from %s", j.Reason, len(batch.Jobs)-1, b.sources[i].Label))
+		details := make([]string, len(batch.Jobs))
+		for k, j := range batch.Jobs {
+			details[k] = fmt.Sprintf("%s · with %d others from %s", j.Reason, len(batch.Jobs)-1, b.sources[i].Label)
+			progress.StartTask(ctx, r.Name, j.Slot, details[k])
 		}
+		batch.Duration = b.vds[i].Duration
+		batch.Progress = encodeProgress(ctx, r.Name, b.sources[i].Label, batch.Jobs, details)
 		err := batch.Run(ctx, d.runner)
 		for _, j := range batch.Jobs {
 			progress.FinishTask(ctx, r.Name, j.Slot, j.Reason, err)
@@ -549,6 +554,30 @@ func render(ctx context.Context, r *config.Resolved, d deps, rebuild, only strin
 	}
 	slog.Info("Done", "video", r.Name, "manifest", mpd)
 	return nil
+}
+
+// progressLogEvery is how often a long encode's progress is logged.
+const progressLogEvery = time.Minute
+
+// encodeProgress is a Batch.Progress for jobs, the outputs one ffmpeg
+// process encodes from video's source: it puts how far ffmpeg has got
+// before each job's task detail (details, in the same order), and logs
+// it every progressLogEvery.
+func encodeProgress(ctx context.Context, video, source string, jobs []*ffmpeg.Job, details []string) func(ffmpeg.Progress) {
+	var logged time.Duration
+	return func(p ffmpeg.Progress) {
+		for k, j := range jobs {
+			progress.UpdateTask(ctx, video, j.Slot, p.String()+" · "+details[k])
+		}
+		if p.Elapsed-logged >= progressLogEvery {
+			logged = p.Elapsed
+			attrs := []any{"video", video, "source", source, "outputs", len(jobs), "percent", int(p.Fraction() * 100), "elapsed", p.Elapsed.Round(time.Second)}
+			if left, ok := p.Remaining(); ok {
+				attrs = append(attrs, "remaining", left.Round(time.Second))
+			}
+			slog.Info("Encode progress", attrs...)
+		}
+	}
 }
 
 // step runs f as task, part of video, reporting its start and end.
