@@ -101,19 +101,24 @@ func EncoderVersion(ctx context.Context, codec string) string {
 }
 
 var (
-	x264Core     = regexp.MustCompile(`x264 - core (\d+ r\d+ [0-9a-f]+)`)
-	x265Version  = regexp.MustCompile(`HEVC encoder version (\S+)`)
-	svtVersion   = regexp.MustCompile(`SVT-AV1 Encoder Lib (v\S+)`)
+	// BtbN's static builds of x264 leave out the revision: "x264 - core
+	// 165 - H.264/MPEG-4 AVC codec".
+	x264Core    = regexp.MustCompile(`x264 - core (\d+(?: r\d+\S* [0-9a-f]+)?)`)
+	x265Version = regexp.MustCompile(`HEVC encoder version (\S+)`)
+	// Forks name themselves: "SVT-AV1-HDR Encoder Lib v3.1.2", "SVT-AV1-PSY
+	// Encoder Lib v2.3.0". Their version numbers are their own, so the
+	// name is what tells them from mainline.
+	svtVersion   = regexp.MustCompile(`(SVT-AV1(?:-\S+)?) Encoder Lib (v\S+)`)
 	aomVersion   = regexp.MustCompile(`\[libaom-av1 @ 0x[0-9a-f]+\] (v?\d+\.\d+\.\d+\S*)`)
 	cpuCaps      = regexp.MustCompile(`using cpu capabilities: (.+)`)
 	versionNames = map[string]struct {
-		name string
+		name string // "" when the pattern's first group is the name
 		re   *regexp.Regexp
 		bits bool // found in the bitstream, not the log
 	}{
 		"libx264":    {"x264 core", x264Core, true},
 		"libx265":    {"x265", x265Version, false},
-		"libsvtav1":  {"SVT-AV1", svtVersion, false},
+		"libsvtav1":  {"", svtVersion, false},
 		"libaom-av1": {"libaom", aomVersion, false},
 	}
 )
@@ -135,6 +140,9 @@ func parseEncoderVersion(codec, stdout, stderr string) string {
 		return ""
 	}
 	s := v.name + " " + m[1]
+	if v.name == "" {
+		s = m[1] + " " + m[2]
+	}
 	if c := cpuCaps.FindStringSubmatch(stderr); c != nil {
 		s += " (" + strings.TrimSpace(c[1]) + ")"
 	}
