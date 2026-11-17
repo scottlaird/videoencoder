@@ -27,6 +27,31 @@ func TestParseEncoderVersion(t *testing.T) {
 			want:   "SVT-AV1 v4.2.0",
 		},
 		{
+			name:   "x264 from a build that leaves out the revision",
+			codec:  "libx264",
+			stdout: "\x00\x05x264 - core 165 - H.264/MPEG-4 AVC codec - Copyleft",
+			stderr: "[libx264 @ 0x61f8b5f68b80] using cpu capabilities: MMX2 SSE2Fast SSSE3 SSE4.2 AVX FMA3 BMI2 AVX2 AVX512\n",
+			want:   "x264 core 165 (MMX2 SSE2Fast SSSE3 SSE4.2 AVX FMA3 BMI2 AVX2 AVX512)",
+		},
+		{
+			name:   "an SVT-AV1 git build",
+			codec:  "libsvtav1",
+			stderr: "Svt[info]: SVT [version]:\tSVT-AV1 Encoder Lib v4.2.0-210-gf2c3fb786\n",
+			want:   "SVT-AV1 v4.2.0-210-gf2c3fb786",
+		},
+		{
+			name:   "the SVT-AV1-HDR fork, with its release name",
+			codec:  "libsvtav1",
+			stderr: "Svt[info]: SVT [version]:\tSVT-AV1-HDR Encoder Lib v3.1.2 \"Crankcase\"\n",
+			want:   "SVT-AV1-HDR v3.1.2",
+		},
+		{
+			name:   "the SVT-AV1-PSY fork",
+			codec:  "libsvtav1",
+			stderr: "Svt[info]: SVT [version]:\tSVT-AV1-PSY Encoder Lib v2.3.0-B\n",
+			want:   "SVT-AV1-PSY v2.3.0-B",
+		},
+		{
 			name:   "libaom",
 			codec:  "libaom-av1",
 			stderr: "  Stream #0:0 -> #0:0 (wrapped_avframe (native) -> av1 (libaom-av1))\n[libaom-av1 @ 0x72d400a80] 3.15.2\n[libaom-av1 @ 0x72d400a80] Neither bitrate nor constrained quality specified\n",
