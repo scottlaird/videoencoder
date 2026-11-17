@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/scottlaird/videoencoder/internal/state"
 )
@@ -32,35 +33,59 @@ type ExecRunner struct {
 }
 
 func (r ExecRunner) Run(ctx context.Context, argv []string) error {
+	return r.run(ctx, argv, nil, nil)
+}
+
+// run runs argv. extra, if set, is the command's fd 3; run closes it
+// once the command has started (or failed to), so a reader of its
+// other end sees EOF when the command exits. started, if set, is
+// called once the command is running, before run waits for it.
+func (r ExecRunner) run(ctx context.Context, argv []string, extra *os.File, started func()) error {
+	closeExtra := func() {
+		if extra != nil {
+			extra.Close()
+			extra = nil
+		}
+	}
+	defer closeExtra()
 	if len(argv) == 0 {
 		return errors.New("empty command")
 	}
 	argv = Quiet(argv)
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Env = QuietEnv()
-	if chatty[filepath.Base(argv[0])] {
-		// Keep its report to itself unless something goes wrong.
-		var out bytes.Buffer
-		cmd.Stdout, cmd.Stderr = &out, &out
-		if err := cmd.Run(); err != nil {
-			if r.Stderr != nil {
-				r.Stderr.Write(out.Bytes())
-			}
-			return fmt.Errorf("running %s: %w", argv[0], err)
-		}
-		return nil
+	if extra != nil {
+		cmd.ExtraFiles = []*os.File{extra}
 	}
-	cmd.Stdout = r.Stdout
+	var out bytes.Buffer
 	var stderr *dropNoise
-	if r.Stderr != nil {
-		stderr = newDropNoise(r.Stderr)
-		cmd.Stderr = stderr
+	quiet := chatty[filepath.Base(argv[0])]
+	if quiet {
+		// Keep its report to itself unless something goes wrong.
+		cmd.Stdout, cmd.Stderr = &out, &out
+	} else {
+		cmd.Stdout = r.Stdout
+		if r.Stderr != nil {
+			stderr = newDropNoise(r.Stderr)
+			cmd.Stderr = stderr
+		}
 	}
-	err := cmd.Run()
+	err := cmd.Start()
+	// The child has its own copy of extra now.
+	closeExtra()
+	if err == nil {
+		if started != nil {
+			started()
+		}
+		err = cmd.Wait()
+	}
 	if stderr != nil {
 		stderr.Flush()
 	}
 	if err != nil {
+		if quiet && r.Stderr != nil {
+			r.Stderr.Write(out.Bytes())
+		}
 		return fmt.Errorf("running %s: %w", argv[0], err)
 	}
 	return nil
@@ -133,6 +158,11 @@ func (j *Job) writePath() string {
 type Batch struct {
 	Manifest *state.Manifest
 	Jobs     []*Job
+	// Progress, if set, is called every second or so while the batch
+	// runs, with how far ffmpeg has got through its input, which lasts
+	// Duration (0 if unknown), when the Runner is a ProgressRunner.
+	Progress func(Progress)
+	Duration time.Duration
 }
 
 // AddIfNeeded adds j unless its output already exists, and reports
@@ -197,7 +227,12 @@ func (b *Batch) Run(ctx context.Context, r Runner) error {
 	}
 
 	slog.Info("Running ffmpeg", "outputs", len(b.Jobs), "argv", argv)
-	if err := r.Run(ctx, argv); err != nil {
+	if pr, ok := r.(ProgressRunner); ok && b.Progress != nil {
+		err = pr.RunProgress(ctx, argv, b.Duration, b.Progress)
+	} else {
+		err = r.Run(ctx, argv)
+	}
+	if err != nil {
 		b.removePartials()
 		return err
 	}

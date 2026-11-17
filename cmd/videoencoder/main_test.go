@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/scottlaird/videoencoder/internal/bench"
 	"github.com/scottlaird/videoencoder/internal/config"
@@ -1051,5 +1052,28 @@ func TestFlagsForCommand(t *testing.T) {
 		case tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)):
 			t.Errorf("parseArgs(%q) = %v, want an error containing %q", tt.args, err, tt.wantErr)
 		}
+	}
+}
+
+// TestEncodeProgress checks that a batch's progress goes on each of its
+// tasks, ahead of the detail the task started with.
+func TestEncodeProgress(t *testing.T) {
+	rec := &recorder{}
+	ctx := progress.WithReporter(context.Background(), rec)
+	jobs := []*ffmpeg.Job{{Slot: "sdr/av1-1080"}, {Slot: "sdr/av1-720"}}
+	report := encodeProgress(ctx, "v", "main", jobs, []string{"new · with 1 others from main", "settings changed · with 1 others from main"})
+	report(ffmpeg.Progress{Encoded: 3 * time.Second, Total: 20 * time.Second, Elapsed: 2 * time.Minute})
+	var got []string
+	for _, e := range rec.events {
+		if e.Kind == progress.TaskUpdated && e.Video == "v" {
+			got = append(got, e.Task+": "+e.Detail)
+		}
+	}
+	want := []string{
+		"sdr/av1-1080: 15% · 2:00, about 11:20 left · new · with 1 others from main",
+		"sdr/av1-720: 15% · 2:00, about 11:20 left · settings changed · with 1 others from main",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("updates = %q, want %q", got, want)
 	}
 }

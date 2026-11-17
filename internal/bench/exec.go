@@ -97,7 +97,7 @@ func (e ExecExecutor) runProgress(ctx context.Context, argv []string, total time
 	}
 	defer pr.Close()
 	// The child's fd 3 is ExtraFiles[0].
-	argv = slices.Insert(ffmpeg.Quiet(argv), 1, "-progress", "pipe:3", "-stats_period", "1")
+	argv = slices.Insert(ffmpeg.Quiet(argv), 1, ffmpeg.ProgressArgs...)
 	// What failed, if it does, is argv[0], not the turbostat around it.
 	name := argv[0]
 	var stats string
@@ -129,7 +129,7 @@ func (e ExecExecutor) runProgress(ctx context.Context, argv []string, total time
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		readFFmpegProgress(pr, func(encoded time.Duration, frames int64, end bool) {
+		ffmpeg.ReadProgress(pr, func(encoded time.Duration, frames int64, end bool) {
 			if fps > 0 {
 				encoded = time.Duration(float64(frames) / fps * float64(time.Second))
 			}
