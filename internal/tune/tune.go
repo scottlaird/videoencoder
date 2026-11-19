@@ -232,6 +232,7 @@ type clip struct {
 	config.TuneRange
 	sample  string
 	seconds float64
+	fps     float64 // the sample's frame rate, for scoring's progress
 	dir     string
 	refs    map[refKey]reference
 }
@@ -268,7 +269,7 @@ func (tu *Tuner) cut(ctx context.Context, ranges []config.TuneRange, src string,
 		if cvd.Duration <= 0 {
 			return nil, fmt.Errorf("sample %s of %s is empty: is it past the end?", tr, src)
 		}
-		c.seconds = cvd.Duration.Seconds()
+		c.seconds, c.fps = cvd.Duration.Seconds(), cvd.FPS
 		clips = append(clips, c)
 	}
 	return clips, nil
@@ -614,11 +615,19 @@ func (tu *Tuner) search(ctx context.Context, log *slog.Logger, goal float64, t *
 		p, cached := seen[i]
 		var each []trial
 		if !cached {
-			for _, c := range clips {
+			for k, c := range clips {
 				ct, ok := past.lookup(c.key, q)
 				if !ok {
 					var err error
-					if ct, err = tu.trial(ctx, trialJob(c, q), c.sample, c.seconds, c.ref, prefilter, c.dir); err != nil {
+					var report func(step string, p bench.Progress)
+					if update != nil {
+						what := fmt.Sprintf("trial %d: %s", len(seen)+1, qualityText(t, q))
+						if len(clips) > 1 {
+							what += fmt.Sprintf(" · range %d/%d", k+1, len(clips))
+						}
+						report = func(step string, p bench.Progress) { update(what + " · " + step + " " + p.String()) }
+					}
+					if ct, err = tu.trial(ctx, trialJob(c, q), c, prefilter, report); err != nil {
 						return Result{}, 0, err
 					}
 					if err := past.record(c.key, t.Name, q, ct); err != nil {
@@ -662,21 +671,31 @@ func combine(each []trial) trial {
 	return c
 }
 
-// trial encodes the sample with job and scores it against ref.
-func (tu *Tuner) trial(ctx context.Context, job *ffmpeg.Job, sample string, seconds float64, ref reference, prefilter, workdir string) (trial, error) {
+// trial encodes c's sample with job and scores it against c's
+// reference. report, if set, is told how far the encode ("encoding")
+// and then the scoring ("scoring") have got, every second or so.
+func (tu *Tuner) trial(ctx context.Context, job *ffmpeg.Job, c judging, prefilter string, report func(step string, p bench.Progress)) (trial, error) {
+	sample, seconds, ref, workdir := c.sample, c.seconds, c.ref, c.dir
 	if err := tu.makeReference(ctx, sample, ref); err != nil {
 		return trial{}, err
 	}
 	out := job.Output
 	args := append([]string{"-i", sample}, job.Args...)
-	if err := tu.ffmpeg(ctx, append(args, out)...); err != nil {
+	total := time.Duration(seconds * float64(time.Second))
+	var encode, score func(bench.Progress)
+	if report != nil {
+		encode = func(p bench.Progress) { report("encoding", p) }
+		score = func(p bench.Progress) { report("scoring", p) }
+	}
+	if err := tu.ffmpegProgress(ctx, total, encode, append(args, out)...); err != nil {
 		return trial{}, err
 	}
 	st, err := os.Stat(out)
 	if err != nil {
 		return trial{}, err
 	}
-	m, err := bench.Score(ctx, tu.Exec, out, ref.path, ref.width, ref.height, tu.Threads, workdir, filepath.Base(out), prefilter, ref.transfer, ref.model)
+	m, err := bench.ScoreProgress(ctx, tu.Exec, out, ref.path, ref.width, ref.height, tu.Threads, workdir, filepath.Base(out), prefilter, ref.transfer, ref.model,
+		total, c.fps, score)
 	os.Remove(out)
 	if err != nil {
 		return trial{}, err
@@ -698,7 +717,17 @@ func withoutQuality(args []string, flag string) []string {
 }
 
 func (tu *Tuner) ffmpeg(ctx context.Context, args ...string) error {
+	return tu.ffmpegProgress(ctx, 0, nil, args...)
+}
+
+// ffmpegProgress runs ffmpeg with args, an encode of input lasting
+// total, telling progress how far it has got if it's set and Exec can.
+func (tu *Tuner) ffmpegProgress(ctx context.Context, total time.Duration, progress func(bench.Progress), args ...string) error {
 	argv := slices.Concat([]string{"ffmpeg", "-hide_banner", "-loglevel", "error", "-nostats", "-y"}, args)
+	if enc, ok := tu.Exec.(bench.Encoder); ok && progress != nil {
+		_, err := enc.Encode(ctx, argv, total, progress)
+		return err
+	}
 	_, err := tu.Exec.Exec(ctx, argv)
 	return err
 }

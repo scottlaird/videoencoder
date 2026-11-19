@@ -20,6 +20,7 @@ import (
 	"github.com/scottlaird/videoencoder/internal/config"
 	"github.com/scottlaird/videoencoder/internal/plan"
 	"github.com/scottlaird/videoencoder/internal/probe"
+	"github.com/scottlaird/videoencoder/internal/progress"
 )
 
 // fakeFFmpeg cuts, scales and encodes by writing files, and scores by
@@ -103,6 +104,9 @@ func (f *fakeFFmpeg) Exec(_ context.Context, argv []string) (bench.Measurement, 
 type fakeProber struct{ vd probe.VideoData }
 
 func (p fakeProber) Probe(context.Context, string) (probe.VideoData, error) {
+	if p.vd.Height != 0 {
+		return p.vd, nil
+	}
 	return probe.VideoData{Width: 3840, Height: 2160, Duration: 8 * time.Second}, nil
 }
 
@@ -658,5 +662,57 @@ func TestRunLimited(t *testing.T) {
 	n := 0
 	if err := runLimited(context.Background(), 0, 4, func(context.Context, int) error { n++; return nil }); err != nil || n != 4 {
 		t.Errorf("runLimited(0 jobs) = %v after %d calls, want nil after 4", err, n)
+	}
+}
+
+// progressFFmpeg is a fakeFFmpeg that reports progress halfway through
+// each encode and scoring, as bench.ExecExecutor does.
+type progressFFmpeg struct{ *fakeFFmpeg }
+
+func (f progressFFmpeg) Encode(ctx context.Context, argv []string, total time.Duration, progress func(bench.Progress)) (bench.Measurement, error) {
+	progress(bench.Progress{Encoded: total / 2, Total: total, Elapsed: 4 * time.Second})
+	return f.Exec(ctx, argv)
+}
+
+func (f progressFFmpeg) ExecProgress(ctx context.Context, argv []string, total time.Duration, _ float64, progress func(bench.Progress)) (bench.Measurement, error) {
+	progress(bench.Progress{Encoded: total / 2, Total: total, Elapsed: 4 * time.Second})
+	return f.Exec(ctx, argv)
+}
+
+// updates records the details of TaskUpdated events.
+type updates struct {
+	mu      sync.Mutex
+	details []string
+}
+
+func (u *updates) Report(e progress.Event) {
+	if e.Kind != progress.TaskUpdated {
+		return
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.details = append(u.details, e.Task+": "+e.Detail)
+}
+
+// TestTuneProgress checks that a trial's encode and scoring progress
+// reach its task's line.
+func TestTuneProgress(t *testing.T) {
+	av1 := config.Encoder{Codec: "libsvtav1", QualityFlag: "-crf", Args: []string{"-preset", "5"}}
+	targets := plan.Targets{{Name: "av1-1080", EncoderName: "av1", Encoder: av1, Width: 1920, Height: 1080, Quality: 31, HDRQuality: 31}}
+	f := &fakeFFmpeg{encodes: map[string]int{}, quality: map[string]float64{}, height: map[string]uint64{}}
+	sample := probe.VideoData{Width: 3840, Height: 2160, FPS: 30, Duration: 8 * time.Second}
+	tu := &Tuner{Exec: progressFFmpeg{f}, Prober: fakeProber{vd: sample}, Threads: 1}
+	u := &updates{}
+	ctx := progress.WithReporter(context.Background(), u)
+	if _, err := tu.Tune(ctx, tuneConfig(), source(t), probe.VideoData{Width: 3840, Height: 2160}, targets, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"sdr/av1-1080: trial 1: crf 31 · encoding 50% · 0:04, about 0:04 left",
+		"sdr/av1-1080: trial 1: crf 31 · scoring 50% · 0:04, about 0:04 left",
+	} {
+		if !slices.Contains(u.details, want) {
+			t.Errorf("updates %q don't include %q", u.details, want)
+		}
 	}
 }
