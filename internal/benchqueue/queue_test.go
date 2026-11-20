@@ -367,6 +367,44 @@ func TestRetryAfterEverything(t *testing.T) {
 	}
 }
 
+// snapshotHandler is a log handler that reads the runner's state
+// before it returns, as the terminal UI's does when a log line waits
+// on a redraw.
+type snapshotHandler struct{ r *Runner }
+
+func (h snapshotHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h snapshotHandler) Handle(context.Context, slog.Record) error {
+	h.r.Snapshot()
+	return nil
+}
+func (h snapshotHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h snapshotHandler) WithGroup(string) slog.Handler      { return h }
+
+// TestLogsWithoutLock: nothing logs while holding the runner's lock,
+// which deadlocked the terminal UI once a failed unit was retried.
+func TestLogsWithoutLock(t *testing.T) {
+	work := setup(t)
+	write(t, filepath.Join(work, "1.yaml"), config("broken", "ok"))
+	b := newFakeBackend()
+	b.fail["broken"] = true
+	r := newRunner(work, b)
+	prev := slog.Default()
+	slog.SetDefault(slog.New(snapshotHandler{r}))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	ran := make(chan error, 1)
+	go func() { ran <- r.Run(context.Background()) }()
+	select {
+	case err := <-ran:
+		if err != nil {
+			t.Fatalf("Run() = %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run() deadlocked logging under the runner's lock")
+	}
+	checkRan(t, b, "broken a.mov", "broken b.mov", "ok a.mov", "ok b.mov", "broken a.mov", "broken b.mov")
+}
+
 func TestWaitsWhileBusy(t *testing.T) {
 	work := setup(t)
 	write(t, filepath.Join(work, "1.yaml"), config("x"))
