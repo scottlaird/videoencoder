@@ -544,6 +544,8 @@ func (r *Runner) rebuild(names []string) {
 // next returns the first unit still to run or, with none left, the
 // first failed unit due its retry, which it marks as having had it.
 func (r *Runner) next() (Unit, bool) {
+	var logs logBuf
+	defer func() { logs.flush() }() // after the unlock below
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, f := range r.state.Files {
@@ -562,7 +564,7 @@ func (r *Runner) next() (Unit, bool) {
 		if f.Err == nil && len(f.Retry) > 0 {
 			u := f.Retry[0]
 			r.retried[u] = true
-			slog.Info("Retrying a failed unit, as nothing else is left", "file", u.File, "flagset", u.Flagset, "sample", u.Sample)
+			logs.add(slog.LevelInfo, "Retrying a failed unit, as nothing else is left", "file", u.File, "flagset", u.Flagset, "sample", u.Sample)
 			return u, true
 		}
 	}
