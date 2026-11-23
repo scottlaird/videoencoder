@@ -101,6 +101,8 @@ flagsets:
 				}
 			},
 		},
+		{name: "seed delta without seeds", yaml: "samples: s\nseed_vmaf_delta: 0.02\nflagsets: {a: {args: [-c:v, libx265]}}", wantErr: "needs seed_results"},
+		{name: "negative seed delta", yaml: "samples: s\nseed_results: a.csv\nseed_vmaf_delta: -1\nflagsets: {a: {args: [-c:v, libx265]}}", wantErr: "seed_vmaf_delta: must"},
 		{name: "batch out of range", yaml: "samples: s\nbatch: 17\nflagsets: {a: {args: [-c:v, libx265]}}", wantErr: "batch: must be"},
 		{name: "flagset batch out of range", yaml: "samples: s\nflagsets: {a: {args: [-c:v, libx265], batch: 20}}", wantErr: `flagset "a": batch`},
 		{name: "encoder batch out of range", yaml: "samples: s\nbatch_by_encoder: {libx265: 0}\nflagsets: {a: {args: [-c:v, libx265]}}", wantErr: "batch_by_encoder: libx265"},
@@ -992,6 +994,145 @@ flagsets:
 	}
 	if len(fake.encodes) == 0 {
 		t.Error("HDR samples weren't searched again with the built-in model")
+	}
+}
+
+func TestBenchSeedVMAFDelta(t *testing.T) {
+	ctx := context.Background()
+	a := t.TempDir()
+	writeFile(t, filepath.Join(a, "samples", "a.mov"), "sample a")
+	if err := (&Bench{Cfg: benchConfig(t, a, twoFlagsets), Exec: newFake(18.7), Prober: fakeProber{}}).Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	aLog := filepath.Join(a, "work", "results.csv")
+
+	// The fake's VMAF is 95 + (cutoff - q)/2, so at A's answer, 18.7,
+	// moving the cutoff by d moves VMAF by d/2.
+	tests := []struct {
+		name         string
+		cutoff       float64
+		extra        string
+		minEncodes   int // for two flagsets
+		maxEncodes   int
+		wantQuality  float64
+		wantSeedVMAF bool
+	}{
+		{"same encoder", 18.7, "seed_vmaf_delta: 0.02\n", 2, 2, 18.7, true},
+		{"slightly better", 18.73, "seed_vmaf_delta: 0.02\n", 2, 2, 18.7, true},
+		{"same step but past the delta", 18.75, "seed_vmaf_delta: 0.02\n", 4, 4, 18.7, false},
+		{"one step off", 18.8, "seed_vmaf_delta: 0.02\n", 4, 6, 18.8, false},
+		{"fails at the seed", 18.68, "seed_vmaf_delta: 0.02\n", 4, 6, 18.6, false},
+		{"no delta", 18.7, "", 4, 4, 18.7, false},
+		{"batched", 18.7, "seed_vmaf_delta: 0.02\nbatch: 3\n", 6, 8, 18.7, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, filepath.Join(dir, "samples", "a.mov"), "sample a")
+			path := filepath.Join(dir, "bench.yaml")
+			writeFile(t, path, "samples: samples\nworkdir: work\nseed_results: "+aLog+"\n"+tt.extra+"flagsets:\n"+twoFlagsets)
+			cfg, err := LoadConfig(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fake := newFake(tt.cutoff)
+			b := &Bench{Cfg: cfg, Exec: fake, Prober: fakeProber{}}
+			if err := b.Run(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if n := len(fake.encodes); n < tt.minEncodes || n > tt.maxEncodes {
+				t.Errorf("%d encodes for two flagsets, want %d to %d: %q", n, tt.minEncodes, tt.maxEncodes, fake.encodes)
+			}
+			results, err := LoadResults(filepath.Join(dir, "work", "results.csv"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			bests := Bests(cfg, results, nil)
+			if len(bests) != 2 {
+				t.Fatalf("%d answers, want 2", len(bests))
+			}
+			for _, best := range bests {
+				if best.Quality != tt.wantQuality || best.Outcome != Found || !best.Timed {
+					t.Errorf("%s: answer %v (%v, timed %v), want %v found and timed", best.Name, best.Quality, best.Outcome, best.Timed, tt.wantQuality)
+				}
+				if got := best.SeedVMAF != 0; got != tt.wantSeedVMAF {
+					t.Errorf("%s: SeedVMAF = %v, want set %v", best.Name, best.SeedVMAF, tt.wantSeedVMAF)
+				}
+			}
+
+			// A finished search stays finished: nothing more to encode,
+			// and Status agrees.
+			n := len(fake.encodes)
+			if err := b.Run(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if len(fake.encodes) != n {
+				t.Errorf("second run encoded %q", fake.encodes[n:])
+			}
+			status, err := b.Status(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, s := range status {
+				if !s.Done {
+					t.Errorf("Status: %s not done", s.Flagset)
+				}
+			}
+
+			// Without the delta, an accepted answer gets its search.
+			cfg.SeedVMAFDelta = 0
+			if err := b.Run(ctx); err != nil {
+				t.Fatal(err)
+			}
+			wantMore := tt.wantSeedVMAF && tt.minEncodes == 2
+			if more := len(fake.encodes) > n; more != wantMore {
+				t.Errorf("without the delta, searched further: %v, want %v", more, wantMore)
+			}
+		})
+	}
+
+	// A seed log whose search never finished has no answer to match.
+	log, err := LoadResults(aLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kept []Row
+	for _, r := range log.Rows {
+		if r.Quality <= 18.7 {
+			kept = append(kept, r)
+		}
+	}
+	log.Rows = kept
+	if err := log.rewrite(); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "samples", "a.mov"), "sample a")
+	path := filepath.Join(dir, "bench.yaml")
+	writeFile(t, path, "samples: samples\nworkdir: work\nseed_results: "+aLog+"\nseed_vmaf_delta: 0.02\nflagsets:\n"+twoFlagsets)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := newFake(18.7)
+	if err := (&Bench{Cfg: cfg, Exec: fake, Prober: fakeProber{}}).Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(fake.encodes); n < 4 {
+		t.Errorf("%d encodes from an unfinished seed search, want a search: %q", n, fake.encodes)
+	}
+}
+
+func TestSeedVMAFRoundTrip(t *testing.T) {
+	for _, want := range []float64{0, 95.03125} {
+		in := Row{Time: time.Unix(0, 0).UTC(), Scorer: "v6", Timed: true, SeedVMAF: want}
+		got, err := parseRow(columnIndex(resultColumns), in.record())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.SeedVMAF != want {
+			t.Errorf("SeedVMAF = %v, want %v", got.SeedVMAF, want)
+		}
 	}
 }
 

@@ -98,6 +98,10 @@ type Row struct {
 	// InputArgs is the flagset's Flagset.InputArgs, joined like Args;
 	// empty for most flagsets, and in older rows.
 	InputArgs string
+	// SeedVMAF is the seed log's VMAF for this setting, if this encode
+	// matched it closely enough to be accepted as the answer (see
+	// Config.SeedVMAFDelta); 0 otherwise.
+	SeedVMAF float64
 	// Timed says WallS, UserS, SysS and MaxRSSKB are this encode's own.
 	// An encode made with others in one ffmpeg (Flagset.Batch) isn't:
 	// its times are the whole batch's. Such a search's answer is then
@@ -119,7 +123,7 @@ var resultColumns = []string{
 	"vmaf_model", "target_vmaf", "pass", "score_s", "batch_size", "batch_id",
 	"encbench_version", "config", "job", "out_sha256",
 	"cpu_busy_pct", "cpu_mhz", "cpu_ipc", "cpu_pkg_w", "cpu_core_w", "cpu_pkg_temp_c", "cpu_llc_hit_pct",
-	"input_args",
+	"input_args", "seed_vmaf",
 }
 
 // cpuColumn is the first of turbostatColumns' columns in resultColumns.
@@ -168,7 +172,11 @@ func (r *Row) record() []string {
 			rec = append(rec, ftoa(*f))
 		}
 	}
-	return append(rec, r.InputArgs)
+	seedVMAF := ""
+	if r.SeedVMAF != 0 {
+		seedVMAF = ftoa(r.SeedVMAF)
+	}
+	return append(rec, r.InputArgs, seedVMAF)
 }
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
@@ -340,6 +348,7 @@ func parseRow(col map[string]int, rec []string) (Row, error) {
 		r.CPUStats = &cpu
 	}
 	r.InputArgs = opt("input_args")
+	r.SeedVMAF = optFloat("seed_vmaf")
 	return r, errors.Join(errs...)
 }
 

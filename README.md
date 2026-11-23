@@ -659,6 +659,7 @@ vmaf_jobs: 3            # scorings run at once
 references:             # score a sample against another file in samples/
   yuri-h265.mov: yuri.mov
 seed_results: mac-results.csv  # another machine's log, to start searches at its answers
+seed_vmaf_delta: 0.02   # and accept them if VMAF is this close (default 0: always search)
 batch: 1                # quality settings each search tries per round (see Batches)
 flagsets:
   x265-medium:
@@ -714,7 +715,13 @@ flagsets:
   sample name, flagset args and scoring) starts at that answer and
   tries its neighbors first, so it usually takes two encodes, both
   timed. If the new machine's encodes differ slightly, as x264's do
-  with a different thread count, the search widens from there.
+  with a different thread count, the search widens from there. With
+  `seed_vmaf_delta: 0.02` as well, an encode at the old log's answer
+  that passes, with a VMAF within 0.02 of the old log's, is accepted as
+  the answer without trying its neighbor, which the old log already
+  found to fail. That's usually one encode per search. Accepted rows
+  have the old log's VMAF in `seed_vmaf`. Anything else searches as
+  above.
 - **Batches.** With `batch: N`, each search tries up to N quality
   settings per round instead of one. They're encoded by a single
   ffmpeg, which decodes the sample once for all of them, and scored in

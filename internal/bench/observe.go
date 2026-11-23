@@ -108,6 +108,11 @@ func (b *Bench) Status(ctx context.Context) ([]PairStatus, error) {
 	if err != nil {
 		return nil, err
 	}
+	if b.Cfg.SeedVMAFDelta > 0 {
+		if err := dry.loadSeeds(samples); err != nil {
+			return nil, err
+		}
+	}
 	var out []PairStatus
 	index := map[[2]string]int{}
 	for _, s := range samples {
@@ -127,7 +132,7 @@ func (b *Bench) Status(ctx context.Context) ([]PairStatus, error) {
 				continue
 			}
 			out[i].Skipped = false
-			if done, _ := settled(b.Cfg, fs, flagsetKey(fs), s, results); !done {
+			if done, _ := dry.settled(fs, flagsetKey(fs), s, results); !done {
 				out[i].Done = false
 			}
 		}
