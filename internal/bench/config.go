@@ -45,6 +45,13 @@ type Config struct {
 	// hardware without searching again. Without it, a search starts
 	// from this log's answers for other samples.
 	SeedResults string `yaml:"seed_results"`
+	// SeedVMAFDelta, if above 0, lets a search stop at SeedResults's
+	// answer without showing that the next step fails: when the encode
+	// there passes, its VMAF is within SeedVMAFDelta of the seed log's
+	// encode, and the seed log's own search was finished. Any other
+	// result searches as usual. Batched searches (Batch) encode more
+	// than the answer in their first round, so this saves them little.
+	SeedVMAFDelta float64 `yaml:"seed_vmaf_delta"`
 	// An encode passes when its mean VMAF reaches TargetVMAF (default
 	// 95) and it meets the optional color limits. VMAF ignores chroma,
 	// so a color cast only fails an encode through MinCIEDE2000 (a
@@ -286,6 +293,12 @@ func (c *Config) finish(base string) error {
 	c.Workdir = resolve(base, c.Workdir)
 	if c.SeedResults != "" {
 		c.SeedResults = resolve(base, c.SeedResults)
+	}
+	if c.SeedVMAFDelta < 0 {
+		return fmt.Errorf("seed_vmaf_delta: must not be negative")
+	}
+	if c.SeedVMAFDelta > 0 && c.SeedResults == "" {
+		return fmt.Errorf("seed_vmaf_delta: needs seed_results")
 	}
 	if c.TargetVMAF == 0 {
 		c.TargetVMAF = 95

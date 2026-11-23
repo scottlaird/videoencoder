@@ -51,6 +51,9 @@ type Bench struct {
 	scorings Scorings
 	// seeds is Config.SeedResults's answers, if it's set.
 	seeds map[pair]Row
+	// seedAnswers are the seeds whose own searches were finished, if
+	// Config.SeedVMAFDelta is set.
+	seedAnswers map[pair]seedAnswer
 	// listing makes loadSamples skip making copies, quietly.
 	listing bool
 }
@@ -158,12 +161,8 @@ func (b *Bench) run(ctx context.Context) error {
 	for _, s := range samples {
 		b.scorings[s.name] = s.scoring
 	}
-	if b.Cfg.SeedResults != "" {
-		seeds, err := readResults(b.Cfg.SeedResults)
-		if err != nil {
-			return fmt.Errorf("seed_results: %w", err)
-		}
-		b.seeds = bestByPair(b.Cfg, seeds, b.scorings)
+	if err := b.loadSeeds(samples); err != nil {
+		return err
 	}
 	tasks := b.tasks(samples, results)
 
@@ -409,7 +408,7 @@ func (b *Bench) tasks(samples []*sample, results *Results) []*task {
 				continue
 			}
 			fkey := flagsetKey(fs)
-			done, untimed := settled(b.Cfg, fs, fkey, s, results)
+			done, untimed := b.settled(fs, fkey, s, results)
 			if done {
 				continue
 			}
@@ -439,6 +438,107 @@ func (b *Bench) tasks(samples []*sample, results *Results) []*task {
 		}
 	}
 	return tasks
+}
+
+// seedAnswer is a setting, as an index, that another machine's search
+// ended on, and that encode's VMAF.
+type seedAnswer struct {
+	i    int
+	vmaf float64
+}
+
+// loadSeeds reads Config.SeedResults, if it's set, into b.seeds and
+// b.seedAnswers, for samples.
+func (b *Bench) loadSeeds(samples []*sample) error {
+	if b.Cfg.SeedResults == "" {
+		return nil
+	}
+	log, err := readResults(b.Cfg.SeedResults)
+	if err != nil {
+		return fmt.Errorf("seed_results: %w", err)
+	}
+	sc := Scorings{}
+	for _, s := range samples {
+		sc[s.name] = s.scoring
+	}
+	b.seeds = bestByPair(b.Cfg, log, sc)
+	b.seedAnswers = map[pair]seedAnswer{}
+	if b.Cfg.SeedVMAFDelta <= 0 {
+		return nil
+	}
+	for _, s := range samples {
+		for _, name := range b.Cfg.FlagsetNames() {
+			fs := b.Cfg.Flagsets[name]
+			p := pair{s.name, flagsetKey(fs)}
+			row, ok := b.seeds[p]
+			if !ok {
+				continue
+			}
+			if done, untimed := settled(b.Cfg, fs, p.fkey, s, log); done || untimed {
+				b.seedAnswers[p] = seedAnswer{fs.Quality.qualityToIndex(row.Quality), row.Metrics.VMAF}
+			}
+		}
+	}
+	return nil
+}
+
+// seedMatch reports whether an encode at index i with metrics m can be
+// taken as the answer because it matches the seed log's (see
+// Config.SeedVMAFDelta), and the seed's VMAF.
+func (b *Bench) seedMatch(fkey string, s *sample, i int, m Metrics) (float64, bool) {
+	a, ok := b.seedAnswers[pair{s.name, fkey}]
+	if !ok || a.i != i || b.Cfg.margin(m, s.scoring.Target) < 0 {
+		return 0, false
+	}
+	return a.vmaf, math.Abs(m.VMAF-a.vmaf) <= b.Cfg.SeedVMAFDelta
+}
+
+// acceptSeed ends t's search if its best pass so far matches the seed
+// log's answer, by taking the next step as failing, as it did there.
+// If the next step has been measured, the search already knows better.
+func (b *Bench) acceptSeed(t *task, results *Results) {
+	pass, fail := t.search.Bracket()
+	if pass < 0 || pass >= t.fs.Quality.steps() || fail == pass+1 {
+		return
+	}
+	q := t.fs.Quality.indexToQuality(pass)
+	row, ok := results.Lookup(encodeKey(t.sample.scoring.Scorer, t.sample.id, t.fkey, q))
+	if !ok {
+		return
+	}
+	if seed, ok := b.seedMatch(t.fkey, t.sample, pass, row.Metrics); ok {
+		slog.Info("Matches the seed's answer", "sample", t.sample.name, "flagset", t.name, "quality", q,
+			"vmaf", row.Metrics.VMAF, "seed_vmaf", seed)
+		t.search.Observe(pass+1, false, math.NaN())
+	}
+}
+
+// settled is the function settled, and also reports as settled an
+// answer that was accepted for matching the seed log's.
+func (b *Bench) settled(fs *Flagset, fkey string, s *sample, results *Results) (done, untimed bool) {
+	done, untimed = settled(b.Cfg, fs, fkey, s, results)
+	if done || untimed {
+		return done, untimed
+	}
+	best, timed := -1, false
+	var m Metrics
+	for _, r := range results.Rows {
+		if r.Sample != s.name || r.FlagsetKey != fkey || r.Scorer != s.scoring.Scorer || !fs.Quality.onGrid(r.Quality) ||
+			b.Cfg.margin(r.Metrics, s.scoring.Target) < 0 {
+			continue
+		}
+		switch i := fs.Quality.qualityToIndex(r.Quality); {
+		case i > best:
+			best, timed, m = i, r.Timed, r.Metrics
+		case i == best:
+			timed, m = timed || r.Timed, r.Metrics
+		}
+	}
+	if best < 0 {
+		return false, false
+	}
+	_, ok := b.seedMatch(fkey, s, best, m)
+	return ok && timed, ok && !timed
 }
 
 // settled reports whether the log already answers the search for fs on
@@ -530,6 +630,7 @@ func (b *Bench) advance(tasks []*task, results *Results) []*pending {
 			continue
 		}
 		for {
+			b.acceptSeed(t, results)
 			pts, out := t.search.NextBatch(t.fs.Batch)
 			if out != Searching {
 				t.outcome = out
@@ -849,6 +950,9 @@ func (b *Bench) record(results *Results, round int, p *pending) error {
 	row.Pass = &pass
 	row.ScoreS = p.scoreTime.Seconds()
 	row.BatchSize, row.BatchID = int64(p.batchSize), p.batchID
+	if seed, ok := b.seedMatch(t.fkey, t.sample, p.i, m); ok {
+		row.SeedVMAF = seed
+	}
 	if err := results.Append(row); err != nil {
 		return err
 	}
