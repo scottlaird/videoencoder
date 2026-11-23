@@ -103,8 +103,50 @@ type Config struct {
 	// HDR overrides the target and models for HDR samples.
 	HDR      HDRScoring          `yaml:"hdr"`
 	Flagsets map[string]*Flagset `yaml:"flagsets"`
+	// Ladders encode several of the flagsets from each sample in one
+	// ffmpeg, as videoencoder does; see Ladder. Their names share
+	// flagsets' namespace, since a queue job lists them as flagsets.
+	Ladders map[string]*Ladder `yaml:"ladders"`
 
 	sdrModels, hdrModels modelPair
+}
+
+// Ladder is a set of outputs encoded from each sample in one ffmpeg run,
+// the way videoencoder makes a video's renditions: the sample is decoded
+// once and scaled once per height, and each rung encodes those frames
+// at a fixed setting, the answer Answers gives for that flagset on the
+// sample's version at that height. So it measures the machine fully
+// loaded, as bulk encoding does, rather than one encode at a time.
+//
+// Each rung is logged as a row of its own (see Row.Ladder), scored
+// against the sample's version at its height. The rows share the run's
+// times, so they aren't Timed, and a BatchID. Their FlagsetKey is the
+// rung's own, not the flagset's, so searches and answers ignore them.
+// A rung taller than the sample is left out; a ladder whose answers
+// change runs again.
+type Ladder struct {
+	Rungs []Rung `yaml:"rungs"`
+	// Answers is the results log whose answers set the rungs' settings:
+	// by default SeedResults, or this config's own log if that's unset.
+	// A rung it has no answer for fails the ladder on that sample.
+	Answers string `yaml:"answers"`
+}
+
+// Rung is one of a Ladder's outputs: a flagset, at a height that must be
+// one of the config's Scales.
+type Rung struct {
+	Flagset string `yaml:"flagset"`
+	Height  uint64 `yaml:"height"`
+}
+
+// LadderNames returns the ladder names in sorted order.
+func (c *Config) LadderNames() []string {
+	names := make([]string, 0, len(c.Ladders))
+	for n := range c.Ladders {
+		names = append(names, n)
+	}
+	slices.Sort(names)
+	return names
 }
 
 // HDRScoring is how HDR samples are judged. Unset fields fall back to
@@ -396,6 +438,43 @@ func (c *Config) finish(base string) error {
 		if slices.Contains(f.Args, q.Flag) {
 			return fmt.Errorf("flagset %q: args must not contain the quality flag %s", name, q.Flag)
 		}
+	}
+	for _, name := range c.LadderNames() {
+		if err := c.finishLadder(base, name); err != nil {
+			return fmt.Errorf("ladder %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func (c *Config) finishLadder(base, name string) error {
+	l := c.Ladders[name]
+	if l == nil || len(l.Rungs) == 0 {
+		return fmt.Errorf("rungs required")
+	}
+	if _, ok := c.Flagsets[name]; ok {
+		return fmt.Errorf("a flagset has the same name")
+	}
+	if l.Answers != "" {
+		l.Answers = resolve(base, l.Answers)
+	}
+	seen := map[Rung]bool{}
+	for i, r := range l.Rungs {
+		fs, ok := c.Flagsets[r.Flagset]
+		switch {
+		case !ok:
+			return fmt.Errorf("rung %d: no flagset %q", i+1, r.Flagset)
+		case !slices.Contains(c.Scales, r.Height):
+			// Its encodes are scored against the sample's version at
+			// that height, which only scales make.
+			return fmt.Errorf("rung %d: height %d isn't one of scales", i+1, r.Height)
+		case seen[r]:
+			return fmt.Errorf("rung %d: %s at %d is already a rung", i+1, r.Flagset, r.Height)
+		case !slices.Equal(fs.InputArgs, c.Flagsets[l.Rungs[0].Flagset].InputArgs):
+			// They share one decode.
+			return fmt.Errorf("rung %d: %s's input_args differ from the first rung's", i+1, r.Flagset)
+		}
+		seen[r] = true
 	}
 	return nil
 }

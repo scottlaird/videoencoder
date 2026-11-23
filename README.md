@@ -675,6 +675,15 @@ flagsets:
   qsv-hevc-hwdecode:
     input_args: [-hwaccel, qsv, -hwaccel_output_format, qsv]  # before -i
     args: [-vf, "vpp_qsv=format=p010", -c:v, hevc_qsv, -preset, medium]
+ladders:                # several flagsets in one ffmpeg (see Ladders)
+  web-5:
+    answers: render3-results.csv  # whose answers set each rung's setting
+    rungs:
+      - {flagset: x264-faster, height: 1080}
+      - {flagset: x265-medium, height: 1080}
+      - {flagset: svtav1-p5, height: 1080}
+      - {flagset: x265-medium, height: 2160}
+      - {flagset: svtav1-p5, height: 2160}
 ```
 
 - **Quality ranges.** Each flagset's quality flag, range and step
@@ -744,6 +753,25 @@ flagsets:
   answer again by itself and logs it again, timed. That later row is
   the one reports use. An interrupted run re-times the answer next
   time, without searching again.
+- **Ladders.** A search times one encode at a time, which leaves most
+  of a big machine idle. A ladder measures it fully loaded, the way
+  videoencoder makes a video's renditions: one ffmpeg decodes the
+  sample once, scales it once per height (with Lanczos, as the scaled
+  copies are made), and encodes every rung from those frames. Each
+  rung uses a fixed setting: the answer that `answers` (by default
+  `seed_results`, else this log) has for its flagset on the sample's
+  version at its height, so every machine encodes the same thing.
+  Heights must be among `scales`, since a rung is scored against that
+  version, and rungs taller than the sample are left out. A rung the
+  answers lack fails the ladder on that sample. Each rung is logged as
+  a row of its own, with the ladder's name in `ladder` and an ID of
+  its rungs and settings in `ladder_key`. The rows share the whole
+  run's time, CPU and turbostat measurements, so they're logged with
+  `timed` false and a shared `batch_id`, and their `flagset_key` is
+  the rung's own, so searches, answers and reports ignore them. A
+  ladder is done once the log has its `ladder_key`, and runs again if
+  its answers change. `run` runs ladders after the searches, and a
+  queue job lists a ladder by name among its flagsets.
 - **Color limits.** `min_ciede2000`, `min_chroma_psnr`,
   `max_color_shift` and `max_color_flicker` can fail encodes for color
   errors, which VMAF ignores entirely. All of them are off by default.
@@ -796,6 +824,9 @@ flagsets: [x264-ultrafast-kf10-film, "x264-*-kf10-film"]
 samples: [20180529-band.mp4, "2026*-sdr.mov"]   # optional; default all
 report: ../report-x264-film.md                  # optional
 ```
+
+A config's ladders count as flagsets here, after its flagsets, so a job
+can list one: `flagsets: [web-5]` runs that ladder on each sample.
 
 Files run in name order, so names like `00-h264.yaml`, `10-h265.yaml`
 and `50-av1-8k.yaml` set their priority. Within a file, flagsets run in

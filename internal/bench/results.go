@@ -102,6 +102,10 @@ type Row struct {
 	// matched it closely enough to be accepted as the answer (see
 	// Config.SeedVMAFDelta); 0 otherwise.
 	SeedVMAF float64
+	// Ladder is the Config.Ladders name this encode was a rung of, and
+	// LadderKey identifies that run's ladder: its rungs, their settings
+	// and the sample. Empty for every other encode.
+	Ladder, LadderKey string
 	// Timed says WallS, UserS, SysS and MaxRSSKB are this encode's own.
 	// An encode made with others in one ffmpeg (Flagset.Batch) isn't:
 	// its times are the whole batch's. Such a search's answer is then
@@ -123,7 +127,7 @@ var resultColumns = []string{
 	"vmaf_model", "target_vmaf", "pass", "score_s", "batch_size", "batch_id",
 	"encbench_version", "config", "job", "out_sha256",
 	"cpu_busy_pct", "cpu_mhz", "cpu_ipc", "cpu_pkg_w", "cpu_core_w", "cpu_pkg_temp_c", "cpu_llc_hit_pct",
-	"input_args", "seed_vmaf",
+	"input_args", "seed_vmaf", "ladder", "ladder_key",
 }
 
 // cpuColumn is the first of turbostatColumns' columns in resultColumns.
@@ -176,7 +180,7 @@ func (r *Row) record() []string {
 	if r.SeedVMAF != 0 {
 		seedVMAF = ftoa(r.SeedVMAF)
 	}
-	return append(rec, r.InputArgs, seedVMAF)
+	return append(rec, r.InputArgs, seedVMAF, r.Ladder, r.LadderKey)
 }
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
@@ -349,6 +353,7 @@ func parseRow(col map[string]int, rec []string) (Row, error) {
 	}
 	r.InputArgs = opt("input_args")
 	r.SeedVMAF = optFloat("seed_vmaf")
+	r.Ladder, r.LadderKey = opt("ladder"), opt("ladder_key")
 	return r, errors.Join(errs...)
 }
 

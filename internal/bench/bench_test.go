@@ -282,7 +282,8 @@ func newFake(cutoff float64) *fakeFFmpeg {
 func (f *fakeFFmpeg) Exec(_ context.Context, argv []string) (Measurement, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if i := slices.Index(argv, "-filter_complex"); i >= 0 {
+	// A ladder's encode has a filter graph too, but no libvmaf.
+	if i := slices.Index(argv, "-filter_complex"); i >= 0 && strings.Contains(argv[i+1], "libvmaf") {
 		f.scores++
 		f.graphs = append(f.graphs, argv[i+1])
 		in := argv[slices.Index(argv, "-i")+1]
@@ -315,6 +316,8 @@ func (f *fakeFFmpeg) Exec(_ context.Context, argv []string) (Measurement, error)
 	// quality flag and value, and its file (the next .mp4).
 	src := filepath.Base(argv[slices.Index(argv, "-i")+1])
 	var outs []string
+	// start is where the current output's options begin.
+	start := slices.Index(argv, "-i") + 2
 	for qi, a := range argv {
 		if a != "-crf" && a != "-qp" {
 			continue
@@ -328,9 +331,10 @@ func (f *fakeFFmpeg) Exec(_ context.Context, argv []string) (Measurement, error)
 			return Measurement{}, errors.New("output without a file")
 		}
 		out := argv[qi+oi]
-		if slices.Contains(argv, "libx265") && !slices.Contains(argv[:qi+oi], "hvc1") {
+		if own := argv[start : qi+oi]; slices.Contains(own, "libx265") && !slices.Contains(own, "hvc1") {
 			return Measurement{}, errors.New("HEVC encode not tagged hvc1")
 		}
+		start = qi + oi + 1
 		f.quality[out] = q
 		f.source[out] = src
 		f.encodes = append(f.encodes, fmt.Sprintf("%s %v", src, q))

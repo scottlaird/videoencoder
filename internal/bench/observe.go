@@ -137,9 +137,58 @@ func (b *Bench) Status(ctx context.Context) ([]PairStatus, error) {
 			}
 		}
 	}
+	ladders, err := dry.ladderStatus(samples, results)
+	if err != nil {
+		return nil, err
+	}
+	// Each sample's ladders follow its flagsets, keeping a sample's
+	// pairs together.
+	var merged []PairStatus
+	flush := func(source string) {
+		merged = append(merged, ladders[source]...)
+		delete(ladders, source)
+	}
+	for i, p := range out {
+		merged = append(merged, p)
+		if i+1 == len(out) || out[i+1].Sample != p.Sample {
+			flush(p.Sample)
+		}
+	}
+	for _, source := range sources(samples) {
+		flush(source)
+	}
+	out = merged
 	for i := range out {
 		if out[i].Skipped {
 			out[i].Done = false
+		}
+	}
+	return out, nil
+}
+
+// ladderStatus is Status's pairs for the ladders the filters allow, by
+// sample file. A ladder that can't be planned (say, for want of an
+// answer) isn't done, so that running it says why.
+func (b *Bench) ladderStatus(samples []*sample, results *Results) (map[string][]PairStatus, error) {
+	out := map[string][]PairStatus{}
+	for _, name := range b.Cfg.LadderNames() {
+		if !matches(b.FlagsetFilter, name) {
+			continue
+		}
+		answers, err := b.ladderAnswers(b.Cfg.Ladders[name], samples, results)
+		if err != nil {
+			return nil, err
+		}
+		for _, source := range sources(samples) {
+			ps := PairStatus{Sample: source, Flagset: name}
+			switch lr, err := b.planLadder(name, source, samples, answers); {
+			case err != nil:
+			case lr == nil:
+				ps.Skipped = true
+			default:
+				ps.Done = lr.done(results)
+			}
+			out[source] = append(out[source], ps)
 		}
 	}
 	return out, nil

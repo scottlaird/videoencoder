@@ -32,7 +32,8 @@ import (
 // name. Entries may be path.Match patterns, which expand in that
 // default order, and each must match something. A unit is one flagset
 // on one sample; all of a file's samples run with a flagset before the
-// next flagset starts.
+// next flagset starts. A config's ladders (see bench.Ladder) count as
+// flagsets here, after its flagsets.
 type job struct {
 	Config   string   `yaml:"config"`
 	Flagsets []string `yaml:"flagsets"`
@@ -117,8 +118,8 @@ func loadWorkFile(path string) (*workFile, error) {
 	return wf, nil
 }
 
-// flagsetOrder lists a bench config's flagsets in the order it gives
-// them.
+// flagsetOrder lists a bench config's flagsets, then its ladders, in
+// the order it gives them.
 func flagsetOrder(data []byte) ([]string, error) {
 	var doc yaml.Node
 	if err := yaml.Load(data, &doc); err != nil {
@@ -131,6 +132,13 @@ func flagsetOrder(data []byte) ([]string, error) {
 	var names []string
 	for i := 0; i+1 < len(fs.Content); i += 2 {
 		names = append(names, fs.Content[i].Value)
+	}
+	// Ladders run after the flagsets, and a job may list them as
+	// flagsets.
+	if ls := mappingValue(&doc, "ladders"); ls != nil && ls.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(ls.Content); i += 2 {
+			names = append(names, ls.Content[i].Value)
+		}
 	}
 	return names, nil
 }
