@@ -631,3 +631,23 @@ func TestScoringTotal(t *testing.T) {
 		}
 	}
 }
+
+func TestFlagsetOrderWithLadders(t *testing.T) {
+	cfg := []byte(`samples: s
+scales: [1080]
+flagsets:
+  zeta: {args: [-c:v, libx264]}
+  alpha: {args: [-c:v, libx265]}
+ladders:
+  full: {rungs: [{flagset: zeta, height: 1080}]}
+  base: {rungs: [{flagset: alpha, height: 1080}]}
+`)
+	got, err := flagsetOrder(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Flagsets, then ladders, each as the config lists them.
+	if want := []string{"zeta", "alpha", "full", "base"}; !slices.Equal(got, want) {
+		t.Errorf("flagsetOrder = %q, want %q", got, want)
+	}
+}

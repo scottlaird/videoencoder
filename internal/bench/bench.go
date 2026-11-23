@@ -191,6 +191,9 @@ func (b *Bench) run(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+	if err := b.runLadders(ctx, samples, results); err != nil {
+		return err
+	}
 	return WriteBest(b.bestPath(), b.Cfg, results, b.scorings)
 }
 
@@ -326,7 +329,7 @@ func (b *Bench) scaledSamples(ctx context.Context, s *sample) ([]*sample, error)
 			}
 			continue
 		}
-		w := uint64(float64(s.vd.Width)*float64(h)/float64(s.vd.Height)+0.5) &^ 1
+		w := scaledWidth(s.vd.Width, s.vd.Height, h)
 		base := strings.TrimSuffix(s.name, filepath.Ext(s.name))
 		c := &sample{
 			name:      fmt.Sprintf("%s@%dp.mov", base, h),
@@ -916,6 +919,27 @@ func (b *Bench) record(results *Results, round int, p *pending) error {
 	}
 	t.encoded[p.i] = p.out
 	m := p.metrics
+	row := b.encodeRow(p)
+	margin := b.Cfg.margin(m, t.sample.scoring.Target)
+	if seed, ok := b.seedMatch(t.fkey, t.sample, p.i, m); ok {
+		row.SeedVMAF = seed
+	}
+	if err := results.Append(row); err != nil {
+		return err
+	}
+	slog.Info("Scored", "sample", t.sample.name, "flagset", t.name, "quality", p.quality,
+		"kbps", int(row.Kbps), "vmaf", m.VMAF, "ciede2000", m.CIEDE2000, "color_shift", m.ColorShiftP99, "pass", margin >= 0)
+	t.search.Observe(p.i, margin >= 0, margin)
+	ev.Kind, ev.Kbps, ev.VMAF, ev.Pass = Scored, row.Kbps, m.VMAF, margin >= 0
+	ev.Bracket = t.bracket()
+	b.observe(ev)
+	return nil
+}
+
+// encodeRow is the log's row for p, a scored encode.
+func (b *Bench) encodeRow(p *pending) Row {
+	t := p.t
+	m := p.metrics
 	row := Row{
 		Sample:         t.sample.name,
 		Reference:      t.sample.reference().name,
@@ -943,26 +967,13 @@ func (b *Bench) record(results *Results, round int, p *pending) error {
 		Time:           b.now(),
 		Timed:          p.alone,
 	}
-	margin := b.Cfg.margin(m, t.sample.scoring.Target)
-	pass := margin >= 0
+	pass := b.Cfg.margin(m, t.sample.scoring.Target) >= 0
 	b.describe(&row, t.sample)
 	row.Output, row.OutSHA256 = p.output, p.sha256
 	row.Pass = &pass
 	row.ScoreS = p.scoreTime.Seconds()
 	row.BatchSize, row.BatchID = int64(p.batchSize), p.batchID
-	if seed, ok := b.seedMatch(t.fkey, t.sample, p.i, m); ok {
-		row.SeedVMAF = seed
-	}
-	if err := results.Append(row); err != nil {
-		return err
-	}
-	slog.Info("Scored", "sample", t.sample.name, "flagset", t.name, "quality", p.quality,
-		"kbps", int(row.Kbps), "vmaf", m.VMAF, "ciede2000", m.CIEDE2000, "color_shift", m.ColorShiftP99, "pass", margin >= 0)
-	t.search.Observe(p.i, margin >= 0, margin)
-	ev.Kind, ev.Kbps, ev.VMAF, ev.Pass = Scored, row.Kbps, m.VMAF, margin >= 0
-	ev.Bracket = t.bracket()
-	b.observe(ev)
-	return nil
+	return row
 }
 
 // recordTiming logs the answer's row again with p's time, which is the
