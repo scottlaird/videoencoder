@@ -763,7 +763,13 @@ ladders:                # several flagsets in one ffmpeg (see Ladders)
   version at its height, so every machine encodes the same thing.
   Heights must be among `scales`, since a rung is scored against that
   version, and rungs taller than the sample are left out. A rung the
-  answers lack fails the ladder on that sample. Each rung is logged as
+  answers lack fails the ladder on that sample. A rung with
+  `quality_from` (another of `scales`) instead encodes at its flagset's
+  answer at that height plus `quality_offset`, kept within the
+  flagset's quality range, as videoencoder's `quality_from` renditions
+  do for heights VMAF can't judge, such as
+  `{flagset: svtav1-p6, height: 4320, quality_from: 2160, quality_offset: 4}`.
+  Each rung is logged as
   a row of its own, with the ladder's name in `ladder` and an ID of
   its rungs and settings in `ladder_key`. The rows share the whole
   run's time, CPU and turbostat measurements, so they're logged with

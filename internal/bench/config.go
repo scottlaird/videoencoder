@@ -137,6 +137,13 @@ type Ladder struct {
 type Rung struct {
 	Flagset string `yaml:"flagset"`
 	Height  uint64 `yaml:"height"`
+	// QualityFrom, if set, is another of the scales: the rung encodes at
+	// its flagset's answer at that height plus QualityOffset, kept within
+	// the flagset's quality range, rather than at its own answer. As
+	// videoencoder's renditions do for heights VMAF can't judge, such as
+	// 4320 from 2160.
+	QualityFrom   uint64  `yaml:"quality_from"`
+	QualityOffset float64 `yaml:"quality_offset"`
 }
 
 // LadderNames returns the ladder names in sorted order.
@@ -458,7 +465,11 @@ func (c *Config) finishLadder(base, name string) error {
 	if l.Answers != "" {
 		l.Answers = resolve(base, l.Answers)
 	}
-	seen := map[Rung]bool{}
+	type output struct {
+		flagset string
+		height  uint64
+	}
+	seen := map[output]bool{}
 	for i, r := range l.Rungs {
 		fs, ok := c.Flagsets[r.Flagset]
 		switch {
@@ -468,13 +479,17 @@ func (c *Config) finishLadder(base, name string) error {
 			// Its encodes are scored against the sample's version at
 			// that height, which only scales make.
 			return fmt.Errorf("rung %d: height %d isn't one of scales", i+1, r.Height)
-		case seen[r]:
+		case r.QualityFrom != 0 && !slices.Contains(c.Scales, r.QualityFrom):
+			return fmt.Errorf("rung %d: quality_from %d isn't one of scales", i+1, r.QualityFrom)
+		case r.QualityFrom == 0 && r.QualityOffset != 0:
+			return fmt.Errorf("rung %d: quality_offset needs quality_from", i+1)
+		case seen[output{r.Flagset, r.Height}]:
 			return fmt.Errorf("rung %d: %s at %d is already a rung", i+1, r.Flagset, r.Height)
 		case !slices.Equal(fs.InputArgs, c.Flagsets[l.Rungs[0].Flagset].InputArgs):
 			// They share one decode.
 			return fmt.Errorf("rung %d: %s's input_args differ from the first rung's", i+1, r.Flagset)
 		}
-		seen[r] = true
+		seen[output{r.Flagset, r.Height}] = true
 	}
 	return nil
 }
