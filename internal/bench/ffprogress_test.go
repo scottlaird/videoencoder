@@ -69,7 +69,9 @@ func TestExecProgressCountsFrames(t *testing.T) {
 // fake turbostat that exits with its status as turbostat does: the
 // error should name ffmpeg and quote its last words, not turbostat's
 // exit status alone.
-func TestEncodeErrorUnderTurbostat(t *testing.T) {
+// TestEncodeErrorWithTurbostat checks that ffmpeg's failures are
+// reported as its own, with turbostat sampling beside it.
+func TestEncodeErrorWithTurbostat(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("needs a shell")
 	}
@@ -81,15 +83,15 @@ func TestEncodeErrorUnderTurbostat(t *testing.T) {
 		}
 		return p
 	}
-	ts := write("turbostat", "#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done; shift\n\"$@\"\nexit $?\n")
+	ts := write("turbostat", "#!/bin/sh\ntrap 'exit 0' INT\nwhile :; do sleep 0.01; done\n")
 	for _, tc := range []struct {
 		name, ffmpeg string
 		want         []string
 	}{
 		{"error", "#!/bin/sh\necho 'noise' >&2\necho 'Temporal filtering needs at least 4 B-Frames (-bf 4).' >&2\nexit 234\n",
-			[]string{"running ffmpeg under turbostat", "exit status 234", "Temporal filtering needs at least 4 B-Frames"}},
-		{"crash", "#!/bin/sh\nexit 139\n",
-			[]string{"running ffmpeg under turbostat", "exit status 139", "killed by segmentation fault"}},
+			[]string{"running ffmpeg", "exit status 234", "Temporal filtering needs at least 4 B-Frames"}},
+		{"crash", "#!/bin/sh\nkill -SEGV $$\n",
+			[]string{"running ffmpeg", "segmentation fault"}},
 	} {
 		ff := write("ffmpeg", tc.ffmpeg)
 		_, err := ExecExecutor{Turbostat: ts}.Encode(context.Background(), []string{ff, "-i", "in.mov", "out.mp4"}, 10*time.Second, func(Progress) {})

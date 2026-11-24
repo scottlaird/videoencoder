@@ -778,12 +778,18 @@ ladders:                # several flagsets in one ffmpeg (see Ladders)
   The color measures are always recorded either way, and reports flag
   outliers.
 - **CPU measurements.** On Linux, if this user can run `turbostat`
-  without sudo, every encode runs under it, and its row records the
-  machine's average busy clock, IPC, package and core power, last-level
-  cache hit rate and package temperature at the end (`cpu_*` columns),
-  where the CPU reports them; AMD chips, for one, don't report the
-  temperature to turbostat. They're the whole machine's, which during
-  an encode is mostly ffmpeg. [`turbostat-setup.sh`](turbostat-setup.sh)
+  without sudo, it samples the machine every 2 seconds while each
+  encode runs, and the encode's row records the samples' average busy
+  clock, IPC, package and core power, last-level cache hit rate and
+  package temperature at the end (`cpu_*` columns), where the CPU
+  reports them; AMD chips, for one, don't report the temperature to
+  turbostat. They're the whole machine's, which during an encode is
+  mostly ffmpeg. Sampling, rather than one reading at each end, keeps
+  package power right on AMD chips drawing over 200 W: Linux keeps
+  their energy count from a 32-bit register and reads one more than
+  half its range apart as a wrap, so a Threadripper's encodes longer
+  than about two minutes had nonsense package power before
+  (2026-11-24); their other `cpu_*` columns are fine. [`turbostat-setup.sh`](turbostat-setup.sh)
   sets up the permissions on Ubuntu; without them, or on macOS, the
   columns are empty.
 

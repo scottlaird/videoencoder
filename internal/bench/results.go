@@ -90,8 +90,8 @@ type Row struct {
 	// Config is the bench config's path and Job the queue's work file,
 	// if it ran from a queue.
 	EncbenchVersion, Config, Job string
-	// CPUStats is what turbostat measured of the machine over the
-	// encode, when encbench ran it under turbostat (Linux only); nil
+	// CPUStats is what turbostat measured of the machine during the
+	// encode, when encbench ran turbostat beside it (Linux only); nil
 	// otherwise, and in older rows. Like WallS, it's the whole batch's
 	// for an encode that isn't Timed.
 	CPUStats *CPUStats

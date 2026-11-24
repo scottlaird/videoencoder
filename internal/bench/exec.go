@@ -12,7 +12,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/scottlaird/videoencoder/internal/ffmpeg"
@@ -22,8 +21,8 @@ import (
 type Measurement struct {
 	Wall, User, Sys time.Duration
 	MaxRSSKB        int64
-	// CPU is what turbostat measured over an encode; nil without it
-	// (see ExecExecutor.Turbostat).
+	// CPU is what turbostat measured of the machine during an encode;
+	// nil without it (see ExecExecutor.Turbostat).
 	CPU *CPUStats
 }
 
@@ -57,10 +56,9 @@ type ProgressExecutor interface {
 // ExecExecutor runs commands as subprocesses.
 type ExecExecutor struct {
 	Stderr io.Writer
-	// Turbostat, if set, is the turbostat that encodes run under (see
-	// FindTurbostat), to measure the machine's CPUs while they run.
-	// Wall time then includes turbostat's start and finish, a few
-	// milliseconds, and user and system time its own small share.
+	// Turbostat, if set, is the turbostat that samples the machine's
+	// CPUs while encodes run (see FindTurbostat). It runs beside the
+	// encode, so the encode's own times don't include it.
 	Turbostat string
 }
 
@@ -85,8 +83,9 @@ func (e ExecExecutor) ExecProgress(ctx context.Context, argv []string, total tim
 	return e.runProgress(ctx, argv, total, fps, "", progress)
 }
 
-// runProgress runs argv under turbostat (if set) and reports progress
-// by output time, or with fps set by frames.
+// runProgress runs argv, with turbostat (if set) sampling the machine
+// meanwhile, and reports progress by output time, or with fps set by
+// frames.
 func (e ExecExecutor) runProgress(ctx context.Context, argv []string, total time.Duration, fps float64, turbostat string, progress func(Progress)) (Measurement, error) {
 	if len(argv) == 0 || filepath.Base(argv[0]) != "ffmpeg" {
 		return e.Exec(ctx, argv)
@@ -98,25 +97,25 @@ func (e ExecExecutor) runProgress(ctx context.Context, argv []string, total time
 	defer pr.Close()
 	// The child's fd 3 is ExtraFiles[0].
 	argv = slices.Insert(ffmpeg.Quiet(argv), 1, ffmpeg.ProgressArgs...)
-	// What failed, if it does, is argv[0], not the turbostat around it.
-	name := argv[0]
-	var stats string
-	if turbostat != "" {
-		f, err := os.CreateTemp("", "turbostat-*.txt")
-		if err != nil {
-			pw.Close()
-			return Measurement{}, err
-		}
-		f.Close()
-		stats = f.Name()
-		defer os.Remove(stats)
-		argv = turbostatArgv(turbostat, stats, argv)
-	}
 	cmd, tail := e.command(ctx, argv)
 	cmd.ExtraFiles = []*os.File{pw}
-	if stats != "" {
-		// Canceling kills turbostat's ffmpeg too, not just turbostat.
-		killGroup(cmd)
+	var ts *turbostatRun
+	if turbostat != "" {
+		if ts, err = startTurbostat(ctx, turbostat); err != nil {
+			slog.Warn("Couldn't start turbostat; not measuring this encode's CPUs", "err", err)
+			ts = nil
+		}
+	}
+	// stats stops turbostat, if it's running, with its measurements.
+	stats := func() *CPUStats {
+		if ts == nil {
+			return nil
+		}
+		cpu, err := ts.stop()
+		if err != nil {
+			slog.Warn("Couldn't read turbostat's measurements", "err", err)
+		}
+		return cpu
 	}
 	start := time.Now()
 	err = cmd.Start()
@@ -124,7 +123,8 @@ func (e ExecExecutor) runProgress(ctx context.Context, argv []string, total time
 	// EOF when ffmpeg exits.
 	pw.Close()
 	if err != nil {
-		return measure(cmd, name, tail, start, err)
+		stats()
+		return measure(cmd, argv[0], tail, start, err)
 	}
 	done := make(chan struct{})
 	go func() {
@@ -143,12 +143,9 @@ func (e ExecExecutor) runProgress(ctx context.Context, argv []string, total time
 	}()
 	err = cmd.Wait()
 	<-done
-	m, err := measure(cmd, name, tail, start, err)
-	if stats != "" && err == nil {
-		if m.CPU, err = readTurbostat(stats); err != nil {
-			slog.Warn("Couldn't read turbostat's measurements", "err", err)
-			err = nil
-		}
+	m, err := measure(cmd, argv[0], tail, start, err)
+	if cpu := stats(); err == nil {
+		m.CPU = cpu
 	}
 	return m, err
 }
@@ -166,9 +163,8 @@ func (e ExecExecutor) command(ctx context.Context, argv []string) (*exec.Cmd, *t
 	return cmd, tail
 }
 
-// measure is cmd's resource use, once it has exited with err.
-// measure is cmd's resource use, and err said in terms of name, the
-// command cmd runs (perhaps under turbostat), quoting the end of its
+// measure is cmd's resource use, once it has exited with err, and err
+// said in terms of name, the command cmd runs, quoting the end of its
 // stderr from tail.
 func measure(cmd *exec.Cmd, name string, tail *tailWriter, start time.Time, err error) (Measurement, error) {
 	m := Measurement{Wall: time.Since(start)}
@@ -181,17 +177,6 @@ func measure(cmd *exec.Cmd, name string, tail *tailWriter, start time.Time, err 
 		return m, nil
 	}
 	msg := fmt.Sprintf("running %s", filepath.Base(name))
-	if wrapped := name != cmd.Args[0]; wrapped {
-		msg += " under " + filepath.Base(cmd.Args[0])
-		// turbostat exits with its command's status, 128 plus the
-		// signal for one that was killed.
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			if c := ee.ExitCode(); c > 128 && c < 128+32 {
-				err = fmt.Errorf("%w (killed by %v)", err, syscall.Signal(c-128))
-			}
-		}
-	}
 	if last := tail.lastLines(stderrLines); last != "" {
 		return m, fmt.Errorf("%s: %w: %s", msg, err, last)
 	}
