@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -341,7 +342,8 @@ func TestResults(t *testing.T) {
 		if err := log.Append(bench.Row{Sample: "a.mov", Reference: "a.mov", Encoder: "libx265", Flagset: "x",
 			Args: "-c:v libx265 -preset fast", QualityFlag: "-crf", Quality: q, Key: fmt.Sprint("k", q),
 			Bytes: 1000, Kbps: 800, WallS: 2.5, Metrics: m, Scorer: "v6", Host: "h", Time: when, Timed: true,
-			Width: int64(q * 80), Job: "10-test.yaml", CPUStats: cpu}); err != nil {
+			Width: int64(q * 80), Job: "10-test.yaml", CPUStats: cpu,
+			InputArgs: "-hwaccel videotoolbox", SeedVMAF: 95.25, Ladder: "web", LadderKey: "0123"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -374,7 +376,28 @@ func TestResults(t *testing.T) {
 	if r.CPUMHz == nil || *r.CPUMHz != 2950 || r.CPUIPC == nil || *r.CPUIPC != 2.27 || r.CPUPkgTempC != nil {
 		t.Errorf("cpu_mhz %v, cpu_ipc %v, cpu_pkg_temp_c %v; want 2950, 2.27, null", r.CPUMHz, r.CPUIPC, r.CPUPkgTempC)
 	}
+	if r.InputArgs != "-hwaccel videotoolbox" || r.SeedVMAF == nil || *r.SeedVMAF != 95.25 || r.Ladder != "web" || r.LadderKey != "0123" {
+		t.Errorf("input_args %q, seed_vmaf %v, ladder %q, ladder_key %q; want as appended", r.InputArgs, r.SeedVMAF, r.Ladder, r.LadderKey)
+	}
 	if r0 := got.Rows[0]; r0.CPUMHz != nil || r0.CPUBusyPct != nil {
 		t.Errorf("row without turbostat: cpu_mhz %v, cpu_busy_pct %v; want null", r0.CPUMHz, r0.CPUBusyPct)
+	}
+}
+
+// TestResultRowColumns checks that /api/results sends every results.csv
+// column, by the same name.
+func TestResultRowColumns(t *testing.T) {
+	var got []string
+	rt := reflect.TypeFor[ResultRow]()
+	for i := range rt.NumField() {
+		if name, _, _ := strings.Cut(rt.Field(i).Tag.Get("json"), ","); name != "log" {
+			got = append(got, name)
+		}
+	}
+	want := bench.ResultColumns()
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("ResultRow fields\n%q\nwant results.csv's columns\n%q", got, want)
 	}
 }

@@ -102,6 +102,13 @@ type ResultRow struct {
 	CPUCoreW    *float64 `json:"cpu_core_w"`
 	CPUPkgTempC *float64 `json:"cpu_pkg_temp_c"`
 	CPULLCHit   *float64 `json:"cpu_llc_hit_pct"`
+	InputArgs   string   `json:"input_args"`
+	// The seed log's VMAF for this setting; null if not seeded.
+	SeedVMAF *float64 `json:"seed_vmaf"`
+	// The ladder this encode was a rung of, and that run's key; empty
+	// for an encode of its own.
+	Ladder    string `json:"ladder"`
+	LadderKey string `json:"ladder_key"`
 }
 
 // known is n, or nil (JSON null) if it's zero: unknown, in rows logged
@@ -148,6 +155,7 @@ func ResultRowOf(log int, r *bench.Row) ResultRow {
 		VMAFModel: r.VMAFModel, TargetVMAF: known(r.TargetVMAF), Pass: r.Pass, ScoreS: known(r.ScoreS),
 		BatchSize: known(r.BatchSize), BatchID: r.BatchID,
 		EncbenchVer: r.EncbenchVersion, Config: r.Config, Job: r.Job, OutSHA256: r.OutSHA256,
+		InputArgs: r.InputArgs, SeedVMAF: known(r.SeedVMAF), Ladder: r.Ladder, LadderKey: r.LadderKey,
 	}
 	if c := r.CPUStats; c != nil {
 		row.CPUBusyPct, row.CPUMHz, row.CPUIPC = metric(c.BusyPct), metric(c.BusyMHz), metric(c.IPC)
