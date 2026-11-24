@@ -27,11 +27,17 @@ const ladderSpec = `ladders:
 // extra config.
 func ladderBench(t *testing.T, extra string) (*Bench, *fakeFFmpeg, string) {
 	t.Helper()
+	return ladderBenchSpec(t, extra, ladderSpec)
+}
+
+// ladderBenchSpec is ladderBench with spec in place of ladderSpec.
+func ladderBenchSpec(t *testing.T, extra, spec string) (*Bench, *fakeFFmpeg, string) {
+	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "samples", "big.mov"), "8k")
 	writeFile(t, filepath.Join(dir, "samples", "hd.mov"), "1080p")
 	path := filepath.Join(dir, "bench.yaml")
-	writeFile(t, path, "samples: samples\nworkdir: work\nscales: [1080, 2160]\n"+extra+"flagsets:\n"+ladderFlagsets+ladderSpec)
+	writeFile(t, path, "samples: samples\nworkdir: work\nscales: [1080, 2160]\n"+extra+"flagsets:\n"+ladderFlagsets+spec)
 	cfg, err := LoadConfig(path)
 	if err != nil {
 		t.Fatal(err)
@@ -174,6 +180,60 @@ func TestBenchLadderAnswersFromSeeds(t *testing.T) {
 	}
 }
 
+// TestBenchLadderQualityFrom checks rungs that take their setting from
+// another height's answer plus an offset, kept within the flagset's range.
+func TestBenchLadderQualityFrom(t *testing.T) {
+	ctx := context.Background()
+	b, _, dir := ladderBenchSpec(t, "", `ladders:
+  full:
+    rungs:
+      - {flagset: h264, height: 1080}
+      - {flagset: h265, height: 2160, quality_from: 1080, quality_offset: 3}
+      - {flagset: h264, height: 2160, quality_from: 1080, quality_offset: 100}
+`)
+	if err := b.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	results, err := LoadResults(filepath.Join(dir, "work", "results.csv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	answers := bestByPair(b.Cfg, results, b.scorings)
+	answer := func(sample, flagset string) float64 {
+		t.Helper()
+		row, ok := answers[pair{sample, flagsetKey(b.Cfg.Flagsets[flagset])}]
+		if !ok {
+			t.Fatalf("no answer for %s on %s", flagset, sample)
+		}
+		return row.Quality
+	}
+	got := map[string]float64{}
+	for _, r := range results.Rows {
+		if r.Ladder == "full" && strings.HasPrefix(r.Sample, "big") {
+			got[r.Sample+" "+r.Flagset] = r.Quality
+		}
+	}
+	h265 := b.Cfg.Flagsets["h265"].Quality
+	h264 := b.Cfg.Flagsets["h264"].Quality
+	want := map[string]float64{
+		"big@1080p.mov h264": answer("big@1080p.mov", "h264"),
+		"big@2160p.mov h265": min(answer("big@1080p.mov", "h265")+3, h265.Max),
+		"big@2160p.mov h264": h264.Max, // the offset runs past the range
+	}
+	if len(got) != len(want) {
+		t.Fatalf("ladder rows %v, want %v", got, want)
+	}
+	for k, w := range want {
+		if got[k] != w {
+			t.Errorf("%s at %v, want %v", k, got[k], w)
+		}
+	}
+	// The 2160p rungs' answers aren't what they encode at.
+	if got["big@2160p.mov h265"] == answer("big@2160p.mov", "h265") {
+		t.Errorf("h265 at 2160 encoded at its own answer, %v", got["big@2160p.mov h265"])
+	}
+}
+
 func TestLadderArgv(t *testing.T) {
 	x264 := &Flagset{Args: []string{"-c:v", "libx264"}, Quality: Quality{Flag: "-crf"}}
 	x265 := &Flagset{Args: []string{"-c:v", "libx265"}, Quality: Quality{Flag: "-crf"}}
@@ -233,6 +293,9 @@ func TestLadderConfig(t *testing.T) {
 		{"no rungs", ladderFlagsets, "ladders:\n  l: {}\n", "rungs required"},
 		{"same name as a flagset", ladderFlagsets, "ladders:\n  h264: {rungs: [{flagset: h264, height: 1080}]}\n", "same name"},
 		{"repeated rung", ladderFlagsets, "ladders:\n  l: {rungs: [{flagset: h264, height: 1080}, {flagset: h264, height: 1080}]}\n", "already a rung"},
+		{"quality_from not a scale", ladderFlagsets, "ladders:\n  l: {rungs: [{flagset: h264, height: 2160, quality_from: 720}]}\n", "quality_from 720 isn't one of scales"},
+		{"offset without quality_from", ladderFlagsets, "ladders:\n  l: {rungs: [{flagset: h264, height: 2160, quality_offset: 2}]}\n", "quality_offset needs quality_from"},
+		{"repeated rung with an offset", ladderFlagsets, "ladders:\n  l: {rungs: [{flagset: h264, height: 2160}, {flagset: h264, height: 2160, quality_from: 1080, quality_offset: 1}]}\n", "already a rung"},
 		{"different input args", ladderFlagsets + "  hw: {args: [-c:v, libx264], input_args: [-hwaccel, videotoolbox]}\n",
 			"ladders:\n  l: {rungs: [{flagset: h264, height: 1080}, {flagset: hw, height: 1080}]}\n", "input_args differ"},
 	}

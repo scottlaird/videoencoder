@@ -90,25 +90,40 @@ func (b *Bench) planLadder(name, source string, samples []*sample, answers map[p
 		if r.Height > src.Height {
 			continue
 		}
-		var s *sample
-		for _, v := range versions {
-			if v.vd.Height == r.Height {
-				s = v
+		version := func(h uint64) *sample {
+			for _, v := range versions {
+				if v.vd.Height == h {
+					return v
+				}
 			}
+			return nil
 		}
+		s := version(r.Height)
 		if s == nil {
 			return nil, fmt.Errorf("%s has no version %dp high", source, r.Height)
 		}
+		// The answer the rung's setting comes from: its own, or with
+		// QualityFrom another height's.
+		from := s
+		if r.QualityFrom != 0 {
+			if from = version(r.QualityFrom); from == nil {
+				return nil, fmt.Errorf("%s has no version %dp high", source, r.QualityFrom)
+			}
+		}
 		fs := b.Cfg.Flagsets[r.Flagset]
 		fkey := flagsetKey(fs)
-		row, ok := answers[pair{s.name, fkey}]
+		row, ok := answers[pair{from.name, fkey}]
 		if !ok {
-			missing = append(missing, fmt.Sprintf("%s on %s", r.Flagset, s.name))
+			missing = append(missing, fmt.Sprintf("%s on %s", r.Flagset, from.name))
 			continue
 		}
+		q := row.Quality
+		if r.QualityFrom != 0 {
+			q = min(max(q+r.QualityOffset, fs.Quality.Min), fs.Quality.Max)
+		}
 		lr.inputArgs = fs.InputArgs
-		lr.rungs = append(lr.rungs, &ladderRung{name: r.Flagset, fs: fs, height: r.Height, quality: row.Quality, sample: s})
-		keyParts = append(keyParts, s.id, s.scoring.Scorer, fkey, fmt.Sprint(r.Height), ftoa(row.Quality))
+		lr.rungs = append(lr.rungs, &ladderRung{name: r.Flagset, fs: fs, height: r.Height, quality: q, sample: s})
+		keyParts = append(keyParts, s.id, s.scoring.Scorer, fkey, fmt.Sprint(r.Height), ftoa(q))
 	}
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("ladder %s: no answer for %s", name, strings.Join(missing, ", "))
