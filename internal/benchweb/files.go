@@ -288,8 +288,19 @@ func mapsEqual(a, b map[string]logStamp) bool {
 // etag, if set, is sent and honored for conditional and range
 // requests.
 func serveFile(w http.ResponseWriter, r *http.Request, roots []string, path, etag, name string) {
+	// Configs' directories are as written in their work files, often
+	// relative to where the queue runs, while sample-files.json has
+	// absolute paths, so compare the two absolute.
+	path, err := filepath.Abs(path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	for _, root := range roots {
 		if root == "" {
+			continue
+		}
+		if root, err = filepath.Abs(root); err != nil {
 			continue
 		}
 		rel, err := filepath.Rel(root, path)

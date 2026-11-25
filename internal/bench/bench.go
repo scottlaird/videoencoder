@@ -247,7 +247,10 @@ func (b *Bench) loadSamples(ctx context.Context) ([]*sample, error) {
 	if len(samples) == 0 {
 		return nil, fmt.Errorf("no sample videos in %s", b.Cfg.Samples)
 	}
-	if !b.listing && !b.DryRun {
+	// Listing (for reports) records too: it sees every sample, where a
+	// queue's units each see one, so a report fills in the samples of
+	// units that ran before sample-files.json existed.
+	if !b.DryRun {
 		if err := b.recordSampleFiles(samples); err != nil {
 			slog.Warn("Couldn't record sample files", "err", err)
 		}

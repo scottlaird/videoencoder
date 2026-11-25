@@ -160,6 +160,9 @@ func (b *Bench) recordSampleFiles(samples []*sample) error {
 	changed := false
 	now := time.Now().UTC()
 	for _, s := range samples {
+		if _, err := os.Stat(s.path); err != nil {
+			continue // a scaled copy a listing found not made yet
+		}
 		e := SampleFile{Name: s.name, Path: absPath(s.path), SourceID: s.srcID}
 		if s.ref != nil {
 			e.Reference = absPath(s.ref.path)
@@ -182,6 +185,9 @@ func (b *Bench) recordSampleFiles(samples []*sample) error {
 	}
 	data, err := json.MarshalIndent(sf, "", "  ")
 	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(b.Cfg.Workdir, 0o755); err != nil {
 		return err
 	}
 	path := SampleFilesPath(b.Cfg.Workdir)
