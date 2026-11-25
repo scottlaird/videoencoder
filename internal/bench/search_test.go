@@ -121,6 +121,57 @@ func TestQualityIndex(t *testing.T) {
 	}
 }
 
+func TestQualityIndexLog(t *testing.T) {
+	// ln(150)/0.05 = 100.2, so 100 steps of 0.0501.
+	vbr := Quality{Flag: "-b:v", Min: 2e6, Max: 3e8, Step: 0.05, Scale: "log", HigherIsBetter: ptr(true)}
+	qp := Quality{Min: 1, Max: 64, Step: 0.1, Scale: "log", HigherIsBetter: ptr(false)}
+	tests := []struct {
+		q     Quality
+		i     int
+		value float64
+	}{
+		{vbr, 0, 3e8},
+		{vbr, 1, 2.853e8},
+		{vbr, 50, 2.449e7},
+		{vbr, 99, 2.103e6},
+		{vbr, 100, 2e6},
+		{qp, 0, 1},
+		{qp, 10, 2.692}, // 42 steps of ln(64)/42
+		{qp, 42, 64},
+	}
+	for _, tt := range tests {
+		if got := tt.q.indexToQuality(tt.i); got != tt.value {
+			t.Errorf("indexToQuality(%d) = %v, want %v", tt.i, got, tt.value)
+		}
+		if got := tt.q.qualityToIndex(tt.value); got != tt.i {
+			t.Errorf("qualityToIndex(%v) = %d, want %d", tt.value, got, tt.i)
+		}
+		if !tt.q.onGrid(tt.value) {
+			t.Errorf("onGrid(%v) = false, want true", tt.value)
+		}
+	}
+	if got := vbr.steps(); got != 100 {
+		t.Errorf("steps() = %d, want 100", got)
+	}
+	// Every setting maps back to its own index, so none collide.
+	for i := 0; i <= vbr.steps(); i++ {
+		if got := vbr.qualityToIndex(vbr.indexToQuality(i)); got != i {
+			t.Errorf("qualityToIndex(indexToQuality(%d)) = %d", i, got)
+		}
+	}
+	for _, v := range []float64{2.5e7, 60e6, 0, -1} {
+		if vbr.onGrid(v) {
+			t.Errorf("onGrid(%v) = true, want false", v)
+		}
+	}
+	if got := vbr.qualityToIndex(0); got != 100 {
+		t.Errorf("qualityToIndex(0) = %d, want the low end 100", got)
+	}
+	if got := vbr.qualityToIndex(1e9); got != 0 {
+		t.Errorf("qualityToIndex(1e9) = %d, want clamped 0", got)
+	}
+}
+
 func TestSearchAt(t *testing.T) {
 	linear := func(i int) float64 { return 100 - 0.05*float64(i) } // passes up to i=100
 	tests := []struct {

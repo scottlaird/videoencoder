@@ -694,6 +694,25 @@ ladders:                # several flagsets in one ffmpeg (see Ladders)
   `quality`. Changing a flagset's step searches its samples again:
   logged settings between the new steps are ignored, and those on
   them are reused.
+- **Bitrate searches.** A flagset can search a bitrate instead of a
+  quality setting, as with Quick Sync's VBR. Set `scale: log` and the
+  settings step by a fraction of themselves rather than a fixed
+  amount: `step` is in natural-log units, so 0.05 is about 5% per
+  step (adjusted so that whole steps span the range), and settings
+  are rounded to four significant figures. VMAF is close to linear
+  in the log of the bitrate, which suits the search's interpolation,
+  and a fixed step that is fine at 2 Mb/s is far too fine at
+  300 Mb/s:
+
+  ```yaml
+  hevc-qsv-vbr:
+    args: [-c:v, hevc_qsv, -preset, medium, -maxrate, 400M]
+    quality: {flag: -b:v, min: 2000000, max: 300000000, step: 0.05, scale: log,
+              seed: 60000000, higher_is_better: true}
+  ```
+
+  Ladder rungs can't take a `quality_offset` from a log-scale
+  flagset.
 - **Scales.** A sample taller than a scale is downscaled once with
   Lanczos, and the copy is cached in `workdir`. A sample no taller
   than a scale is used as it is. Encodes are scored at the sample's

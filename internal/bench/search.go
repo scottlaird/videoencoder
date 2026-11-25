@@ -3,6 +3,7 @@ package bench
 import (
 	"math"
 	"slices"
+	"strconv"
 )
 
 // The search works on step indexes rather than quality values. Index 0
@@ -395,6 +396,19 @@ func (s *Search) Bracket() (pass, fail int) { return s.lo, s.hi }
 
 // indexToQuality converts a step index to the encoder's quality value.
 func (q Quality) indexToQuality(i int) float64 {
+	if q.Scale == "log" {
+		// Evenly spaced in log between the ends, which are exact.
+		n := q.steps()
+		switch i = min(max(i, 0), n); {
+		case i == 0 && *q.HigherIsBetter, i == n && !*q.HigherIsBetter:
+			return q.Max
+		case i == 0, i == n:
+			return q.Min
+		case *q.HigherIsBetter:
+			return sigFigs(q.Max * math.Exp(-float64(i)*q.logStep()))
+		}
+		return sigFigs(q.Min * math.Exp(float64(i)*q.logStep()))
+	}
 	v := float64(i) * q.Step
 	if *q.HigherIsBetter {
 		return roundTo(q.Max-v, q.Step)
@@ -406,9 +420,20 @@ func (q Quality) indexToQuality(i int) float64 {
 // nearest step and clamping to the range.
 func (q Quality) qualityToIndex(v float64) int {
 	var i float64
-	if *q.HigherIsBetter {
+	switch {
+	case q.Scale == "log" && v <= 0:
+		// Below every log setting, so the range's low end.
+		if *q.HigherIsBetter {
+			return q.steps()
+		}
+		return 0
+	case q.Scale == "log" && *q.HigherIsBetter:
+		i = math.Log(q.Max/v) / q.logStep()
+	case q.Scale == "log":
+		i = math.Log(v/q.Min) / q.logStep()
+	case *q.HigherIsBetter:
 		i = (q.Max - v) / q.Step
-	} else {
+	default:
 		i = (v - q.Min) / q.Step
 	}
 	return min(max(int(math.Round(i)), 0), q.steps())
@@ -420,7 +445,26 @@ func (q Quality) qualityToIndex(v float64) int {
 // up by exact setting and never sees them, and answers and status
 // ignore them too, rather than round them onto settings they weren't.
 func (q Quality) onGrid(v float64) bool {
-	return math.Abs(q.indexToQuality(q.qualityToIndex(v))-v) <= q.Step/1000
+	d := math.Abs(q.indexToQuality(q.qualityToIndex(v)) - v)
+	if q.Scale == "log" {
+		return d <= math.Abs(v)*1e-9
+	}
+	return d <= q.Step/1000
+}
+
+// logStep is a log scale's step as used: Step, adjusted so that a whole
+// number of steps spans the range exactly.
+func (q Quality) logStep() float64 { return math.Log(q.Max/q.Min) / float64(q.steps()) }
+
+// minLogStep is the smallest log step, the finest that four significant
+// figures (see sigFigs) keep distinct.
+const minLogStep = 0.002
+
+// sigFigs rounds v to four significant figures, so log settings read
+// like 63310000 rather than 63309876.54.
+func sigFigs(v float64) float64 {
+	r, _ := strconv.ParseFloat(strconv.FormatFloat(v, 'g', 4, 64), 64)
+	return r
 }
 
 // roundTo rounds v to a multiple of step, with the float noise of

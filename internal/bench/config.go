@@ -263,6 +263,14 @@ type Quality struct {
 	Min  float64 `yaml:"min"`
 	Max  float64 `yaml:"max"`
 	Step float64 `yaml:"step"`
+	// Scale is how settings are spaced between Min and Max: "linear"
+	// (the default) steps by Step, and "log" multiplies by about e^Step
+	// (adjusted so that whole steps span the range), so a Step of 0.05
+	// is about 5% per step. Log suits settings that are
+	// themselves bitrates, such as -b:v, whose useful precision is a
+	// fraction of the value rather than a fixed amount. Log settings are
+	// rounded to four significant figures.
+	Scale string `yaml:"scale"`
 	// Seed is where the first search starts when no earlier results
 	// suggest a better place.
 	Seed float64 `yaml:"seed"`
@@ -439,6 +447,13 @@ func (c *Config) finish(base string) error {
 			return fmt.Errorf("flagset %q: quality.step must be positive", name)
 		case q.Max <= q.Min:
 			return fmt.Errorf("flagset %q: quality.max must exceed quality.min", name)
+		case q.Scale != "" && q.Scale != "linear" && q.Scale != "log":
+			return fmt.Errorf("flagset %q: quality.scale must be linear or log", name)
+		case q.Scale == "log" && q.Min <= 0:
+			return fmt.Errorf("flagset %q: a log quality.scale needs a positive quality.min", name)
+		case q.Scale == "log" && q.Step < minLogStep:
+			// Four significant figures keep steps of 0.2% distinct.
+			return fmt.Errorf("flagset %q: a log quality.step must be at least %g", name, minLogStep)
 		case q.HigherIsBetter == nil:
 			f.Quality.HigherIsBetter = ptr(false)
 		}
@@ -483,6 +498,10 @@ func (c *Config) finishLadder(base, name string) error {
 			return fmt.Errorf("rung %d: quality_from %d isn't one of scales", i+1, r.QualityFrom)
 		case r.QualityFrom == 0 && r.QualityOffset != 0:
 			return fmt.Errorf("rung %d: quality_offset needs quality_from", i+1)
+		case r.QualityOffset != 0 && fs.Quality.Scale == "log":
+			// An offset in a bitrate's own units means something
+			// different at every height.
+			return fmt.Errorf("rung %d: quality_offset needs a linear quality scale", i+1)
 		case seen[output{r.Flagset, r.Height}]:
 			return fmt.Errorf("rung %d: %s at %d is already a rung", i+1, r.Flagset, r.Height)
 		case !slices.Equal(fs.InputArgs, c.Flagsets[l.Rungs[0].Flagset].InputArgs):
@@ -521,6 +540,9 @@ func (q Quality) QualityToIndex(v float64) int { return q.qualityToIndex(v) }
 
 // steps is the number of steps between Min and Max.
 func (q Quality) steps() int {
+	if q.Scale == "log" {
+		return max(1, int(math.Round(math.Log(q.Max/q.Min)/q.Step)))
+	}
 	return int(math.Round((q.Max - q.Min) / q.Step))
 }
 
