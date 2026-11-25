@@ -279,6 +279,9 @@ type fakeFFmpeg struct {
 	runs       []int    // outputs per encoding ffmpeg, in order
 	runPresets []string // each encoding ffmpeg's -preset, in order
 	downscales int
+	// levels, if set, makes settings within the same multiple of it
+	// produce byte-identical files, like Quick Sync's VBR.
+	levels float64
 }
 
 func newFake(cutoff float64) *fakeFFmpeg {
@@ -337,14 +340,26 @@ func (f *fakeFFmpeg) Exec(_ context.Context, argv []string) (Measurement, error)
 			return Measurement{}, errors.New("output without a file")
 		}
 		out := argv[qi+oi]
-		if own := argv[start : qi+oi]; slices.Contains(own, "libx265") && !slices.Contains(own, "hvc1") {
+		own := argv[start : qi+oi]
+		if slices.Contains(own, "libx265") && !slices.Contains(own, "hvc1") {
 			return Measurement{}, errors.New("HEVC encode not tagged hvc1")
 		}
 		start = qi + oi + 1
 		f.quality[out] = q
 		f.source[out] = src
 		f.encodes = append(f.encodes, fmt.Sprintf("%s %v", src, q))
-		if err := os.WriteFile(out, bytes.Repeat([]byte("x"), int(10000/q)), 0o644); err != nil {
+		// Distinct options or settings give distinct files, unless the
+		// fake quantizes settings as a rate-controlled encoder does.
+		setting := q
+		if f.levels > 0 {
+			setting = math.Floor(q/f.levels) * f.levels
+			f.quality[out] = setting
+		}
+		content := append([]byte(fmt.Sprintf("%s %s %v|", src, strings.Join(own[:len(own)-1], " "), setting)), bytes.Repeat([]byte("x"), int(10000/q))...)
+		if f.levels > 0 {
+			content = []byte(fmt.Sprintf("%s %v", src, setting))
+		}
+		if err := os.WriteFile(out, content, 0o644); err != nil {
 			return Measurement{}, err
 		}
 		outs = append(outs, out)
@@ -1441,6 +1456,76 @@ flagsets:
 	}
 	if most["fast"] != 1 || most["slow"] < 2 || most["slow"] > 3 {
 		t.Errorf("most settings per ffmpeg: fast %d, slow %d; want 1 and 2 or 3", most["fast"], most["slow"])
+	}
+}
+
+func TestBenchReusesIdenticalOutputs(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "samples", "a.mov"), "sample a")
+	fake := newFake(18.7)
+	fake.levels = 2 // CRF 18 through 19.9 give one file, as a quantizing encoder would
+	b := &Bench{Cfg: benchConfig(t, dir, "  x: {args: [-c:v, libx265], quality: {step: 0.1}}\n"), Exec: fake, Prober: fakeProber{}}
+	if err := b.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	results, err := LoadResults(filepath.Join(dir, "work", "results.csv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	byKey := map[string]Row{}
+	scoredSHA := map[string]bool{}
+	copies := 0
+	for _, r := range results.Rows {
+		byKey[r.Key] = r
+		if r.ScoredFrom == "" {
+			if scoredSHA[r.OutSHA256] {
+				t.Errorf("%v: scored a file already scored", r.Quality)
+			}
+			scoredSHA[r.OutSHA256] = true
+		}
+	}
+	for _, r := range results.Rows {
+		if r.ScoredFrom == "" {
+			continue
+		}
+		copies++
+		from, ok := byKey[r.ScoredFrom]
+		switch {
+		case !ok:
+			t.Errorf("%v: scored_from %s isn't in the log", r.Quality, r.ScoredFrom)
+		case from.OutSHA256 != r.OutSHA256 || fmt.Sprint(from.Metrics) != fmt.Sprint(r.Metrics): // NaN != NaN
+			t.Errorf("%v: copies %v, whose file or scores differ", r.Quality, from.Quality)
+		case r.ScoreS != 0:
+			t.Errorf("%v: a copy has score_s %v, want 0", r.Quality, r.ScoreS)
+		}
+	}
+	if copies == 0 || fake.scores != len(fake.encodes)-copies {
+		t.Errorf("%d encodes, %d scored, %d copies; want every repeat copied", len(fake.encodes), fake.scores, copies)
+	}
+}
+
+func TestScoredOutput(t *testing.T) {
+	r := &Results{byKey: map[string]int{}}
+	r.add(Row{Key: "a", Scorer: "v6", SampleID: "s", Reference: "s.mov", OutSHA256: "h", ScoreS: 2})
+	r.add(Row{Key: "b", Scorer: "v6", SampleID: "s", Reference: "s.mov", OutSHA256: "t", ScoreS: 0})        // a timing re-run
+	r.add(Row{Key: "c", Scorer: "v6", SampleID: "s", Reference: "s.mov", OutSHA256: "h2", ScoredFrom: "a"}) // a copy
+	tests := []struct {
+		scorer, id, ref, sha string
+		want                 string
+	}{
+		{"v6", "s", "s.mov", "h", "a"},
+		{"v5", "s", "s.mov", "h", ""},
+		{"v6", "other", "s.mov", "h", ""},
+		{"v6", "s", "other.mov", "h", ""},
+		{"v6", "s", "s.mov", "t", ""},
+		{"v6", "s", "s.mov", "h2", ""},
+		{"v6", "s", "s.mov", "", ""},
+	}
+	for _, tt := range tests {
+		row, ok := r.ScoredOutput(tt.scorer, tt.id, tt.ref, tt.sha)
+		if got := row.Key; ok != (tt.want != "") || got != tt.want {
+			t.Errorf("ScoredOutput(%q, %q, %q, %q) = %q, %v; want %q", tt.scorer, tt.id, tt.ref, tt.sha, got, ok, tt.want)
+		}
 	}
 }
 
