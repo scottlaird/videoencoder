@@ -972,6 +972,12 @@ These are all in `workdir`:
     same
   - `vmaf_model`, `target_vmaf`, `pass` (whether it met every
     threshold) and `score_s`, how long scoring took
+  - `scored_from`: for an encode whose file is byte-identical to one
+    already scored (same `out_sha256`, sample, reference and scorer),
+    the key of that encode, whose scores the row copies instead of
+    scoring again; its `score_s` is 0. Rate-controlled encoders do
+    this: Quick Sync VBR, for one, gives the same file for every
+    `-b:v` within a few percent.
   - `row_id`, unique to the row; `encbench_version`, the build; and
     `config` and `job`, the config file and the queue's work file
 

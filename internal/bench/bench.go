@@ -119,6 +119,10 @@ type pending struct {
 	// retime is the logged row of an answer encoded with others, which
 	// this encode repeats alone for its time; it isn't scored.
 	retime *Row
+	// scoredFrom is the key of the encode whose scores p copies, its
+	// output being byte-identical (see Row.ScoredFrom); empty if p was
+	// scored itself.
+	scoredFrom string
 }
 
 func (b *Bench) resultsPath() string { return filepath.Join(b.Cfg.Workdir, "results.csv") }
@@ -183,7 +187,10 @@ func (b *Bench) run(ctx context.Context) error {
 		if err := b.encodeAll(ctx, round, batch); err != nil {
 			return err
 		}
-		err := b.scoreAll(ctx, round, batch, func(p *pending) error { return b.record(results, round, p) })
+		err := b.scoreAll(ctx, round, batch, func(p *pending) (Row, bool) {
+			s := p.t.sample
+			return results.ScoredOutput(s.scoring.Scorer, s.id, s.reference().name, p.sha256)
+		}, func(p *pending) error { return b.record(results, round, p) })
 		if err != nil {
 			return err
 		}
@@ -838,8 +845,13 @@ func (b *Bench) encode(ctx context.Context, ev Event, total time.Duration, argv 
 // encode as soon as its score (or failure) is known, so an interrupted
 // round loses only the scorings still in flight. record runs on the
 // calling goroutine.
-func (b *Bench) scoreAll(ctx context.Context, round int, batch []*pending, record func(*pending) error) error {
+func (b *Bench) scoreAll(ctx context.Context, round int, batch []*pending, scored func(*pending) (Row, bool), record func(*pending) error) error {
 	var toScore []*pending
+	// An encode whose file is byte-identical to one already scored (as
+	// rate-controlled encoders give for nearby settings) takes its
+	// scores: from the log, or from the first of its kind in this batch.
+	first := map[string]*pending{}
+	copies := map[*pending][]*pending{}
 	for _, p := range batch {
 		// A timing re-run repeats an encode already scored.
 		if p.err != nil || p.retime != nil {
@@ -848,6 +860,21 @@ func (b *Bench) scoreAll(ctx context.Context, round int, batch []*pending, recor
 			}
 			continue
 		}
+		if scored != nil {
+			if row, ok := scored(p); ok {
+				p.metrics, p.output, p.scoredFrom = row.Metrics, row.Output, row.Key
+				if err := record(p); err != nil {
+					return err
+				}
+				continue
+			}
+		}
+		k := outputKey(p.t.sample.scoring.Scorer, p.t.sample.id, p.t.sample.reference().name, p.sha256)
+		if f, ok := first[k]; ok && p.sha256 != "" {
+			copies[f] = append(copies[f], p)
+			continue
+		}
+		first[k] = p
 		toScore = append(toScore, p)
 	}
 	// Say what's being scored, a task at a time, since scoring 4K can
@@ -890,13 +917,23 @@ func (b *Bench) scoreAll(ctx context.Context, round int, batch []*pending, recor
 			done <- p
 		}()
 	}
-	var first error
+	var firstErr error
 	for range toScore {
-		if err := record(<-done); err != nil && first == nil {
-			first = err
+		p := <-done
+		if err := record(p); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		for _, c := range copies[p] {
+			c.metrics, c.output, c.err, c.stage = p.metrics, p.output, p.err, p.stage
+			if p.err == nil {
+				c.scoredFrom = p.key
+			}
+			if err := record(c); err != nil && firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
-	return first
+	return firstErr
 }
 
 // score scores p, reporting its progress.
@@ -938,7 +975,8 @@ func (b *Bench) record(results *Results, round int, p *pending) error {
 		return err
 	}
 	slog.Info("Scored", "sample", t.sample.name, "flagset", t.name, "quality", p.quality,
-		"kbps", int(row.Kbps), "vmaf", m.VMAF, "ciede2000", m.CIEDE2000, "color_shift", m.ColorShiftP99, "pass", margin >= 0)
+		"kbps", int(row.Kbps), "vmaf", m.VMAF, "ciede2000", m.CIEDE2000, "color_shift", m.ColorShiftP99, "pass", margin >= 0,
+		"same_output_as", p.scoredFrom)
 	t.search.Observe(p.i, margin >= 0, margin)
 	ev.Kind, ev.Kbps, ev.VMAF, ev.Pass = Scored, row.Kbps, m.VMAF, margin >= 0
 	ev.Bracket = t.bracket()
@@ -982,6 +1020,7 @@ func (b *Bench) encodeRow(p *pending) Row {
 	row.Output, row.OutSHA256 = p.output, p.sha256
 	row.Pass = &pass
 	row.ScoreS = p.scoreTime.Seconds()
+	row.ScoredFrom = p.scoredFrom
 	row.BatchSize, row.BatchID = int64(p.batchSize), p.batchID
 	return row
 }

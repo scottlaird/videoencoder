@@ -109,6 +109,9 @@ type ResultRow struct {
 	// for an encode of its own.
 	Ladder    string `json:"ladder"`
 	LadderKey string `json:"ladder_key"`
+	// The key of a byte-identical encode whose scores this row copies;
+	// empty if it was scored itself.
+	ScoredFrom string `json:"scored_from"`
 }
 
 // known is n, or nil (JSON null) if it's zero: unknown, in rows logged
@@ -155,7 +158,7 @@ func ResultRowOf(log int, r *bench.Row) ResultRow {
 		VMAFModel: r.VMAFModel, TargetVMAF: known(r.TargetVMAF), Pass: r.Pass, ScoreS: known(r.ScoreS),
 		BatchSize: known(r.BatchSize), BatchID: r.BatchID,
 		EncbenchVer: r.EncbenchVersion, Config: r.Config, Job: r.Job, OutSHA256: r.OutSHA256,
-		InputArgs: r.InputArgs, SeedVMAF: known(r.SeedVMAF), Ladder: r.Ladder, LadderKey: r.LadderKey,
+		InputArgs: r.InputArgs, SeedVMAF: known(r.SeedVMAF), Ladder: r.Ladder, LadderKey: r.LadderKey, ScoredFrom: r.ScoredFrom,
 	}
 	if c := r.CPUStats; c != nil {
 		row.CPUBusyPct, row.CPUMHz, row.CPUIPC = metric(c.BusyPct), metric(c.BusyMHz), metric(c.IPC)

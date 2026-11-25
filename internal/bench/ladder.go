@@ -303,7 +303,7 @@ func (b *Bench) runLadder(ctx context.Context, lr *ladderRun, results *Results) 
 		}
 	}
 	var errs []error
-	err = b.scoreAll(ctx, 1, batch, func(p *pending) error {
+	err = b.scoreAll(ctx, 1, batch, nil, func(p *pending) error {
 		if p.err != nil {
 			err := fmt.Errorf("ladder %s: %s on %s: %w", lr.name, p.t.name, p.t.sample.name, p.err)
 			b.logFailure(p.t.sample.name, p.t.name, p.quality, p.stage, err)

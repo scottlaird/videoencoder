@@ -106,6 +106,11 @@ type Row struct {
 	// LadderKey identifies that run's ladder: its rungs, their settings
 	// and the sample. Empty for every other encode.
 	Ladder, LadderKey string
+	// ScoredFrom is the Key of an earlier encode whose output was
+	// byte-identical (the same OutSHA256, sample, reference and
+	// scorer), whose scores this row copies instead of scoring again.
+	// Empty for an encode scored itself.
+	ScoredFrom string
 	// Timed says WallS, UserS, SysS and MaxRSSKB are this encode's own.
 	// An encode made with others in one ffmpeg (Flagset.Batch) isn't:
 	// its times are the whole batch's. Such a search's answer is then
@@ -127,7 +132,7 @@ var resultColumns = []string{
 	"vmaf_model", "target_vmaf", "pass", "score_s", "batch_size", "batch_id",
 	"encbench_version", "config", "job", "out_sha256",
 	"cpu_busy_pct", "cpu_mhz", "cpu_ipc", "cpu_pkg_w", "cpu_core_w", "cpu_pkg_temp_c", "cpu_llc_hit_pct",
-	"input_args", "seed_vmaf", "ladder", "ladder_key",
+	"input_args", "seed_vmaf", "ladder", "ladder_key", "scored_from",
 }
 
 // cpuColumn is the first of turbostatColumns' columns in resultColumns.
@@ -180,7 +185,7 @@ func (r *Row) record() []string {
 	if r.SeedVMAF != 0 {
 		seedVMAF = ftoa(r.SeedVMAF)
 	}
-	return append(rec, r.InputArgs, seedVMAF, r.Ladder, r.LadderKey)
+	return append(rec, r.InputArgs, seedVMAF, r.Ladder, r.LadderKey, r.ScoredFrom)
 }
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
@@ -354,6 +359,7 @@ func parseRow(col map[string]int, rec []string) (Row, error) {
 	r.InputArgs = opt("input_args")
 	r.SeedVMAF = optFloat("seed_vmaf")
 	r.Ladder, r.LadderKey = opt("ladder"), opt("ladder_key")
+	r.ScoredFrom = opt("scored_from")
 	return r, errors.Join(errs...)
 }
 
@@ -363,6 +369,8 @@ type Results struct {
 	path  string
 	Rows  []Row
 	byKey map[string]int
+	// byOutput finds a scored row by what it scored (see outputKey).
+	byOutput map[string]int
 }
 
 // LoadResults reads the log at path; a missing file is an empty log.
@@ -390,7 +398,7 @@ func readResults(path string) (*Results, error) {
 func ReadResults(path string) (*Results, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return &Results{path: path, byKey: map[string]int{}}, nil
+		return &Results{path: path, byKey: map[string]int{}, byOutput: map[string]int{}}, nil
 	}
 	if err != nil {
 		return nil, err
@@ -405,7 +413,7 @@ func ReadResults(path string) (*Results, error) {
 func loadResults(path string, upgrade bool) (*Results, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return &Results{path: path, byKey: map[string]int{}}, nil
+		return &Results{path: path, byKey: map[string]int{}, byOutput: map[string]int{}}, nil
 	}
 	if err != nil {
 		return nil, err
@@ -417,7 +425,7 @@ func loadResults(path string, upgrade bool) (*Results, error) {
 // decodeResults parses the log at path, read from rd, upgrading it on
 // disk (see LoadResults) if upgrade is set.
 func decodeResults(path string, rd io.Reader, upgrade bool) (*Results, error) {
-	r := &Results{path: path, byKey: map[string]int{}}
+	r := &Results{path: path, byKey: map[string]int{}, byOutput: map[string]int{}}
 	cr := csv.NewReader(rd)
 	cr.FieldsPerRecord = -1
 	header, err := cr.Read()
@@ -504,7 +512,34 @@ func (r *Results) rewrite() error {
 
 func (r *Results) add(row Row) {
 	r.byKey[row.Key] = len(r.Rows)
+	// Only rows that scored their own file: a timing re-run's file may
+	// not be the one its scores are of, and a copy points at one that is.
+	if row.OutSHA256 != "" && row.SampleID != "" && row.ScoreS > 0 && row.ScoredFrom == "" {
+		if r.byOutput == nil {
+			r.byOutput = map[string]int{}
+		}
+		r.byOutput[outputKey(row.Scorer, row.SampleID, row.Reference, row.OutSHA256)] = len(r.Rows)
+	}
 	r.Rows = append(r.Rows, row)
+}
+
+// outputKey identifies one scoring of one encoded file: the same bytes,
+// sample, reference and scorer always score the same.
+func outputKey(scorer, sampleID, reference, sha256 string) string {
+	return hashKey("output/v1", scorer, sampleID, reference, sha256)
+}
+
+// ScoredOutput returns a logged row that scored a byte-identical file
+// with the same sample, reference and scorer, if any.
+func (r *Results) ScoredOutput(scorer, sampleID, reference, sha256 string) (Row, bool) {
+	if sha256 == "" || sampleID == "" {
+		return Row{}, false
+	}
+	i, ok := r.byOutput[outputKey(scorer, sampleID, reference, sha256)]
+	if !ok {
+		return Row{}, false
+	}
+	return r.Rows[i], true
 }
 
 // Lookup returns the logged encode with key, if any.
