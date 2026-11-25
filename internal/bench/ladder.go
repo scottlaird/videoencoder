@@ -195,7 +195,7 @@ func ladderArgv(lr *ladderRun, outs []string) []string {
 	for i, r := range lr.rungs {
 		argv = append(argv, "-map", fmt.Sprintf("[o%d]", i))
 		argv = append(argv, r.fs.Args...)
-		argv = append(argv, r.fs.Quality.Flag, ftoa(r.quality), "-an")
+		argv = append(append(argv, r.fs.Quality.argv(r.quality)...), "-an")
 		argv = append(argv, containerArgs(r.fs)...)
 		argv = append(argv, outs[i])
 	}

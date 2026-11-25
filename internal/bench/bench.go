@@ -696,6 +696,16 @@ func (b *Bench) retime(t *task, results *Results) *pending {
 	return &pending{t: t, i: i, quality: q, key: key, out: filepath.Join(b.scratchDir(), key+".timing.mp4"), retime: &row}
 }
 
+// argsForLog is the flagset's arguments as its rows record them: Args,
+// then each linked flag with its factor, such as "-maxrate x2".
+func (f *Flagset) argsForLog() []string {
+	a := slices.Clone(f.Args)
+	for _, l := range f.Quality.Linked {
+		a = append(a, l.Flag, "x"+ftoa(l.Factor))
+	}
+	return a
+}
+
 // encodeArgv is the ffmpeg command for ps, which are all the same task's:
 // one decode of the sample, and an output for each setting, so a batch
 // shares the decode. One setting is the usual single encode.
@@ -706,7 +716,7 @@ func (b *Bench) encodeArgv(ps ...*pending) []string {
 	for _, p := range ps {
 		argv = append(argv, "-map", "0:v:0")
 		argv = append(argv, p.t.fs.Args...)
-		argv = append(argv, p.t.fs.Quality.Flag, ftoa(p.quality), "-an")
+		argv = append(append(argv, p.t.fs.Quality.argv(p.quality)...), "-an")
 		argv = append(argv, containerArgs(p.t.fs)...)
 		argv = append(argv, p.out)
 	}
@@ -945,7 +955,7 @@ func (b *Bench) encodeRow(p *pending) Row {
 		Reference:      t.sample.reference().name,
 		Encoder:        t.fs.Encoder(),
 		Flagset:        t.name,
-		Args:           joinArgs(t.fs.Args),
+		Args:           joinArgs(t.fs.argsForLog()),
 		InputArgs:      joinArgs(t.fs.InputArgs),
 		QualityFlag:    t.fs.Quality.Flag,
 		Quality:        p.quality,

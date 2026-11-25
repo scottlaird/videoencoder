@@ -295,6 +295,8 @@ func TestLadderConfig(t *testing.T) {
 		{"repeated rung", ladderFlagsets, "ladders:\n  l: {rungs: [{flagset: h264, height: 1080}, {flagset: h264, height: 1080}]}\n", "already a rung"},
 		{"quality_from not a scale", ladderFlagsets, "ladders:\n  l: {rungs: [{flagset: h264, height: 2160, quality_from: 720}]}\n", "quality_from 720 isn't one of scales"},
 		{"offset without quality_from", ladderFlagsets, "ladders:\n  l: {rungs: [{flagset: h264, height: 2160, quality_offset: 2}]}\n", "quality_offset needs quality_from"},
+		{"offset on a log scale", ladderFlagsets + "  vbr: {args: [-c:v, libx264], quality: {flag: -b:v, min: 1e6, max: 1e8, step: 0.05, scale: log}}\n",
+			"ladders:\n  l: {rungs: [{flagset: vbr, height: 2160, quality_from: 1080, quality_offset: 2}]}\n", "needs a linear quality scale"},
 		{"repeated rung with an offset", ladderFlagsets, "ladders:\n  l: {rungs: [{flagset: h264, height: 2160}, {flagset: h264, height: 2160, quality_from: 1080, quality_offset: 1}]}\n", "already a rung"},
 		{"different input args", ladderFlagsets + "  hw: {args: [-c:v, libx264], input_args: [-hwaccel, videotoolbox]}\n",
 			"ladders:\n  l: {rungs: [{flagset: h264, height: 1080}, {flagset: hw, height: 1080}]}\n", "input_args differ"},
