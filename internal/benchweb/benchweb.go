@@ -9,9 +9,17 @@
 //	                   (see Results)
 //	POST /api/pause    pause after the current unit
 //	POST /api/resume   resume
+//	GET  /api/files/index              what the routes below can serve
+//	GET  /api/files/encode/{sha256}    a kept encode, by its SHA-256
+//	GET  /api/files/sample/{sample_id} a sample (or its scaled copy)
+//	GET  /api/files/reference/{sample_id} what its encodes are scored against
+//	GET  /api/files/source/{source_id} the source file a sample came from
 //
-// There is no authentication: anyone who can reach the address can see
-// the queue and pause it. Pause and resume are the only actions.
+// There is no authentication, except an optional bearer token on the
+// file routes (Server.Token): anyone who can reach the address can see
+// the queue and pause it. Pause and resume are the only actions. The
+// file routes serve only files the queue's configs name, found by ID:
+// a request never carries a path.
 package benchweb
 
 import (
@@ -39,11 +47,15 @@ type Server struct {
 	Title string
 	// Log, if set, is shown under the results.
 	Log *LogRing
+	// Token, if set, is required as a bearer token by the file routes
+	// (see files.go).
+	Token string
 	// Now is for tests.
 	Now func() time.Time
 
 	mu   sync.Mutex
 	subs map[chan struct{}]bool
+	keep keeperIndex
 }
 
 // Notify tells the page that the state changed. Set it as the Runner's
@@ -101,6 +113,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/results", s.results)
 	mux.HandleFunc("POST /api/pause", func(w http.ResponseWriter, r *http.Request) { s.setPaused(w, true) })
 	mux.HandleFunc("POST /api/resume", func(w http.ResponseWriter, r *http.Request) { s.setPaused(w, false) })
+	s.fileRoutes(mux)
 	return mux
 }
 

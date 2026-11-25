@@ -64,7 +64,9 @@ type sample struct {
 	source string
 	path   string
 	id     string
-	vd     probe.VideoData
+	// srcID is source's content identity, which id is derived from.
+	srcID string
+	vd    probe.VideoData
 	// srcVD is the source's, before any scaling.
 	srcVD probe.VideoData
 	// ref, if not nil, is what encodes of this sample are scored
@@ -86,6 +88,7 @@ type task struct {
 	search  *Search
 	outcome Outcome
 	encoded map[int]string // files encoded this run, by index
+	hashes  map[int]string // and their SHA-256s, in hex
 	// retimed means the answer's timing re-run has been queued (or
 	// wasn't needed), so the task can finish.
 	retimed bool
@@ -219,6 +222,7 @@ func (b *Bench) loadSamples(ctx context.Context) ([]*sample, error) {
 		if s.id, err = fileid.Content(s.path); err != nil {
 			return nil, err
 		}
+		s.srcID = s.id
 		if s.vd, err = b.Prober.Probe(ctx, s.path); err != nil {
 			return nil, err
 		}
@@ -242,6 +246,11 @@ func (b *Bench) loadSamples(ctx context.Context) ([]*sample, error) {
 	}
 	if len(samples) == 0 {
 		return nil, fmt.Errorf("no sample videos in %s", b.Cfg.Samples)
+	}
+	if !b.listing && !b.DryRun {
+		if err := b.recordSampleFiles(samples); err != nil {
+			slog.Warn("Couldn't record sample files", "err", err)
+		}
 	}
 	return samples, nil
 }
@@ -341,6 +350,7 @@ func (b *Bench) scaledSamples(ctx context.Context, s *sample) ([]*sample, error)
 		c := &sample{
 			name:      fmt.Sprintf("%s@%dp.mov", base, h),
 			source:    s.source,
+			srcID:     s.srcID,
 			id:        hashKey("scaled/v1", s.id, fmt.Sprint(h)),
 			prefilter: s.prefilter,
 			srcVD:     s.srcVD,
@@ -444,6 +454,7 @@ func (b *Bench) tasks(samples []*sample, results *Results) []*task {
 				fkey:    fkey,
 				search:  search,
 				encoded: map[int]string{},
+				hashes:  map[int]string{},
 			})
 		}
 	}
@@ -965,6 +976,7 @@ func (b *Bench) record(results *Results, round int, p *pending) error {
 		return nil
 	}
 	t.encoded[p.i] = p.out
+	t.hashes[p.i] = p.sha256
 	m := p.metrics
 	row := b.encodeRow(p)
 	margin := b.Cfg.margin(m, t.sample.scoring.Target)
@@ -1067,7 +1079,7 @@ func (b *Bench) recordTiming(results *Results, p *pending) error {
 func (b *Bench) describe(row *Row, s *sample) {
 	row.RowID = newID()
 	row.EncbenchVersion, row.Config, row.Job = BuildVersion(), b.Cfg.Path, b.Cfg.Job
-	row.Source, row.SampleID = s.source, s.id
+	row.Source, row.SampleID, row.SourceID = s.source, s.id, s.srcID
 	row.Width, row.Height = int64(s.vd.Width), int64(s.vd.Height)
 	row.FPS, row.DurationS = s.vd.FPS, s.vd.Duration.Seconds()
 	row.SourceWidth, row.SourceHeight = int64(s.srcVD.Width), int64(s.srcVD.Height)
@@ -1122,10 +1134,18 @@ func kbps(bytes int64, d time.Duration) float64 {
 	return float64(bytes) * 8 / 1000 / d.Seconds()
 }
 
-// finish keeps the task's best encode for viewing and deletes the rest.
+// finish keeps the task's best encode for viewing, and either deletes
+// the rest or, with Config.Keep "all", moves them to the object store.
 func (b *Bench) finish(t *task, results *Results) {
 	defer func() {
-		for _, f := range t.encoded {
+		for i, f := range t.encoded {
+			if b.Cfg.Keep == KeepAll {
+				if _, err := b.storeObject(f, t.hashes[i]); err == nil {
+					continue
+				} else {
+					slog.Warn("Couldn't keep encode", "path", f, "err", err)
+				}
+			}
 			os.Remove(f)
 		}
 		t.search = nil
@@ -1152,7 +1172,17 @@ func (b *Bench) finish(t *task, results *Results) {
 		slog.Warn("Best encode came from an earlier run and wasn't kept", "sample", t.sample.name, "flagset", t.name, "quality", q)
 		return
 	}
-	if err := replaceKeeper(keep, src); err != nil {
+	link := false
+	if b.Cfg.Keep == KeepAll {
+		obj, err := b.storeObject(src, t.hashes[best])
+		if err != nil {
+			slog.Warn("Couldn't keep best encode", "path", src, "err", err)
+			return
+		}
+		delete(t.encoded, best)
+		src, link = obj, true
+	}
+	if err := replaceKeeper(keep, src, link); err != nil {
 		slog.Warn("Couldn't keep best encode", "path", keep, "err", err)
 		return
 	}
@@ -1166,16 +1196,21 @@ func KeeperPath(dir, sampleName, flagset string, q float64) string {
 	return filepath.Join(dir, base, fmt.Sprintf("%s.q%s.mp4", flagset, ftoa(q)))
 }
 
-// replaceKeeper moves src to keep, removing keepers of the same flagset
-// at other qualities.
-func replaceKeeper(keep, src string) error {
+// replaceKeeper moves src to keep (or, if link, hard-links it there,
+// copying where links fail), removing keepers of the same flagset at
+// other qualities.
+func replaceKeeper(keep, src string, link bool) error {
 	dir := filepath.Dir(keep)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	prefix := strings.SplitN(filepath.Base(keep), ".q", 2)[0] + ".q"
 	old, _ := filepath.Glob(filepath.Join(dir, globEscape(prefix)+"*.mp4"))
-	if err := os.Rename(src, keep); err != nil {
+	if link {
+		if err := linkOrCopy(src, keep); err != nil {
+			return err
+		}
+	} else if err := os.Rename(src, keep); err != nil {
 		return err
 	}
 	var errs []error
