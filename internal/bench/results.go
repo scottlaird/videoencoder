@@ -550,12 +550,17 @@ func hashKey(parts ...string) string {
 }
 
 // flagsetKey identifies a flagset by what it does (its arguments, input
-// arguments and quality flag), so renaming it doesn't invalidate its results.
+// arguments, quality flag and linked flags), so renaming it doesn't
+// invalidate its results.
 func flagsetKey(f *Flagset) string {
 	parts := append([]string{"flagset/v1", f.Quality.Flag}, f.Args...)
 	// Without input arguments, keys are as they were before them.
 	if len(f.InputArgs) > 0 {
 		parts = append(append(parts, "input"), f.InputArgs...)
+	}
+	// Likewise without linked flags.
+	for _, l := range f.Quality.Linked {
+		parts = append(parts, "linked", l.Flag, ftoa(l.Factor))
 	}
 	return hashKey(parts...)
 }

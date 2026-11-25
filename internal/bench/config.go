@@ -271,12 +271,32 @@ type Quality struct {
 	// fraction of the value rather than a fixed amount. Log settings are
 	// rounded to four significant figures.
 	Scale string `yaml:"scale"`
+	// Linked flags take their values from the setting: each is the
+	// setting times its Factor, rounded to a whole number, so a VBR
+	// search can cap -maxrate at twice whatever -b:v it tries.
+	Linked []LinkedFlag `yaml:"linked"`
 	// Seed is where the first search starts when no earlier results
 	// suggest a better place.
 	Seed float64 `yaml:"seed"`
 	// HigherIsBetter is true for encoders where a larger number means
 	// better quality, such as VideoToolbox's -q:v.
 	HigherIsBetter *bool `yaml:"higher_is_better"`
+}
+
+// LinkedFlag is a flag whose value follows the quality setting (see
+// Quality.Linked).
+type LinkedFlag struct {
+	Flag   string  `yaml:"flag"`
+	Factor float64 `yaml:"factor"`
+}
+
+// argv is the setting v's flags: the quality flag, then any linked ones.
+func (q Quality) argv(v float64) []string {
+	a := []string{q.Flag, ftoa(v)}
+	for _, l := range q.Linked {
+		a = append(a, l.Flag, ftoa(math.Round(v*l.Factor)))
+	}
+	return a
 }
 
 func ptr[T any](v T) *T { return &v }
@@ -459,6 +479,20 @@ func (c *Config) finish(base string) error {
 		}
 		if slices.Contains(f.Args, q.Flag) {
 			return fmt.Errorf("flagset %q: args must not contain the quality flag %s", name, q.Flag)
+		}
+		seen := map[string]bool{q.Flag: true}
+		for _, l := range q.Linked {
+			switch {
+			case l.Flag == "":
+				return fmt.Errorf("flagset %q: quality.linked needs a flag", name)
+			case l.Factor <= 0:
+				return fmt.Errorf("flagset %q: quality.linked %s needs a positive factor", name, l.Flag)
+			case seen[l.Flag]:
+				return fmt.Errorf("flagset %q: quality.linked %s repeats a quality flag", name, l.Flag)
+			case slices.Contains(f.Args, l.Flag):
+				return fmt.Errorf("flagset %q: args must not contain the linked flag %s", name, l.Flag)
+			}
+			seen[l.Flag] = true
 		}
 	}
 	for _, name := range c.LadderNames() {

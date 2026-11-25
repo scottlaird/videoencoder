@@ -713,6 +713,19 @@ ladders:                # several flagsets in one ffmpeg (see Ladders)
 
   Ladder rungs can't take a `quality_offset` from a log-scale
   flagset.
+
+  `linked` flags follow the setting: each gets the setting times its
+  `factor`, rounded to a whole number, so a VBR search can cap the peak rate at a multiple of
+  whatever bitrate it tries. Linked flags are part of the flagset's
+  identity, and rows record them as `-maxrate x2`:
+
+  ```yaml
+  hevc-qsv-vbr-cap2:
+    args: [-c:v, hevc_qsv, -preset, medium]
+    quality: {flag: -b:v, min: 2000000, max: 300000000, step: 0.05, scale: log,
+              seed: 60000000, higher_is_better: true,
+              linked: [{flag: -maxrate, factor: 2}]}
+  ```
 - **Scales.** A sample taller than a scale is downscaled once with
   Lanczos, and the copy is cached in `workdir`. A sample no taller
   than a scale is used as it is. Encodes are scored at the sample's

@@ -73,6 +73,9 @@ flagsets:
 		{name: "unknown encoder", yaml: "samples: s\nflagsets: {a: {args: [-c:v, mystery]}}", wantErr: "quality.flag"},
 		{name: "quality flag in args", yaml: "samples: s\nflagsets: {a: {args: [-c:v, libx265, -crf, '20']}}", wantErr: "must not contain"},
 		{name: "empty range", yaml: "samples: s\nflagsets: {a: {args: [-c:v, libx265], quality: {min: 30, max: 20}}}", wantErr: "quality.max"},
+		{name: "linked without factor", yaml: "samples: s\nflagsets: {a: {args: [-c:v, hevc_qsv], quality: {flag: -b:v, min: 1e6, max: 1e8, step: 1e6, linked: [{flag: -maxrate}]}}}", wantErr: "positive factor"},
+		{name: "linked flag in args", yaml: "samples: s\nflagsets: {a: {args: [-c:v, hevc_qsv, -maxrate, 9M], quality: {flag: -b:v, min: 1e6, max: 1e8, step: 1e6, linked: [{flag: -maxrate, factor: 2}]}}}", wantErr: "linked flag -maxrate"},
+		{name: "linked repeats quality flag", yaml: "samples: s\nflagsets: {a: {args: [-c:v, hevc_qsv], quality: {flag: -b:v, min: 1e6, max: 1e8, step: 1e6, linked: [{flag: -b:v, factor: 2}]}}}", wantErr: "repeats a quality flag"},
 		{name: "unknown scale", yaml: "samples: s\nflagsets: {a: {args: [-c:v, libx265], quality: {scale: exp}}}", wantErr: "quality.scale"},
 		{name: "log scale from zero", yaml: "samples: s\nflagsets: {a: {args: [-c:v, libx265], quality: {flag: -b:v, min: 0, max: 1e8, step: 0.05, scale: log}}}", wantErr: "positive quality.min"},
 		{name: "log step too fine", yaml: "samples: s\nflagsets: {a: {args: [-c:v, libx265], quality: {flag: -b:v, min: 1e6, max: 1e8, step: 0.001, scale: log}}}", wantErr: "quality.step must be at least"},
@@ -1477,6 +1480,34 @@ func TestFlagsetKeyInputArgs(t *testing.T) {
 	hw.InputArgs = []string{"-hwaccel", "qsv"}
 	if flagsetKey(&hw) == flagsetKey(plain) {
 		t.Error("input arguments don't change the flagset key")
+	}
+}
+
+func TestEncodeArgvLinked(t *testing.T) {
+	fs := &Flagset{Args: []string{"-c:v", "hevc_qsv"}, Quality: Quality{Flag: "-b:v",
+		Linked: []LinkedFlag{{Flag: "-maxrate", Factor: 2}, {Flag: "-bufsize", Factor: 1.5}}}}
+	task := &task{sample: &sample{path: "in.mov"}, fs: fs}
+	got := strings.Join((&Bench{}).encodeArgv(&pending{t: task, quality: 63310000, out: "a.mp4"}), " ")
+	want := "ffmpeg -hide_banner -loglevel error -nostats -y -i in.mov" +
+		" -map 0:v:0 -c:v hevc_qsv -b:v 63310000 -maxrate 126620000 -bufsize 94965000 -an -tag:v hvc1 a.mp4"
+	if got != want {
+		t.Errorf("encodeArgv =\n  %s\nwant\n  %s", got, want)
+	}
+	if got, want := joinArgs(fs.argsForLog()), "-c:v hevc_qsv -maxrate x2 -bufsize x1.5"; got != want {
+		t.Errorf("argsForLog = %q, want %q", got, want)
+	}
+}
+
+func TestFlagsetKeyLinked(t *testing.T) {
+	plain := &Flagset{Args: []string{"-c:v", "hevc_qsv"}, Quality: Quality{Flag: "-b:v"}}
+	if got, want := flagsetKey(plain), hashKey("flagset/v1", "-b:v", "-c:v", "hevc_qsv"); got != want {
+		t.Errorf("flagsetKey(plain) = %s, want %s", got, want)
+	}
+	two, three := *plain, *plain
+	two.Quality.Linked = []LinkedFlag{{Flag: "-maxrate", Factor: 2}}
+	three.Quality.Linked = []LinkedFlag{{Flag: "-maxrate", Factor: 3}}
+	if flagsetKey(&two) == flagsetKey(plain) || flagsetKey(&two) == flagsetKey(&three) {
+		t.Error("linked flags or their factors don't change the flagset key")
 	}
 }
 
