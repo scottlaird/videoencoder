@@ -661,6 +661,7 @@ references:             # score a sample against another file in samples/
 seed_results: mac-results.csv  # another machine's log, to start searches at its answers
 seed_vmaf_delta: 0.02   # and accept them if VMAF is this close (default 0: always search)
 batch: 1                # quality settings each search tries per round (see Batches)
+keep: answer            # or all: also keep every scored encode, in workdir/objects
 flagsets:
   x265-medium:
     args: [-pix_fmt, yuv420p10le, -c:v, libx265, -preset, medium]
@@ -837,7 +838,7 @@ ladders:                # several flagsets in one ffmpeg (see Ladders)
 encbench [-config bench.yaml] run [-n] [-sample GLOB] [-flagset GLOB]
 encbench [-config bench.yaml] report
 encbench [-config bench.yaml] prune [-n]
-encbench queue [-watch] [-report=false] [-poll 5s] [-tui auto] [-http ADDR] DIR
+encbench queue [-watch] [-report=false] [-poll 5s] [-tui auto] [-http ADDR] [-http-token-file F] DIR
 ```
 
 - **`run`** searches every unfinished sample and flagset pair. `-n`
@@ -932,9 +933,27 @@ works like `p`. The same is available as JSON:
 - `POST /api/pause` and `POST /api/resume` pause after the current unit,
   and resume.
 
+It also serves files, for scoring encodes on another machine (with
+cvvdp, say) without ssh. A request names a file by ID, never by path,
+and only files the queue's configs name are served, through an
+`os.Root` of the config's workdir or samples directory, so neither
+`..` nor a symlink reaches anything else. Range requests work.
+
+- `GET /api/files/encode/{out_sha256}` is a kept encode: one in the
+  object store (`keep: all`), or a pair's best encode in `keep/` whose
+  size matches its row. Its `ETag` is the SHA-256.
+- `GET /api/files/sample/{sample_id}` is the file a row's encodes were
+  made from (the sample, or its scaled copy), and
+  `GET /api/files/reference/{sample_id}` the file they were scored
+  against, where that's another (see `references`).
+- `GET /api/files/source/{source_id}` is the unscaled file in `samples`.
+- `GET /api/files/index` lists what the routes above can serve, with
+  sizes.
+
 The web view has no login. Anyone who can reach the address can watch
 the queue, read its results and pause it, so `-http localhost:8090` keeps it to this
-machine.
+machine. `-http-token-file F` makes the file routes, but not the
+rest, require the token in `F` as `Authorization: Bearer TOKEN`.
 
 ### encbench output
 
@@ -962,8 +981,9 @@ These are all in `workdir`:
     run, and an ID shared by the rows of a batch of more than one
   - the sample as encoded: `width`, `height`, `fps`, `duration_s`,
     `color_transfer` and `color_primaries`; `source`, the file it came
-    from, at `source_width` by `source_height`; and `sample_id`, its
-    content identity
+    from, at `source_width` by `source_height`, and `source_id`, that
+    file's content identity; and `sample_id`, the sample's, derived
+    from it
   - the encode as ffprobe sees it: `out_codec`, `out_profile`,
     `out_level` (as ffprobe reports it: H.264's level times 10, HEVC's
     times 30, AV1's level index), `out_pix_fmt`, `keyframes`, and
@@ -990,7 +1010,14 @@ These are all in `workdir`:
   Changing `target_vmaf` re-ranks the results without re-encoding
   anything already measured.
 - **`keep/`.** The best encode of each pair, kept for comparing by eye.
-  Other encodes are deleted once they've been scored.
+  Other encodes are deleted once they've been scored, unless `keep` is
+  `all`.
+- **`objects/`.** With `keep: all`, every scored encode, as
+  `objects/<first two>/<out_sha256>.mp4`, so byte-identical encodes
+  share a file. Each pair's best encode in `keep/` is a hard link to
+  its object. Ladder rungs and timing re-runs aren't kept.
+- **`sample-files.json`.** Where the files behind each `sample_id` and
+  `source_id` are, for serving them by ID.
 
 ### How encbench measures quality
 

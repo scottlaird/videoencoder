@@ -231,6 +231,34 @@ func (r *Runner) ResultsLogs() []string {
 	return slices.Compact(logs)
 }
 
+// Dirs is a config's directories: where its samples are and its
+// workdir.
+type Dirs struct {
+	Samples, Workdir string
+}
+
+// Dirs returns the directories of the configs the work files loaded so
+// far use, sorted and without repeats. Files that failed to parse
+// don't count.
+func (r *Runner) Dirs() []Dirs {
+	r.init()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []Dirs
+	for _, e := range r.files {
+		if e.wf != nil && e.parseErr == nil {
+			out = append(out, Dirs{Samples: e.wf.cfg.Samples, Workdir: e.wf.cfg.Workdir})
+		}
+	}
+	slices.SortFunc(out, func(a, b Dirs) int {
+		if c := strings.Compare(a.Workdir, b.Workdir); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Samples, b.Samples)
+	})
+	return slices.Compact(out)
+}
+
 // SetPaused pauses the runner once the current unit ends, or resumes
 // it.
 func (r *Runner) SetPaused(p bool) {

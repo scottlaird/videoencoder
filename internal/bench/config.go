@@ -27,6 +27,12 @@ type Config struct {
 	// Workdir holds results.csv, best.csv, kept encodes and scratch
 	// files. Defaults to "bench".
 	Workdir string `yaml:"workdir"`
+	// Keep says which encodes outlive their search: "answer" (the
+	// default) keeps each pair's best encode in workdir/keep, for
+	// comparing by eye; "all" also keeps every other scored encode, in
+	// workdir/objects by SHA-256 (see ObjectPath), for scoring later
+	// with other metrics. Ladder rungs aren't kept either way.
+	Keep string `yaml:"keep"`
 	// Scales lists heights to test samples at. Taller samples are
 	// downscaled once (cached in workdir/samples); a sample no taller
 	// than a scale is used as it is. Empty means native size only.
@@ -376,6 +382,13 @@ func (c *Config) finish(base string) error {
 	}
 	if c.SeedVMAFDelta > 0 && c.SeedResults == "" {
 		return fmt.Errorf("seed_vmaf_delta: needs seed_results")
+	}
+	switch c.Keep {
+	case "":
+		c.Keep = KeepAnswer
+	case KeepAnswer, KeepAll:
+	default:
+		return fmt.Errorf("keep: %q is not %q or %q", c.Keep, KeepAnswer, KeepAll)
 	}
 	if c.TargetVMAF == 0 {
 		c.TargetVMAF = 95

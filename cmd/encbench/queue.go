@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/scottlaird/videoencoder/internal/benchqueue"
@@ -33,11 +34,12 @@ func queueCmd(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	poll := fs.Duration("poll", 5*time.Second, "how often to look for changes while waiting")
 	ui := fs.String("tui", "auto", `show progress in a terminal UI: "auto" when stderr is a terminal, "on" or "off"`)
 	httpAddr := fs.String("http", "", `serve a web view of the queue at this address, such as ":8090" or "localhost:8090"; it has no login`)
+	tokenFile := fs.String("http-token-file", "", "require the bearer token in this file for the web view's file downloads (/api/files/...)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: encbench queue [-watch] [-report=false] [-poll D] [-tui MODE] [-http ADDR] dir")
+		fmt.Fprintln(stderr, "usage: encbench queue [-watch] [-report=false] [-poll D] [-tui MODE] [-http ADDR] [-http-token-file F] dir")
 		return flag.ErrHelp
 	}
 	dir := fs.Arg(0)
@@ -62,6 +64,15 @@ func queueCmd(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		}
 		ring = benchweb.NewLogRing(webLogLines)
 		srv := &benchweb.Server{Runner: r, Title: title, Log: ring}
+		if *tokenFile != "" {
+			tok, err := os.ReadFile(*tokenFile)
+			if err != nil {
+				return fmt.Errorf("-http-token-file: %w", err)
+			}
+			if srv.Token = strings.TrimSpace(string(tok)); srv.Token == "" {
+				return fmt.Errorf("-http-token-file: %s is empty", *tokenFile)
+			}
+		}
 		ring.Changed = srv.Notify
 		r.Changed = srv.Notify // the TUI chains its own after this
 		hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}

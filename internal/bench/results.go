@@ -111,6 +111,10 @@ type Row struct {
 	// scorer), whose scores this row copies instead of scoring again.
 	// Empty for an encode scored itself.
 	ScoredFrom string
+	// SourceID is the content identity (see fileid) of Source, the
+	// file in the config's samples before any scaling or reference
+	// pairing; SampleID is derived from it. Older rows lack it.
+	SourceID string
 	// Timed says WallS, UserS, SysS and MaxRSSKB are this encode's own.
 	// An encode made with others in one ffmpeg (Flagset.Batch) isn't:
 	// its times are the whole batch's. Such a search's answer is then
@@ -132,7 +136,7 @@ var resultColumns = []string{
 	"vmaf_model", "target_vmaf", "pass", "score_s", "batch_size", "batch_id",
 	"encbench_version", "config", "job", "out_sha256",
 	"cpu_busy_pct", "cpu_mhz", "cpu_ipc", "cpu_pkg_w", "cpu_core_w", "cpu_pkg_temp_c", "cpu_llc_hit_pct",
-	"input_args", "seed_vmaf", "ladder", "ladder_key", "scored_from",
+	"input_args", "seed_vmaf", "ladder", "ladder_key", "scored_from", "source_id",
 }
 
 // cpuColumn is the first of turbostatColumns' columns in resultColumns.
@@ -185,7 +189,7 @@ func (r *Row) record() []string {
 	if r.SeedVMAF != 0 {
 		seedVMAF = ftoa(r.SeedVMAF)
 	}
-	return append(rec, r.InputArgs, seedVMAF, r.Ladder, r.LadderKey, r.ScoredFrom)
+	return append(rec, r.InputArgs, seedVMAF, r.Ladder, r.LadderKey, r.ScoredFrom, r.SourceID)
 }
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
@@ -360,6 +364,7 @@ func parseRow(col map[string]int, rec []string) (Row, error) {
 	r.SeedVMAF = optFloat("seed_vmaf")
 	r.Ladder, r.LadderKey = opt("ladder"), opt("ladder_key")
 	r.ScoredFrom = opt("scored_from")
+	r.SourceID = opt("source_id")
 	return r, errors.Join(errs...)
 }
 
