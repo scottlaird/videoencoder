@@ -1047,3 +1047,75 @@ AV1 usually needs the fewest bits and H.264 the most.
 
 [`DESIGN.md`](DESIGN.md) has the details and the reasoning behind
 them.
+
+## encscore
+
+`encscore` scores encodes that `encbench queue -http` serves with
+metrics encbench doesn't run inline, for now ColorVideoVDP (cvvdp),
+on a machine of its own. The queues keep encoding while it works. It
+fetches files over HTTP (see the file routes under encbench queue),
+never ssh.
+
+```
+encscore [-dir encscore] [-cache-gb 200] [-watch] [-poll 1m] [-batch 8] [-http ADDR] JOB.yaml|JOBDIR...
+```
+
+A job names queues, which of their encodes to score, and how:
+
+```yaml
+hosts: [http://render3:8090, http://render2:8090]
+token_file: token       # if the queues use -http-token-file
+select:                 # every field set must match; lists may be empty
+  samples: ["*@1080p.mov"]
+  encoders: [libx265]
+  flagsets: ["x265-*"]
+  heights: [1080]
+  sha256s: []           # particular encodes, by out_sha256
+  ladders: false        # ladder rungs are left out unless true
+scorers:
+  - metric: cvvdp
+    display: standard_fhd
+    heights: [1080]     # only samples of these heights
+    transfer: sdr       # or hdr (PQ and HLG), or empty for both
+    device: cuda:0      # cvvdp --device; empty lets it choose
+    gpu_mem: 8          # cvvdp --gpu-mem, in GB
+  - metric: cvvdp
+    display: user55_8k
+    display_models: display_models.json
+    heights: [4320]
+```
+
+- **What gets scored.** Every row a job selects whose encode and
+  sample the queue can serve (`/api/files/index`) is scored by every
+  scorer that applies to it, against the file encbench scored it
+  against: the sample, or its `references` file.
+- **Each output once.** A score is keyed by the scorer, the row's
+  `sample_id` and its `out_sha256`. A byte-identical encode of the same
+  sample is scored once, whichever queue, flagset or setting produced
+  it, and a key already in `scores.csv` is never scored again.
+- **Scorer identity.** A scorer is named by cvvdp's version (read from
+  its Python package, or `-cvvdp-version`), the display model, and a
+  hash of `display_models`. Upgrading cvvdp or editing a display model
+  starts new scores instead of mixing them with old ones.
+- **Batches.** The encodes of one sample are scored in batches
+  (`-batch`), one cvvdp run each, so the model loads once per batch. A
+  batch's time is split evenly among its encodes. A scoring that fails
+  three times is skipped until encscore restarts.
+- **Caching.** Fetched files are cached in `DIR/cache` by content:
+  encodes by SHA-256 (checked as they arrive), samples and references
+  by sample ID (checked by size). The least recently used files past
+  `-cache-gb` are removed.
+- **Running continuously.** With `-watch`, encscore keeps going,
+  looking for new rows every `-poll`. A directory argument stands for
+  every `.yaml` file in it, read again on every pass, so jobs can be
+  added as it runs.
+- **Output.** Scores go to `DIR/scores.csv`, one line per encode and
+  scorer:
+  - `key`, `scorer`, `metric` (`jod`) and `value`
+  - `sample_id`, `source_id` and `out_sha256`, to join to encbench's
+    rows
+  - `score_s`, and where it was scored: `host`, `device` and `time`
+  - `from`, `sample`, `flagset` and `quality`: the queue and row it was
+    found by, for reading by eye
+- **Web view.** `-http ADDR` serves `GET /api/state` and
+  `GET /api/scores` (the log as JSON) without a login.
