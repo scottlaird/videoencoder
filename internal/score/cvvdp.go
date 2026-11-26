@@ -7,9 +7,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -33,6 +35,12 @@ func (Command) Run(ctx context.Context, argv []string) ([]byte, error) {
 			msg = msg[i+1:]
 		}
 		return out, fmt.Errorf("%s: %w: %s", filepath.Base(argv[0]), err, msg)
+	}
+	// cvvdp can log an error, give up on a test and still exit 0.
+	for line := range strings.Lines(stderr.String()) {
+		if msg, ok := strings.CutPrefix(strings.TrimSpace(line), "[ERROR] "); ok {
+			return out, fmt.Errorf("%s: %s", filepath.Base(argv[0]), msg)
+		}
 	}
 	return out, nil
 }
@@ -118,7 +126,16 @@ func (c *CVVDP) Score(ctx context.Context, s *ScorerConfig, ref string, tests []
 	}
 	argv = append(argv, "--ref", ref, "--test")
 	argv = append(argv, tests...)
-	if _, err := c.Exec.Run(ctx, argv); err != nil {
+	_, err = c.Exec.Run(ctx, argv)
+	if err != nil && strings.Contains(err.Error(), "--ffmpeg-cc") {
+		// Its GPU color conversion can't do some pixel formats, such as
+		// full-range yuvj420p, and it asks for ffmpeg's instead, which
+		// is slower.
+		slog.Info("Retrying with --ffmpeg-cc", "ref", ref, "err", err)
+		argv = slices.Insert(argv, 1, "--ffmpeg-cc")
+		_, err = c.Exec.Run(ctx, argv)
+	}
+	if err != nil {
 		return nil, err
 	}
 	data, err := os.ReadFile(res.Name())
