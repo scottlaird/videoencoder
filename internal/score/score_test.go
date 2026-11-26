@@ -88,6 +88,9 @@ type fakeCVVDP struct {
 	mu   sync.Mutex
 	runs [][]string
 	fail error
+	// needCC fails runs without --ffmpeg-cc, as cvvdp does for a
+	// pixel format its GPU color conversion can't handle.
+	needCC bool
 }
 
 func (f *fakeCVVDP) Run(_ context.Context, argv []string) ([]byte, error) {
@@ -96,6 +99,9 @@ func (f *fakeCVVDP) Run(_ context.Context, argv []string) ([]byte, error) {
 	f.mu.Unlock()
 	if f.fail != nil {
 		return nil, f.fail
+	}
+	if f.needCC && !slices.Contains(argv, "--ffmpeg-cc") {
+		return nil, errors.New("cvvdp: GPU-accelerated decoding cannot handle chroma subsampling j42. Run with `--ffmpeg-cc` command-line argument.")
 	}
 	res := argv[slices.Index(argv, "--result")+1]
 	ref := argv[slices.Index(argv, "--ref")+1]
@@ -254,6 +260,39 @@ func TestRunGivesUp(t *testing.T) {
 	ref := ex.runs[0][slices.Index(ex.runs[0], "--ref")+1]
 	if data, _ := os.ReadFile(ref); string(data) != "sample" {
 		t.Errorf("scored against %q, want the sample itself (it has no reference)", data)
+	}
+}
+
+func TestRunRetriesWithFFmpegCC(t *testing.T) {
+	a := &queue{
+		rows:    []benchweb.ResultRow{row("a.mp4", "000000000000000a", "x", 20, "enc", 2160)},
+		encodes: map[string]string{shaOf("enc"): "enc"},
+		samples: map[string]string{"000000000000000a": "sample"},
+		fetches: map[string]int{},
+	}
+	s := httptest.NewServer(a.handler())
+	defer s.Close()
+	job := writeJob(t, t.TempDir(), "j.yaml", "hosts: ["+s.URL+"]\nscorers: [{metric: cvvdp, display: standard_fhd}]\n")
+	ex := &fakeCVVDP{needCC: true}
+	r := newRunner(t, ex, job)
+	if err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(r.Log.Rows()); got != 1 || r.Snapshot().Failed != 0 {
+		t.Fatalf("%d scores, %d failed; want the encode scored on the retry", got, r.Snapshot().Failed)
+	}
+	if len(ex.runs) != 2 || !slices.Contains(ex.runs[1], "--ffmpeg-cc") {
+		t.Errorf("runs = %q, want one without --ffmpeg-cc, then one with it", ex.runs)
+	}
+}
+
+func TestCommandSeesLoggedErrors(t *testing.T) {
+	_, err := Command{}.Run(context.Background(), []string{"sh", "-c", "echo '[INFO] fine' >&2; echo '[ERROR] cannot handle j42. Run with `--ffmpeg-cc`.' >&2"})
+	if err == nil || !strings.Contains(err.Error(), "--ffmpeg-cc") {
+		t.Errorf("err = %v, want the [ERROR] line though it exited 0", err)
+	}
+	if _, err := (Command{}).Run(context.Background(), []string{"sh", "-c", "echo '[INFO] fine' >&2"}); err != nil {
+		t.Errorf("err = %v, want none", err)
 	}
 }
 
