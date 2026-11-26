@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"mime"
 	"net/http"
 	"os"
@@ -313,6 +314,27 @@ func serveFile(w http.ResponseWriter, r *http.Request, roots []string, path, eta
 			return
 		}
 		defer rt.Close()
+		// A sample is often a symlink to a master kept elsewhere; the
+		// link is in the samples dir because the config put it there,
+		// so follow it, but only that last link, and only to a file.
+		if st, err := rt.Lstat(rel); err == nil && st.Mode()&fs.ModeSymlink != 0 {
+			target, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				http.NotFound(w, r)
+				return
+			}
+			if st, err := os.Stat(target); err != nil || !st.Mode().IsRegular() {
+				http.Error(w, "file unavailable", http.StatusForbidden)
+				return
+			}
+			rt.Close()
+			if rt, err = os.OpenRoot(filepath.Dir(target)); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			defer rt.Close()
+			rel = filepath.Base(target)
+		}
 		if _, err := rt.Stat(rel); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				http.NotFound(w, r)

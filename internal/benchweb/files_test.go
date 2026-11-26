@@ -39,7 +39,7 @@ func get(t *testing.T, url string, header map[string]string) (int, string, http.
 
 // fileQueue serves a queue whose workdir has an object, a keeper named
 // by the results log, a keeper whose file doesn't match the log, and
-// sample files including two that point outside the queue.
+// sample files including three that point outside the queue.
 func fileQueue(t *testing.T) (srv *Server, url string, files map[string]string) {
 	t.Helper()
 	srv, hs, _, _ := start(t)
@@ -68,11 +68,15 @@ func fileQueue(t *testing.T) (srv *Server, url string, files map[string]string) 
 	if err := os.Symlink(outside, filepath.Join(samples, "link.mov")); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Symlink(filepath.Dir(outside), filepath.Join(samples, "dirlink")); err != nil {
+		t.Fatal(err)
+	}
 	sf := bench.SampleFiles{Format: 1,
 		Samples: map[string]bench.SampleFile{
 			"00000000000000aa": {Name: "a.mov", Path: filepath.Join(samples, "a.mov"), Reference: filepath.Join(samples, "b.mov"), SourceID: "00000000000000bb"},
 			"00000000000000cc": {Name: "secret.mov", Path: outside},
 			"00000000000000dd": {Name: "link.mov", Path: filepath.Join(samples, "link.mov")},
+			"00000000000000ff": {Name: "secret.mov", Path: filepath.Join(samples, "dirlink", "secret.mov")},
 		},
 		Sources: map[string]string{"00000000000000bb": filepath.Join(samples, "a.mov")},
 	}
@@ -96,8 +100,9 @@ func TestFileRoutes(t *testing.T) {
 		{"/api/files/sample/00000000000000aa", 200, "video"},
 		{"/api/files/reference/00000000000000aa", 200, "video"},
 		{"/api/files/source/00000000000000bb", 200, "video"},
-		{"/api/files/sample/00000000000000cc", 403, ""}, // outside the queue's directories
-		{"/api/files/sample/00000000000000dd", 403, ""}, // a symlink out of them
+		{"/api/files/sample/00000000000000cc", 403, ""},       // outside the queue's directories
+		{"/api/files/sample/00000000000000dd", 200, "secret"}, // a sample linked to a master elsewhere
+		{"/api/files/sample/00000000000000ff", 403, ""},       // through a linked directory
 		{"/api/files/sample/00000000000000ee", 404, ""},
 		{"/api/files/sample/..%2f..%2fetc", 400, ""},
 	}
