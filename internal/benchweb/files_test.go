@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -160,5 +161,22 @@ func TestFileToken(t *testing.T) {
 	}
 	if code, _, _ := get(t, url+"/api/state", nil); code != 200 {
 		t.Errorf("GET /api/state without the token = %d, want 200: only the file routes need it", code)
+	}
+}
+
+func TestServeFileRelativeRoot(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "samples", "a.mov"), "video")
+	t.Chdir(dir)
+	for _, c := range []struct{ root, path string }{
+		{"samples", filepath.Join(dir, "samples", "a.mov")}, // a relative config dir, an absolute manifest path
+		{filepath.Join(dir, "samples"), "samples/a.mov"},
+		{"./work/../samples", "samples/a.mov"},
+	} {
+		rec := httptest.NewRecorder()
+		serveFile(rec, httptest.NewRequest("GET", "/x", nil), []string{c.root}, c.path, "", "a.mov")
+		if rec.Code != 200 || rec.Body.String() != "video" {
+			t.Errorf("root %q, path %q: %d %q, want 200", c.root, c.path, rec.Code, rec.Body.String())
+		}
 	}
 }

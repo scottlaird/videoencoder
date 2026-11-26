@@ -126,3 +126,20 @@ func fileSizeOf(p string) int64 {
 	}
 	return info.Size()
 }
+
+func TestScoringsRecordsSampleFiles(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "samples", "a.mov"), "sample a")
+	writeFile(t, filepath.Join(dir, "samples", "b.mov"), "sample b")
+	b := &Bench{Cfg: benchConfig(t, dir, "  x: {args: [-c:v, libx265]}\n"), Exec: newFake(18.7), Prober: fakeProber{}}
+	if _, err := b.Scorings(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	sf, err := ReadSampleFiles(b.Cfg.Workdir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sf.Samples) != 2 || len(sf.Sources) != 2 {
+		t.Errorf("recorded %d samples and %d sources, want both of each from a listing", len(sf.Samples), len(sf.Sources))
+	}
+}
