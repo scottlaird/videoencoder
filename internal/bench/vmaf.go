@@ -243,15 +243,47 @@ func ScoreProgress(ctx context.Context, e Executor, distorted, reference string,
 	if _, err := run(ctx, argv); err != nil {
 		return Metrics{}, fmt.Errorf("scoring: %w", err)
 	}
+	bw, bh := blockSize(width, height)
+	if err := checkFrameCounts(distBlocks, refBlocks, bw, bh); err != nil {
+		return Metrics{}, err
+	}
 	m, err := readLogs(logPath, colorLogPath)
 	if err != nil {
 		return Metrics{}, err
 	}
-	bw, bh := blockSize(width, height)
 	st, err := ColorShift(distBlocks, refBlocks, bw, bh, space)
 	m.ColorShiftP99, m.ColorShiftP999 = st.ShiftP99, st.ShiftP999
 	m.ColorFlickerP99, m.ColorFlickerP999 = st.FlickerP99, st.FlickerP999
 	return m, err
+}
+
+// maxFrameDiff is how many frames an encode may have more or fewer
+// than its reference and still be scored: an encoder can end a frame
+// or two differently. Beyond that, frames paired by position (see
+// frameIndexPTS) no longer show the same picture, and the scores
+// measure the misalignment rather than the encode. FFmpeg 9.0.2's
+// libtheora wrapper, for one, writes Theora's empty "repeat the last
+// frame" packets for repeated frames, and FFmpeg's decoder outputs
+// nothing for them.
+const maxFrameDiff = 2
+
+// checkFrameCounts compares the frame counts of the two sides of a
+// scoring run, from the block images scoreArgv wrote: one image of
+// bw x bh 16-bit RGB pixels per decoded frame.
+func checkFrameCounts(distBlocks, refBlocks string, bw, bh uint64) error {
+	frame := int64(bw * bh * 6)
+	var n [2]int64
+	for i, p := range []string{distBlocks, refBlocks} {
+		info, err := os.Stat(p)
+		if err != nil {
+			return fmt.Errorf("scoring: %w", err)
+		}
+		n[i] = info.Size() / frame
+	}
+	if d := n[0] - n[1]; d > maxFrameDiff || d < -maxFrameDiff {
+		return fmt.Errorf("scoring: the encode decodes to %d frames and the reference to %d, too far apart to pair them by position", n[0], n[1])
+	}
+	return nil
 }
 
 // escapeFilterValue escapes s for use as an option value inside an
