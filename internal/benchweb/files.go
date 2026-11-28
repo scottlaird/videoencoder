@@ -128,7 +128,16 @@ func (s *Server) sampleFile(kind string) http.HandlerFunc {
 			http.Error(w, "not a sample or source ID", http.StatusBadRequest)
 			return
 		}
-		for _, d := range s.Runner.Dirs() {
+		// Configs can share a workdir, and so its sample-files.json,
+		// while each has its own samples directory, so a path may be
+		// under any config's directories, not only the first one whose
+		// workdir lists the ID.
+		dirs := s.Runner.Dirs()
+		var roots []string
+		for _, d := range dirs {
+			roots = append(roots, d.Workdir, d.Samples)
+		}
+		for _, d := range dirs {
 			sf, err := bench.ReadSampleFiles(d.Workdir)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -144,7 +153,7 @@ func (s *Server) sampleFile(kind string) http.HandlerFunc {
 				p = sf.Samples[id].Reference
 			}
 			if p != "" && isFile(p) {
-				serveFile(w, r, []string{d.Workdir, d.Samples}, p, "", filepath.Base(p))
+				serveFile(w, r, roots, p, "", filepath.Base(p))
 				return
 			}
 		}
@@ -283,17 +292,29 @@ func mapsEqual(a, b map[string]logStamp) bool {
 	return true
 }
 
-// serveFile serves path, which must be under one of roots, through an
-// os.Root there, so neither ".." nor a symlink can reach outside it.
-// etag, if set, is sent and honored for conditional and range
-// requests.
+// serveFile serves path, which must resolve to a file under one of
+// roots, through an os.Root there, so neither ".." nor a symlink can
+// reach outside them. Symlinks are resolved first, so a sample that
+// links to a file in another of the queue's directories (samples
+// directories are often symlink farms) is served from there. etag, if
+// set, is sent and honored for conditional and range requests.
 func serveFile(w http.ResponseWriter, r *http.Request, roots []string, path, etag, name string) {
 	// Configs' directories are as written in their work files, often
 	// relative to where the queue runs, while sample-files.json has
-	// absolute paths, so compare the two absolute.
+	// absolute paths, so compare the two absolute and with symlinks
+	// resolved.
 	path, err := filepath.Abs(path)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			http.NotFound(w, r)
+		} else {
+			http.Error(w, "file unavailable", http.StatusForbidden)
+		}
 		return
 	}
 	for _, root := range roots {
@@ -303,7 +324,10 @@ func serveFile(w http.ResponseWriter, r *http.Request, roots []string, path, eta
 		if root, err = filepath.Abs(root); err != nil {
 			continue
 		}
-		rel, err := filepath.Rel(root, path)
+		if root, err = filepath.EvalSymlinks(root); err != nil {
+			continue
+		}
+		rel, err := filepath.Rel(root, real)
 		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 			continue
 		}

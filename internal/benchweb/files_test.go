@@ -180,3 +180,35 @@ func TestServeFileRelativeRoot(t *testing.T) {
 		}
 	}
 }
+
+// TestSampleFilesSharedWorkdir has two configs share a workdir, and so
+// its sample-files.json, with a samples directory each. The second
+// config's samples directory is a symlink farm: its reference links to
+// a file in the first config's samples directory.
+func TestSampleFilesSharedWorkdir(t *testing.T) {
+	srv, hs, b, _ := start(t)
+	base := filepath.Dir(srv.Runner.Dir)
+	work, samples2 := filepath.Join(base, "bench"), filepath.Join(base, "samples2")
+	write(t, filepath.Join(samples2, "c.mov"), "other video")
+	if err := os.Symlink(filepath.Join("..", "samples", "b.mov"), filepath.Join(samples2, "ref.mov")); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(srv.Runner.Dir, "20-other.yaml"),
+		"samples: ../samples2\nworkdir: ../bench\nflagsets:\n  x: {args: [-c:v, libx265, -preset, fast]}\n")
+	sf := bench.SampleFiles{Format: 1, Samples: map[string]bench.SampleFile{
+		"00000000000000ff": {Name: "c.mov", Path: filepath.Join(samples2, "c.mov"), Reference: filepath.Join(samples2, "ref.mov")},
+	}}
+	data, _ := json.Marshal(sf)
+	write(t, bench.SampleFilesPath(work), string(data))
+	b.release <- struct{}{} // the work files are rescanned before the next unit
+	waitFor(t, "the second config to load", func() bool { return len(srv.Runner.Dirs()) == 2 })
+
+	for _, tt := range []struct{ path, body string }{
+		{"/api/files/sample/00000000000000ff", "other video"},
+		{"/api/files/reference/00000000000000ff", "video"},
+	} {
+		if code, body, _ := get(t, hs.URL+tt.path, nil); code != 200 || body != tt.body {
+			t.Errorf("GET %s = %d %q, want 200 %q", tt.path, code, body, tt.body)
+		}
+	}
+}
